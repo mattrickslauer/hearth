@@ -29,8 +29,7 @@ import {
 import { Fonts, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
-// TODO: point at the real public repo before submission.
-const REPO_URL = 'https://github.com';
+const REPO_URL = 'https://github.com/mattrickslauer/hearth';
 
 const PILLARS = [
   {

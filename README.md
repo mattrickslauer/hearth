@@ -2,6 +2,8 @@
 
 **Describe your home in plain words. It figures out the rest.**
 
+![The Hearth landing page — you type a wish, and Qwen compiles it into a working deployment](docs/assets/hearth-landing.png)
+
 Hearth is a home automation platform where you don't write rules — you *say what you want*,
 and an LLM agent configures your sensor nodes and reasons about live data to make it happen.
 Plug in a node, tell it *"warn me if the garage is open after dark and it's cold, and turn on
