@@ -1,0 +1,19 @@
+Home automation has a problem. To automate anything, you have to program it — rules, thresholds, if-this-then-that. So ninety-nine percent of us never automate a single thing.
+
+So we built Hearth. You don't write rules. You just say what you want — and an AI wires it up.
+
+This is the platform, running in your browser — the same software that drives real devices. So anyone can try it, it ships with a simulated home: zones, sensors, actuators, all drag-and-drop.
+
+Watch. I type what I want. Qwen reads what this home can sense and do, and synthesizes the whole deployment — which sensors to bind, the logic, the action. I never wrote a rule. That's program synthesis, not a form.
+
+Every reading is typed and stored — you can see exactly where your data lives. And I can turn the world: push it past dark, drop the temperature —
+
+— and the deployment fires on its own. Heater on. Notified. It just works.
+
+But the real magic is reasoning about the messy real world. This is a real camera on my entryway, on real hardware. Live, Qwen-VL watches the scene.
+
+It doesn't fire a dumb motion alarm. It reasons: do I know this person? The frame was unclear, so it looked closer — then it decides if this is even worth interrupting me for. That's an agent, not a sensor.
+
+Cut the network — the simple watches keep running locally, and it tells you what it missed. And the raw video never leaves home. Only a minimized, redacted frame is ever sent.
+
+No rules. No YAML. You describe your home — it figures out the rest. Hearth is open source. Clone it, and go talk to your house.

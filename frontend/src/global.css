@@ -1,0 +1,32 @@
+/* Hearth web typography — display + body + a mono for the "compiled" aesthetic.
+   Native falls back to the system SF Pro / Roboto stacks (see Fonts in theme.ts). */
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --font-display: Sora, Inter, ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji',
+    'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  --font-body: Inter, ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+  --font-rounded: 'SF Pro Rounded', 'Hiragino Maru Gothic ProN', Meiryo, 'MS PGothic', sans-serif;
+  --font-serif: Georgia, 'Times New Roman', serif;
+}
+
+/* Kill the page-level scrollbar jump + give the whole document the warm base so
+   there's never a white flash behind the app on web. */
+html,
+body {
+  background-color: #12100d;
+}
+
+@media (prefers-color-scheme: light) {
+  html,
+  body {
+    background-color: #fbf7f1;
+  }
+}
+
+/* Smooth in-page anchor scrolling for the landing nav (web only). */
+html {
+  scroll-behavior: smooth;
+}
