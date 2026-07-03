@@ -6,7 +6,12 @@
 #   - `npm i -g @serverless-devs/s` and `s config add` (or env AccessKey)
 #   - `npm run build`  (produces ./dist/server.js)
 #
-# Deploy:  s deploy
+# Serverless Devs errors on ANY unresolved ${env.X}, so this file references only
+# the two vars a deploy truly needs — FC_REGION and QWEN_API_KEY. Everything else
+# has a safe default in the server code (QWEN_BASE_URL→intl, HEARTH_STORE→memory);
+# add those envs here only once you actually wire Tablestore / Telegram.
+#
+# Deploy:  FC_REGION=us-west-1 QWEN_API_KEY=... s deploy
 edition: 3.0.0
 name: hearth-cloud
 access: default
@@ -34,17 +39,14 @@ resources:
           - server.js
         port: 9000
       environmentVariables:
-        # Qwen (Model Studio / DashScope) — the brain. Endpoint per account region.
+        # Qwen (Model Studio / DashScope) — the brain. QWEN_BASE_URL defaults to the
+        # International endpoint in code; override it here only for a US-region account.
         QWEN_API_KEY: ${env.QWEN_API_KEY}
-        QWEN_BASE_URL: ${env.QWEN_BASE_URL}
         QWEN_MODEL: qwen-plus
-        # Store: 'memory' (default) or 'tablestore'
-        HEARTH_STORE: ${env.HEARTH_STORE}
-        TABLESTORE_ENDPOINT: ${env.TABLESTORE_ENDPOINT}
-        TABLESTORE_INSTANCE: ${env.TABLESTORE_INSTANCE}
-        # Notifications (optional; Telegram needs no Alibaba setup)
-        TELEGRAM_BOT_TOKEN: ${env.TELEGRAM_BOT_TOKEN}
-        TELEGRAM_CHAT_ID: ${env.TELEGRAM_CHAT_ID}
+        # To go beyond in-memory, add here once wired:
+        #   HEARTH_STORE: tablestore
+        #   TABLESTORE_ENDPOINT / TABLESTORE_INSTANCE
+        #   TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
       triggers:
         - triggerName: http
           triggerType: http
