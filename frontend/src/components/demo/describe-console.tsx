@@ -109,7 +109,12 @@ export function DescribeConsole({ sim }: { sim: Simulation }) {
             </Text>
             {sim.questions.map((dep, i) => (
               <Animated.View key={dep.id} entering={FadeInDown.duration(320).delay(i === sim.questions.length - 1 ? 60 : 0)}>
-                <DeploymentCard dep={dep} onRemove={() => sim.removeQuestion(dep.id)} active />
+                <DeploymentCard
+                  dep={dep}
+                  onRemove={() => sim.removeQuestion(dep.id)}
+                  onConfigure={(patch) => sim.configureQuestion(dep.id, patch)}
+                  active
+                />
               </Animated.View>
             ))}
           </View>

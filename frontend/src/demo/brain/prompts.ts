@@ -61,7 +61,8 @@ Respond with ONLY a JSON object:
   "cost": "none"|"cloud",
   "compiledTo": "local"|"cloud_vl",
   "compiledSpec": { "kind":"local", "local": { "expr": <PredicateNode> } }
-                | { "kind":"cloud", "cloud": { "model":"qwen-vl", "question":"<visual yes/no question>", "gate": <PredicateNode>, "maxCadence":"10s" } },
+                | { "kind":"cloud", "cloud": { "model":"qwen-vl"|"qwen-vl-max"|"qwen-max"|"qwen-plus", "question":"<visual yes/no question>", "gate": <PredicateNode>, "maxCadence":"2s" } },
+  "record": { "inputId":"<the sampled input, e.g. camera.frame>", "mode":"on_event"|"interval", "every":"10s", "retain": 8, "transform":"crop" },  // cloud only: how often to sample. Prefer "on_event" to save tokens; "interval" for a subject that lingers rather than arrives.
   "evalOn": "event"|"interval",
   "fire": { "edge":"rising"|"level", "cooldown"?: "<Duration>" },
   "authoring": ["≤3 short first-person notes on how you compiled it"]

@@ -6,7 +6,12 @@
  */
 
 import type { Question, Visitor } from '../types';
-import type { PredicateNode, Scalar } from '../engine/types';
+import type { CloudModel, PredicateNode, RecordPolicy, Scalar } from '../engine/types';
+
+/** Default capture policy for a cloud/vision watch (the configurable frame rate). */
+export function defaultRecord(inputId = 'camera.frame', every = '10s'): RecordPolicy {
+  return { inputId, mode: 'on_event', every, retain: 8, transform: 'crop' };
+}
 
 export type AuthoredQuestion = Omit<Question, 'id'>;
 
@@ -159,8 +164,9 @@ export function mockAuthor(wish: string): AuthoredQuestion {
       compiledTo: 'cloud_vl',
       compiledSpec: {
         kind: 'cloud',
-        cloud: { model: 'qwen-vl', question, gate: eq('entry.presence', true), maxCadence: '10s' },
+        cloud: { model: 'qwen-vl', question, gate: eq('entry.presence', true), maxCadence: '2s' },
       },
+      record: defaultRecord('camera.frame', '10s'),
       evalOn: 'event',
       fire: { edge: 'rising' },
       authoring: [

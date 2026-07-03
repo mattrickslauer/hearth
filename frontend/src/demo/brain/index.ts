@@ -5,7 +5,7 @@
  *             falling back to mock on any error.
  */
 
-import { mockAuthor, mockJudge, type AuthoredQuestion } from './mock';
+import { defaultRecord, mockAuthor, mockJudge, type AuthoredQuestion } from './mock';
 import { qwenAuthor, qwenJudge } from './qwen';
 import type { Judgment, Question, Visitor } from '../types';
 
@@ -21,7 +21,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let counter = 0;
 function withId(a: AuthoredQuestion): Question {
   counter += 1;
-  return { ...a, id: `q-${Date.now().toString(36)}-${counter}` };
+  const q: Question = { ...a, id: `q-${Date.now().toString(36)}-${counter}` };
+  // Every cloud watch samples an input, so it must carry a capture policy. If the
+  // brain didn't emit one (e.g. real Qwen), synthesise a sane default from the
+  // bound vision input + the check's budget floor so the rate is always editable.
+  if (q.compiledSpec.kind === 'cloud' && !q.record) {
+    const inputId = q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0] ?? 'camera.frame';
+    q.record = defaultRecord(inputId, q.compiledSpec.cloud.maxCadence ?? '10s');
+  }
+  return q;
 }
 
 const useQwen = typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_USE_QWEN === '1';
