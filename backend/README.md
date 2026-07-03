@@ -101,20 +101,33 @@ GET  /auth/me           Bearer <token>     → { account }
 ```
 
 Codes are held in a short-lived store (TTL ~10 min), stored **hashed**, one-time-use,
-and attempt-limited (5). Session tokens are HMAC-signed (30-day).
+and attempt-limited (5). `request-otp` is rate-limited per email (5 / 15 min) and per
+client IP (30 / 15 min). Session tokens are HMAC-signed (30-day).
 
-Env (all optional for dev — with none set, the OTP is logged to the server console
-and the flow is fully testable):
+**`AUTH_SESSION_SECRET` is required — there is no fallback.** The server refuses to
+boot without it (a missing/weak secret would let anyone forge session tokens). Use the
+**same** value in dev and prod: put it in `backend/.env` (gitignored) and source that
+same file into the deploy env. Generate one with:
 
-Email goes over ZeptoMail **SMTP** (`smtp.zeptomail.com`):
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+**Protected endpoints:** everything under `/mcp/*` and `/qwen` now requires a valid
+`Authorization: Bearer <token>` session. Only `/health` and the `/auth/*` endpoints are
+anonymous. (The guest demo is unaffected — it uses the app's own same-origin `/qwen`
+route, not this backend.)
+
+Email goes over ZeptoMail **SMTP** (`smtp.zeptomail.com`) — all optional; with no SMTP
+pass set, the OTP is logged to the server console and the flow is fully testable:
 
 | Var | Purpose |
 |---|---|
+| `AUTH_SESSION_SECRET` | **Required.** HMAC secret for session tokens (>=16 chars, same in dev+prod, no fallback). |
 | `ZEPTOMAIL_SMTP_PASS` | ZeptoMail SMTP password / send-mail token. Unset → console fallback. |
 | `ZEPTOMAIL_SMTP_USER` | default `emailapikey` |
 | `ZEPTOMAIL_SMTP_HOST` / `_PORT` | default `smtp.zeptomail.com` / `465` (SSL; `587` = STARTTLS) |
 | `ZEPTOMAIL_FROM` | sender, default `hearth@agfarms.dev` (a verified sender on the domain) |
-| `AUTH_SESSION_SECRET` | HMAC secret for session tokens — **set a strong value in prod** |
 | `HEARTH_OTP_STORE` | `memory` (default) or `tablestore` (short-lived NoSQL, per-row TTL) |
 
 Verify the mail path without wiring the whole flow:

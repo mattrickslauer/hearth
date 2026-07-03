@@ -4,6 +4,9 @@
  * the cloud deploy will run unchanged (with Qwen + Tablestore swapped in).
  */
 
+// Auth has no fallback secret — give the hermetic run a fixed one (a real env wins).
+process.env.AUTH_SESSION_SECRET ??= 'smoke-test-session-secret-0123456789';
+
 import { MemoryStore } from '../src/store.ts';
 import { TOOL_BY_NAME, type ToolCtx } from '../src/tools.ts';
 
@@ -78,6 +81,35 @@ const decoded = verifySession(session);
 ok('session roundtrips', decoded?.sub === 'acct-1' && decoded?.email === 'a@b.co');
 ok('tampered session rejected', verifySession(session.slice(0, -2) + 'xx') === null);
 ok('missing session rejected', verifySession(undefined) === null);
+
+// JWT hardening: standard 3-segment HS256, alg pinned, iss/aud/exp enforced
+const { createHmac } = await import('node:crypto');
+const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const mkJwt = (payload: object, header: object = { alg: 'HS256', typ: 'JWT' }) => {
+  const si = `${b64(header)}.${b64(payload)}`;
+  return `${si}.${createHmac('sha256', process.env.AUTH_SESSION_SECRET!).update(si).digest('base64url')}`;
+};
+const nowS = Math.floor(Date.now() / 1000);
+const base = { sub: 'x', email: 'e@x.co', iss: 'hearth', aud: 'hearth-app', iat: nowS, exp: nowS + 100 };
+
+ok('token is a 3-part JWT', session.split('.').length === 3);
+{
+  const hdr = JSON.parse(Buffer.from(session.split('.')[0], 'base64url').toString());
+  ok('JWT header is HS256/JWT', hdr.alg === 'HS256' && hdr.typ === 'JWT');
+}
+ok('valid crafted JWT accepted', verifySession(mkJwt(base))?.sub === 'x');
+ok('alg:none forgery rejected', verifySession(`${b64({ alg: 'none', typ: 'JWT' })}.${b64(base)}.`) === null);
+ok('alg mismatch in header rejected', verifySession(mkJwt(base, { alg: 'HS512', typ: 'JWT' })) === null);
+ok('expired JWT rejected', verifySession(mkJwt({ ...base, iat: nowS - 200, exp: nowS - 10 })) === null);
+ok('wrong audience rejected', verifySession(mkJwt({ ...base, aud: 'evil-app' })) === null);
+ok('wrong issuer rejected', verifySession(mkJwt({ ...base, iss: 'evil' })) === null);
+ok('missing sub rejected', verifySession(mkJwt({ ...base, sub: '' })) === null);
+{
+  // signature from a DIFFERENT secret must not verify
+  const si = `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64(base)}`;
+  const forged = `${si}.${createHmac('sha256', 'some-other-secret-key-1234').update(si).digest('base64url')}`;
+  ok('wrong-secret signature rejected', verifySession(forged) === null);
+}
 
 // full OTP flow: capture the console-logged dev code, then verify
 const authDeps = { otp: new MemoryOtpStore(), accounts: new MemoryAccountStore() };

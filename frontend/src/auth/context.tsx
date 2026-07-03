@@ -6,7 +6,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import { fetchMe, requestOtp, verifyOtp, type Account } from './client';
+import { decodeSession, fetchMe, requestOtp, sessionValidLocally, verifyOtp, type Account } from './client';
 import { clearToken, loadToken, saveToken } from './storage';
 
 type Status = 'loading' | 'signedOut' | 'signedIn';
@@ -33,10 +33,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     alive.current = true;
     const stored = loadToken();
-    if (!stored) {
+
+    // No token, or one that's already expired by its own exp → signed out. Drop a
+    // stale token eagerly so we never flash a signed-in UI for it.
+    if (!stored || !sessionValidLocally(stored)) {
+      if (stored) clearToken();
       setStatus('signedOut');
       return;
     }
+
+    // Optimistic restore from the (unverified) token so a refresh stays signed in
+    // instantly, without waiting on the network. The server still re-verifies below.
+    const local = decodeSession(stored);
+    if (local) {
+      setAccount({ id: local.id, email: local.email });
+      setToken(stored);
+      setStatus('signedIn');
+    }
+
+    // Reconcile with the backend: it verifies the JWT signature and returns the
+    // canonical account. If it rejects the token, clear and sign out.
     fetchMe(stored).then((acct) => {
       if (!alive.current) return;
       if (acct) {
@@ -45,6 +61,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setStatus('signedIn');
       } else {
         clearToken();
+        setToken(null);
+        setAccount(null);
         setStatus('signedOut');
       }
     });

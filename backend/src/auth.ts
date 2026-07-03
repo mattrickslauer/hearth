@@ -18,7 +18,7 @@ import nodemailer, { type Transporter } from 'nodemailer';
 
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
 const MAX_ATTEMPTS = 5;
-const SESSION_TTL_MS = 30 * 24 * 60_000; // 30 days
+const SESSION_TTL_SEC = 30 * 24 * 60 * 60; // 30 days (JWT exp, in seconds per RFC 7519)
 
 /* ------------------------------------------------------------------ OTP store */
 
@@ -118,7 +118,28 @@ export class MemoryAccountStore implements AccountStore {
 
 /* ---------------------------------------------------------------- code + hash */
 
-const sessionSecret = () => process.env.AUTH_SESSION_SECRET || 'hearth-dev-secret-change-me';
+/**
+ * The HMAC key for session tokens (and OTP hashing). There is NO fallback default:
+ * an unset or weak secret would let anyone forge session tokens for any account, so
+ * we fail loud instead. The same secret is used in dev and prod — set it once in a
+ * gitignored .env (loaded by src/env.ts locally) and reference it in the deploy env
+ * (see s.yaml / backend/README.md).
+ */
+function sessionSecret(): string {
+  const s = process.env.AUTH_SESSION_SECRET;
+  if (typeof s !== 'string' || s.length < 16) {
+    throw new Error(
+      'AUTH_SESSION_SECRET is required (>=16 chars). Set it in backend/.env for local dev ' +
+        'and in the deploy env before deploying — see backend/README.md.',
+    );
+  }
+  return s;
+}
+
+/** Fail fast at startup if the session secret is missing/weak, rather than on first login. */
+export function assertAuthConfig(): void {
+  sessionSecret(); // throws when AUTH_SESSION_SECRET is unset or too short
+}
 
 export function normalizeEmail(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -144,34 +165,81 @@ function safeEqualHex(a: string, b: string): boolean {
 
 /* ------------------------------------------------------------------- sessions */
 
+/**
+ * Session tokens are stateless HS256 JWTs (RFC 7519): base64url(header).base64url(payload).sig.
+ *
+ * Security properties enforced on verify:
+ *   - We ALWAYS verify with HS256 keyed by AUTH_SESSION_SECRET; we never let the
+ *     token's own header pick the algorithm. Plus we assert header.alg === 'HS256',
+ *     so `alg:none` and RS/HS confusion forgeries are rejected.
+ *   - The signature is checked (constant-time) BEFORE any claim is trusted.
+ *   - iss/aud are pinned, exp is enforced, sub must be a non-empty string.
+ *
+ * Stateless ⇒ no revocation before exp; keep the TTL bounded and rotate the secret
+ * to invalidate everything at once. The client also self-expires on exp (see the app).
+ */
+const JWT_ISS = 'hearth';
+const JWT_AUD = 'hearth-app';
+const JWT_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
+
 interface SessionPayload {
   sub: string; // account id
   email: string;
-  iat: number;
-  exp: number;
+  iat: number; // issued-at (seconds since epoch)
+  exp: number; // expiry (seconds since epoch)
 }
 
-function b64url(s: string): string {
-  return Buffer.from(s).toString('base64url');
+function b64urlJson(obj: unknown): string {
+  return Buffer.from(JSON.stringify(obj)).toString('base64url');
+}
+
+function signHs256(signingInput: string): string {
+  return createHmac('sha256', sessionSecret()).update(signingInput).digest('base64url');
 }
 
 export function issueSession(acct: Account): string {
-  const payload: SessionPayload = { sub: acct.id, email: acct.email, iat: Date.now(), exp: Date.now() + SESSION_TTL_MS };
-  const body = b64url(JSON.stringify(payload));
-  const sig = createHmac('sha256', sessionSecret()).update(body).digest('base64url');
-  return `${body}.${sig}`;
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64urlJson(JWT_HEADER);
+  const payload = b64urlJson({
+    sub: acct.id,
+    email: acct.email,
+    iss: JWT_ISS,
+    aud: JWT_AUD,
+    iat: now,
+    exp: now + SESSION_TTL_SEC,
+  });
+  const signingInput = `${header}.${payload}`;
+  return `${signingInput}.${signHs256(signingInput)}`;
 }
 
 export function verifySession(token: string | undefined): SessionPayload | null {
   if (!token) return null;
-  const [body, sig] = token.split('.');
-  if (!body || !sig) return null;
-  const expected = createHmac('sha256', sessionSecret()).update(body).digest('base64url');
-  if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sig] = parts;
+
+  // 1) integrity first — constant-time HMAC over header.payload, always HS256.
+  const expected = signHs256(`${headerB64}.${payloadB64}`);
+  if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    return null;
+  }
+
   try {
-    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as SessionPayload;
-    if (Date.now() > payload.exp) return null;
-    return payload;
+    // 2) pin the algorithm (defence-in-depth against alg:none / alg confusion).
+    const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8')) as Record<string, unknown>;
+    if (header.alg !== JWT_HEADER.alg || header.typ !== JWT_HEADER.typ) return null;
+
+    // 3) claims.
+    const p = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as Record<string, unknown>;
+    if (p.iss !== JWT_ISS || p.aud !== JWT_AUD) return null;
+    if (typeof p.sub !== 'string' || !p.sub) return null;
+    if (typeof p.exp !== 'number' || Math.floor(Date.now() / 1000) >= p.exp) return null;
+    return {
+      sub: p.sub,
+      email: typeof p.email === 'string' ? p.email : '',
+      iat: typeof p.iat === 'number' ? p.iat : 0,
+      exp: p.exp,
+    };
   } catch {
     return null;
   }
@@ -232,6 +300,36 @@ export async function verifyMailer(): Promise<{ ok: boolean; note: string }> {
   return { ok: true, note: `SMTP ready via ${process.env.ZEPTOMAIL_SMTP_HOST || 'smtp.zeptomail.com'}` };
 }
 
+/* --------------------------------------------------------------- rate limiting */
+
+/**
+ * In-memory sliding-window limiter. Per-instance (consistent with the memory OTP/
+ * account stores) — good enough to blunt email-bombing and slow OTP brute force;
+ * swap for a shared store (Tablestore/Redis) alongside those when they're wired.
+ */
+class RateLimiter {
+  private hits = new Map<string, number[]>();
+  constructor(private max: number, private windowMs: number) {}
+  allow(key: string): boolean {
+    const now = Date.now();
+    const cutoff = now - this.windowMs;
+    const arr = (this.hits.get(key) ?? []).filter((t) => t > cutoff);
+    // bound memory: drop the map wholesale if it grows pathologically (per-instance)
+    if (this.hits.size > 50_000) this.hits.clear();
+    if (arr.length >= this.max) {
+      this.hits.set(key, arr);
+      return false;
+    }
+    arr.push(now);
+    this.hits.set(key, arr);
+    return true;
+  }
+}
+
+// A given email may be sent at most 5 codes / 15 min; a given client IP at most 30 / 15 min.
+const emailOtpLimiter = new RateLimiter(5, 15 * 60_000);
+const ipOtpLimiter = new RateLimiter(30, 15 * 60_000);
+
 /* ---------------------------------------------------------------- the service */
 
 export interface AuthDeps {
@@ -239,10 +337,20 @@ export interface AuthDeps {
   accounts: AccountStore;
 }
 
-/** Request an OTP. Always returns ok (don't leak whether an email is registered). */
-export async function requestOtp(deps: AuthDeps, rawEmail: unknown): Promise<{ ok: boolean; delivered: boolean; note?: string }> {
+/**
+ * Request an OTP. Always returns ok (don't leak whether an email is registered).
+ * Rate-limited per email and per client IP; over the limit we silently skip the
+ * send and return the same positive shape (no oracle) rather than emailing.
+ */
+export async function requestOtp(
+  deps: AuthDeps,
+  rawEmail: unknown,
+  opts: { ip?: string } = {},
+): Promise<{ ok: boolean; delivered: boolean; note?: string }> {
   const email = normalizeEmail(rawEmail);
   if (!email) return { ok: false, delivered: false, note: 'invalid email' };
+  if (opts.ip && !ipOtpLimiter.allow(opts.ip)) return { ok: true, delivered: false };
+  if (!emailOtpLimiter.allow(email)) return { ok: true, delivered: false };
   const code = generateCode();
   await deps.otp.put(email, { codeHash: hashCode(email, code), expiresAt: Date.now() + OTP_TTL_MS, attempts: 0 });
   const sent = await sendOtpEmail(email, code);

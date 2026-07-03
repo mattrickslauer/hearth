@@ -50,4 +50,41 @@ export async function fetchMe(token: string): Promise<Account | null> {
   }
 }
 
+/**
+ * Decode a session JWT's payload WITHOUT verifying its signature — the server is the
+ * only authority that verifies (it holds the secret). We read the claims client-side
+ * purely to (a) restore auth state instantly on refresh before /auth/me resolves and
+ * (b) self-expire a stale token locally instead of showing a signed-in UI for it.
+ */
+interface LocalSession {
+  id: string;
+  email: string;
+  exp: number; // seconds since epoch
+}
+
+function b64urlDecode(seg: string): string {
+  // atob exists on web, on Hermes (RN), and on Node 16+ (SSR). If it's somehow
+  // missing the caller's try/catch turns the throw into a null (server still verifies).
+  return atob(seg.replace(/-/g, '+').replace(/_/g, '/'));
+}
+
+export function decodeSession(token: string | null | undefined): LocalSession | null {
+  if (!token) return null;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const p = JSON.parse(b64urlDecode(parts[1])) as Record<string, unknown>;
+    if (typeof p.sub !== 'string' || typeof p.exp !== 'number') return null;
+    return { id: p.sub, email: typeof p.email === 'string' ? p.email : '', exp: p.exp };
+  } catch {
+    return null;
+  }
+}
+
+/** True only if the token decodes and its exp is still in the future (30s skew). */
+export function sessionValidLocally(token: string | null | undefined): boolean {
+  const s = decodeSession(token);
+  return !!s && Date.now() / 1000 < s.exp - 30;
+}
+
 export const backendBase = BASE;
