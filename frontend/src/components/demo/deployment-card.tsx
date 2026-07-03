@@ -1,18 +1,38 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { capability } from '@/demo/home';
+import { parseDuration } from '@/demo/engine/duration';
+import { MODELS, type CloudModel, type RecordPolicy } from '@/demo/engine/types';
 import type { Question } from '@/demo/types';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+
+import { Dropdown, Option } from './dropdown';
+
+export type RecordPatch = { mode?: RecordPolicy['mode']; every?: string; retain?: number; model?: CloudModel };
+
+const RATES = ['2s', '10s', '30s', '2m'];
+
+/** Human "≈ N/min" (or /hr) for a sample interval — the metered rate readout. */
+function rateLabel(every: string): string {
+  const ms = parseDuration(every);
+  if (!ms) return '—';
+  const perMin = 60_000 / ms;
+  if (perMin >= 1) return `${Number.isInteger(perMin) ? perMin : perMin.toFixed(1)}/min`;
+  const perHr = perMin * 60;
+  return `${Number.isInteger(perHr) ? perHr : perHr.toFixed(1)}/hr`;
+}
 
 /** A compiled Question — the honest output of a wish. */
 export function DeploymentCard({
   dep,
   onRemove,
+  onConfigure,
   active,
 }: {
   dep: Question;
   onRemove?: () => void;
+  onConfigure?: (patch: RecordPatch) => void;
   active?: boolean;
 }) {
   const theme = useTheme();
@@ -60,7 +80,110 @@ export function DeploymentCard({
 
       <Row theme={theme} k="When" v={dep.trigger} />
       <Row theme={theme} k="Do" v={dep.action} />
+
+      {dep.compiledSpec.kind === 'cloud' && dep.record && onConfigure ? (
+        <RecordControls dep={dep} record={dep.record} onConfigure={onConfigure} />
+      ) : null}
     </View>
+  );
+}
+
+/** Configure the metered capture rate + which model runs the cloud check. */
+function RecordControls({
+  dep,
+  record,
+  onConfigure,
+}: {
+  dep: Question;
+  record: RecordPolicy;
+  onConfigure: (patch: RecordPatch) => void;
+}) {
+  const theme = useTheme();
+  const model = dep.compiledSpec.kind === 'cloud' ? dep.compiledSpec.cloud.model : 'qwen-vl';
+  const active = MODELS.find((m) => m.id === model);
+  const metered = record.mode === 'interval';
+  const visionMismatch = dep.usesVision && active && !active.vision;
+
+  return (
+    <View style={[styles.rec, { borderTopColor: theme.border }]}>
+      <View style={styles.recHead}>
+        <Text style={[styles.recTitle, { color: theme.textMuted }]}>RECORD POLICY</Text>
+        <Text style={[styles.recRate, { color: theme.ember }]}>
+          {metered ? '≈' : '≤'} {rateLabel(record.every)}
+          <Text style={{ color: theme.textMuted }}>{'  ·  '}retain {record.retain}</Text>
+        </Text>
+      </View>
+
+      {/* mode: sample every N (metered) vs only on scene change (on_event) */}
+      <View style={styles.segRow}>
+        <Seg theme={theme} label="On event" active={!metered} onPress={() => onConfigure({ mode: 'on_event' })} />
+        <Seg theme={theme} label="Metered" active={metered} onPress={() => onConfigure({ mode: 'interval' })} />
+      </View>
+
+      {/* frame rate presets */}
+      <View style={styles.rateRow}>
+        {RATES.map((r) => {
+          const on = record.every === r;
+          return (
+            <Pressable
+              key={r}
+              onPress={() => onConfigure({ every: r })}
+              style={[
+                styles.rateChip,
+                { borderColor: on ? theme.ember : theme.border, backgroundColor: on ? theme.emberGlow : theme.background },
+              ]}>
+              <Text style={[styles.rateText, { color: on ? theme.ember : theme.textSecondary }]}>{r}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {/* model picker */}
+      <Dropdown icon="🧠" label="Model" value={active?.label ?? model} width={220}>
+        {(close) =>
+          MODELS.map((m) => (
+            <Option
+              key={m.id}
+              label={`${m.label} — ${m.note}`}
+              active={m.id === model}
+              onPress={() => {
+                onConfigure({ model: m.id });
+                close();
+              }}
+            />
+          ))
+        }
+      </Dropdown>
+
+      {visionMismatch ? (
+        <Text style={[styles.warn, { color: theme.textMuted }]}>
+          ⚠ {active?.label} can’t read frames — this watch needs vision. Pick a Qwen-VL model.
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function Seg({
+  theme,
+  label,
+  active,
+  onPress,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={[
+        styles.seg,
+        { borderColor: active ? theme.ember : theme.border, backgroundColor: active ? theme.emberGlow : 'transparent' },
+      ]}>
+      <Text style={[styles.segText, { color: active ? theme.ember : theme.textSecondary }]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -127,4 +250,15 @@ const styles = StyleSheet.create({
     width: 38,
   },
   rowVal: { flex: 1, fontFamily: Fonts?.sans, fontSize: 13.5, lineHeight: 19, fontWeight: '500' },
+  rec: { borderTopWidth: 1, paddingTop: Spacing.two, marginTop: Spacing.one, gap: Spacing.two },
+  recHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
+  recTitle: { fontFamily: Fonts?.mono, fontSize: 10, fontWeight: '700', letterSpacing: 0.8 },
+  recRate: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '700' },
+  segRow: { flexDirection: 'row', gap: 6 },
+  seg: { flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: Radius.sm, borderWidth: 1 },
+  segText: { fontFamily: Fonts?.sans, fontSize: 12, fontWeight: '700' },
+  rateRow: { flexDirection: 'row', gap: 6 },
+  rateChip: { flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: Radius.sm, borderWidth: 1 },
+  rateText: { fontFamily: Fonts?.mono, fontSize: 12, fontWeight: '700' },
+  warn: { fontFamily: Fonts?.sans, fontSize: 11.5, lineHeight: 16, fontWeight: '500' },
 });

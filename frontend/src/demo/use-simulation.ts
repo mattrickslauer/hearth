@@ -12,11 +12,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { brain } from './brain';
+import { defaultRecord } from './brain/mock';
 import { evaluate } from './engine/predicate';
 import { parseDuration, formatDuration } from './engine/duration';
 import { ReadingStore } from './engine/store';
+import { shouldSample } from './engine/record';
 import { isNight, minutesOfDay, simTimeAt } from './engine/simtime';
-import type { RunState } from './engine/types';
+import type { CloudModel, RecordPolicy, RunState } from './engine/types';
 import { applyActuator, initialWorld, VISITORS } from './home';
 import type { ActivityEvent, Judgment, Question, Visitor, WorldState } from './types';
 
@@ -99,15 +101,33 @@ export function useSimulation() {
   );
 
   const judgeAndEmit = useCallback(
-    async (q: Question, visitor: Visitor | null, scene: string, now: number, reconnect = false) => {
+    async (
+      q: Question,
+      visitor: Visitor | null,
+      scene: string,
+      now: number,
+      run: RunState,
+      opts: { reconnect?: boolean; emitHeld?: boolean } = {},
+    ) => {
+      const { reconnect = false, emitHeld = true } = opts;
       const question = q.compiledSpec.kind === 'cloud' ? q.compiledSpec.cloud.question : '';
       const judgment = await brain.judge({ dep: q, visitor, scene, questions: [question] });
       if (!alive.current) return;
-      if (judgment.fired) {
+      // Fire policy applies to the *metered* cloud path too: a rule that keeps
+      // matching across samples actuates once per rising edge, respecting cooldown —
+      // so a fast frame rate spends calls but never re-slams the actuator.
+      const value = judgment.fired;
+      const cooldown = parseDuration(q.fire.cooldown);
+      const rising = q.fire.edge === 'rising';
+      const fireOk = value && (rising ? !run.lastAnswer : true) && now - run.lastFiredAt >= cooldown;
+      run.lastAnswer = value;
+      if (value) {
+        if (!fireOk) return; // matched again within cooldown / same edge — no re-actuate, no spam
+        run.lastFiredAt = now;
         if (q.actuates.length) setWorldBoth((w) => q.actuates.reduce((acc, id) => applyActuator(acc, id, true, q.title), w));
         emit({ clock: now, questionId: q.id, questionTitle: q.title, kind: reconnect ? 'reconnect' : 'fired', judgment, local: false, push: q.push ? judgment.verdict : undefined });
         if (q.push) firePush(`👁 ${q.title} — ${judgment.reasoning}`);
-      } else {
+      } else if (emitHeld) {
         emit({ clock: now, questionId: q.id, questionTitle: q.title, kind: reconnect ? 'reconnect' : 'held', judgment, local: false });
       }
     },
@@ -138,26 +158,36 @@ export function useSimulation() {
           continue;
         }
 
-        // cloud_vl: cheap local gate, then judge once per scene
-        const gate = q.compiledSpec.cloud.gate;
+        // cloud watch: cheap local gate, then a *metered* sample per the Record policy.
+        const cloud = q.compiledSpec.cloud;
+        const rec = q.record;
+        const gate = cloud.gate;
         const gateOk = gate ? evaluate(gate, ctx).value : true;
-        const scene = String(worldRef.current.sensors['camera.frame'] ?? 'the doorway');
+        const inputId = rec?.inputId ?? 'camera.frame';
+        const scene = String(worldRef.current.sensors[inputId] ?? 'the doorway');
         const sceneKey = worldRef.current.visitor?.id ?? 'none';
         if (!gateOk) {
           run.lastAnswer = false;
           run.sceneKey = undefined;
           continue;
         }
-        if (run.busy || run.sceneKey === sceneKey) continue;
+        // The metered rate lives in engine/record.ts (pure + hub-shared): sample per
+        // the record interval, floored by the check's maxCadence budget guard.
+        const sceneChanged = run.sceneKey !== sceneKey;
+        if (run.busy || !shouldSample({ rec, cloud, now, lastEvalAt: run.lastEvalAt, sceneChanged })) continue;
         run.sceneKey = sceneKey;
         run.lastEvalAt = now;
+        run.evalCount = (run.evalCount ?? 0) + 1;
+        store.current.append(inputId, scene as never, now); // model the frame capture
         if (!worldRef.current.online) {
           pending.current.push({ q, visitor: worldRef.current.visitor, scene });
           emit({ clock: now, questionId: q.id, questionTitle: q.title, kind: 'offline', local: false });
           continue;
         }
         run.busy = true;
-        void judgeAndEmit(q, worldRef.current.visitor, scene, now).finally(() => {
+        const emitHeld = run.heldSceneKey !== sceneKey;
+        run.heldSceneKey = sceneKey;
+        void judgeAndEmit(q, worldRef.current.visitor, scene, now, run, { emitHeld }).finally(() => {
           run.busy = false;
         });
       }
@@ -279,7 +309,13 @@ export function useSimulation() {
           kind: 'reconnect',
           judgment: { fired: false, verdict: 'SYNC', reasoning: `You were offline. ${buffered.length} thing${buffered.length > 1 ? 's' : ''} needed cloud reasoning — catching up.`, steps: buffered.map((b) => `re-checking “${b.q.title}”`) },
         });
-        buffered.forEach((b, i) => setTimeout(() => alive.current && void judgeAndEmit(b.q, b.visitor, b.scene, simMs.current, true), 500 + i * 700));
+        buffered.forEach((b, i) =>
+          setTimeout(() => {
+            if (!alive.current) return;
+            const r = (runs.current[b.q.id] ??= freshRun());
+            void judgeAndEmit(b.q, b.visitor, b.scene, simMs.current, r, { reconnect: true });
+          }, 500 + i * 700),
+        );
       }
       runScheduler(now);
     },
@@ -301,6 +337,30 @@ export function useSimulation() {
     questionsRef.current = questionsRef.current.filter((q) => q.id !== id);
     setQuestions((prev) => prev.filter((q) => q.id !== id));
   }, []);
+
+  /** Edit a cloud watch's capture policy (frame rate / mode) and model — live. */
+  const configureQuestion = useCallback(
+    (id: string, patch: { mode?: RecordPolicy['mode']; every?: string; retain?: number; model?: CloudModel }) => {
+      const apply = (q: Question): Question => {
+        if (q.id !== id || q.compiledSpec.kind !== 'cloud') return q;
+        const rec = q.record ?? defaultRecord(q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0]);
+        const record: RecordPolicy = {
+          ...rec,
+          mode: patch.mode ?? rec.mode,
+          every: patch.every ?? rec.every,
+          retain: patch.retain ?? rec.retain,
+        };
+        const cloud = patch.model ? { ...q.compiledSpec.cloud, model: patch.model } : q.compiledSpec.cloud;
+        return { ...q, record, compiledSpec: { kind: 'cloud', cloud } };
+      };
+      questionsRef.current = questionsRef.current.map(apply);
+      setQuestions((prev) => prev.map(apply));
+      // re-arm so the new rate applies from now, not from a stale last-eval time
+      const r = runs.current[id];
+      if (r) r.lastEvalAt = 0;
+    },
+    [],
+  );
 
   const reset = useCallback(() => {
     runs.current = {};
@@ -344,9 +404,10 @@ export function useSimulation() {
       setLivingTemp,
       setVisitor,
       removeQuestion,
+      configureQuestion,
       reset,
     }),
-    [world, questions, activity, authorPhase, draft, push, running, speed, describe, dismissDraft, jump, setDay, setOnline, setGarageDoor, setTemp, setLivingMotion, setLivingTemp, setVisitor, removeQuestion, reset],
+    [world, questions, activity, authorPhase, draft, push, running, speed, describe, dismissDraft, jump, setDay, setOnline, setGarageDoor, setTemp, setLivingMotion, setLivingTemp, setVisitor, removeQuestion, configureQuestion, reset],
   );
 }
 

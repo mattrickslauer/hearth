@@ -9,7 +9,7 @@
  * situation and explain itself.
  */
 
-import type { CompiledSpec, FirePolicy } from './engine/types';
+import type { CompiledSpec, FirePolicy, RecordPolicy } from './engine/types';
 
 export type ZoneId = 'garage' | 'entry' | 'living';
 
@@ -90,6 +90,8 @@ export interface Question {
   cost: 'none' | 'cloud';
   compiledTo: 'local' | 'cloud_vl';
   compiledSpec: CompiledSpec;
+  /** Capture/sampling policy for cloud watches — the configurable "frame rate". */
+  record?: RecordPolicy;
   evalOn: 'event' | 'interval';
   fire: FirePolicy;
   authoring?: string[]; // the brain's authoring reasoning steps (shown once)

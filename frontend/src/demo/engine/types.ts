@@ -35,11 +35,35 @@ export interface LocalPredicate {
   expr: PredicateNode;
 }
 
+export type CloudModel = 'qwen-vl' | 'qwen-vl-max' | 'qwen-max' | 'qwen-plus';
+
+/** Model catalog the UI offers when you pick which brain runs a cloud check. */
+export const MODELS: { id: CloudModel; label: string; vision: boolean; note: string }[] = [
+  { id: 'qwen-vl', label: 'Qwen-VL', vision: true, note: 'vision · fast · cheap' },
+  { id: 'qwen-vl-max', label: 'Qwen-VL-Max', vision: true, note: 'vision · sharpest eyes' },
+  { id: 'qwen-max', label: 'Qwen-Max', vision: false, note: 'text reasoning · no frames' },
+  { id: 'qwen-plus', label: 'Qwen-Plus', vision: false, note: 'text reasoning · cheapest' },
+];
+
 export interface CloudCheck {
-  model: 'qwen-plus' | 'qwen-max' | 'qwen-vl';
+  model: CloudModel;
   question: string; // the VL / reasoning question
   gate?: PredicateNode; // cheap local precondition before spending a cloud call
-  maxCadence?: Duration; // budget guard
+  maxCadence?: Duration; // hard budget floor — never sample faster than this
+}
+
+/**
+ * A capture policy (`02` Record): how often an input is sampled and how much is
+ * retained. For a camera input this is literally the *frame rate* of the watch —
+ * `interval` mode meters a sample every `every`; `on_event` samples only when the
+ * scene changes, still capped by the cloud check's `maxCadence`.
+ */
+export interface RecordPolicy {
+  inputId: string; // the sampled input (e.g. 'camera.frame')
+  mode: 'interval' | 'on_event';
+  every: Duration; // metered sample rate, e.g. '10s'
+  retain: number; // how many samples to keep
+  transform?: 'raw' | 'crop' | 'downscale' | 'redact'; // privacy / bandwidth
 }
 
 export type CompiledSpec =
@@ -74,5 +98,7 @@ export interface RunState {
   lastFiredAt: number;
   trueSince?: number | null;
   sceneKey?: string; // for cloud re-eval when the scene changes
+  heldSceneKey?: string; // last scene we emitted a non-firing "held" for (feed de-noise)
+  evalCount?: number; // cloud calls this watch has spent (metering visibility)
   busy?: boolean; // a cloud eval is in flight
 }
