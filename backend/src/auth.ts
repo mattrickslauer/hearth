@@ -18,7 +18,7 @@ import nodemailer, { type Transporter } from 'nodemailer';
 
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
 const MAX_ATTEMPTS = 5;
-const SESSION_TTL_MS = 30 * 24 * 60_000; // 30 days
+const SESSION_TTL_SEC = 30 * 24 * 60 * 60; // 30 days (JWT exp, in seconds per RFC 7519)
 
 /* ------------------------------------------------------------------ OTP store */
 
@@ -165,34 +165,81 @@ function safeEqualHex(a: string, b: string): boolean {
 
 /* ------------------------------------------------------------------- sessions */
 
+/**
+ * Session tokens are stateless HS256 JWTs (RFC 7519): base64url(header).base64url(payload).sig.
+ *
+ * Security properties enforced on verify:
+ *   - We ALWAYS verify with HS256 keyed by AUTH_SESSION_SECRET; we never let the
+ *     token's own header pick the algorithm. Plus we assert header.alg === 'HS256',
+ *     so `alg:none` and RS/HS confusion forgeries are rejected.
+ *   - The signature is checked (constant-time) BEFORE any claim is trusted.
+ *   - iss/aud are pinned, exp is enforced, sub must be a non-empty string.
+ *
+ * Stateless ⇒ no revocation before exp; keep the TTL bounded and rotate the secret
+ * to invalidate everything at once. The client also self-expires on exp (see the app).
+ */
+const JWT_ISS = 'hearth';
+const JWT_AUD = 'hearth-app';
+const JWT_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
+
 interface SessionPayload {
   sub: string; // account id
   email: string;
-  iat: number;
-  exp: number;
+  iat: number; // issued-at (seconds since epoch)
+  exp: number; // expiry (seconds since epoch)
 }
 
-function b64url(s: string): string {
-  return Buffer.from(s).toString('base64url');
+function b64urlJson(obj: unknown): string {
+  return Buffer.from(JSON.stringify(obj)).toString('base64url');
+}
+
+function signHs256(signingInput: string): string {
+  return createHmac('sha256', sessionSecret()).update(signingInput).digest('base64url');
 }
 
 export function issueSession(acct: Account): string {
-  const payload: SessionPayload = { sub: acct.id, email: acct.email, iat: Date.now(), exp: Date.now() + SESSION_TTL_MS };
-  const body = b64url(JSON.stringify(payload));
-  const sig = createHmac('sha256', sessionSecret()).update(body).digest('base64url');
-  return `${body}.${sig}`;
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64urlJson(JWT_HEADER);
+  const payload = b64urlJson({
+    sub: acct.id,
+    email: acct.email,
+    iss: JWT_ISS,
+    aud: JWT_AUD,
+    iat: now,
+    exp: now + SESSION_TTL_SEC,
+  });
+  const signingInput = `${header}.${payload}`;
+  return `${signingInput}.${signHs256(signingInput)}`;
 }
 
 export function verifySession(token: string | undefined): SessionPayload | null {
   if (!token) return null;
-  const [body, sig] = token.split('.');
-  if (!body || !sig) return null;
-  const expected = createHmac('sha256', sessionSecret()).update(body).digest('base64url');
-  if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  const [headerB64, payloadB64, sig] = parts;
+
+  // 1) integrity first — constant-time HMAC over header.payload, always HS256.
+  const expected = signHs256(`${headerB64}.${payloadB64}`);
+  if (sig.length !== expected.length || !timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) {
+    return null;
+  }
+
   try {
-    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as SessionPayload;
-    if (Date.now() > payload.exp) return null;
-    return payload;
+    // 2) pin the algorithm (defence-in-depth against alg:none / alg confusion).
+    const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8')) as Record<string, unknown>;
+    if (header.alg !== JWT_HEADER.alg || header.typ !== JWT_HEADER.typ) return null;
+
+    // 3) claims.
+    const p = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as Record<string, unknown>;
+    if (p.iss !== JWT_ISS || p.aud !== JWT_AUD) return null;
+    if (typeof p.sub !== 'string' || !p.sub) return null;
+    if (typeof p.exp !== 'number' || Math.floor(Date.now() / 1000) >= p.exp) return null;
+    return {
+      sub: p.sub,
+      email: typeof p.email === 'string' ? p.email : '',
+      iat: typeof p.iat === 'number' ? p.iat : 0,
+      exp: p.exp,
+    };
   } catch {
     return null;
   }
