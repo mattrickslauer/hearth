@@ -434,6 +434,9 @@ const styles = StyleSheet.create({
   navWrap: {
     paddingTop: Platform.select({ web: Spacing.four, default: Spacing.five }),
     paddingBottom: Spacing.three,
+    // Own stacking context above later sections (hero, etc.) so the account
+    // menu's popover opens over them instead of being painted/clicked through.
+    zIndex: 30,
   },
   nav: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   navRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
