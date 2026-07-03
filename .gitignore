@@ -24,3 +24,6 @@ yarn-error.*
 *.tsbuildinfo
 .vscode/*
 !.vscode/extensions.json
+
+# simulated hub identity
+hub/.sim-hub-state.json

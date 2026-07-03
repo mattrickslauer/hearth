@@ -244,13 +244,22 @@ function safeEqualHex(a: string, b: string): boolean {
  */
 const JWT_ISS = 'hearth';
 const JWT_AUD = 'hearth-app';
+const JWT_AUD_HUB = 'hearth-hub'; // audience for hub (edge-agent) tokens — a distinct identity
 const JWT_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
+const HUB_TOKEN_TTL_SEC = 180 * 24 * 60 * 60; // 180 days; revocation is via the hub-record check on heartbeat
 
 interface SessionPayload {
   sub: string; // account id
   email: string;
   iat: number; // issued-at (seconds since epoch)
   exp: number; // expiry (seconds since epoch)
+}
+
+export interface HubTokenPayload {
+  sub: string; // hub id
+  acc: string; // account id the hub is bound to
+  iat: number;
+  exp: number;
 }
 
 function b64urlJson(obj: unknown): string {
@@ -261,22 +270,20 @@ function signHs256(signingInput: string): string {
   return createHmac('sha256', sessionSecret()).update(signingInput).digest('base64url');
 }
 
-export function issueSession(acct: Account): string {
-  const now = Math.floor(Date.now() / 1000);
+/** Sign an arbitrary claim set as an HS256 JWT with our pinned header. */
+function issueJwt(claims: Record<string, unknown>): string {
   const header = b64urlJson(JWT_HEADER);
-  const payload = b64urlJson({
-    sub: acct.id,
-    email: acct.email,
-    iss: JWT_ISS,
-    aud: JWT_AUD,
-    iat: now,
-    exp: now + SESSION_TTL_SEC,
-  });
+  const payload = b64urlJson({ iss: JWT_ISS, ...claims });
   const signingInput = `${header}.${payload}`;
   return `${signingInput}.${signHs256(signingInput)}`;
 }
 
-export function verifySession(token: string | undefined): SessionPayload | null {
+/**
+ * Verify a token's signature + header + iss/aud/exp, returning the raw claims on
+ * success. Shared by session and hub verification so both get identical hardening:
+ * integrity checked (constant-time) BEFORE claims, algorithm pinned, exp enforced.
+ */
+function verifyJwt(token: string | undefined, aud: string): Record<string, unknown> | null {
   if (!token) return null;
   const parts = token.split('.');
   if (parts.length !== 3) return null;
@@ -293,20 +300,50 @@ export function verifySession(token: string | undefined): SessionPayload | null 
     const header = JSON.parse(Buffer.from(headerB64, 'base64url').toString('utf8')) as Record<string, unknown>;
     if (header.alg !== JWT_HEADER.alg || header.typ !== JWT_HEADER.typ) return null;
 
-    // 3) claims.
+    // 3) issuer / audience / expiry.
     const p = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as Record<string, unknown>;
-    if (p.iss !== JWT_ISS || p.aud !== JWT_AUD) return null;
-    if (typeof p.sub !== 'string' || !p.sub) return null;
+    if (p.iss !== JWT_ISS || p.aud !== aud) return null;
     if (typeof p.exp !== 'number' || Math.floor(Date.now() / 1000) >= p.exp) return null;
-    return {
-      sub: p.sub,
-      email: typeof p.email === 'string' ? p.email : '',
-      iat: typeof p.iat === 'number' ? p.iat : 0,
-      exp: p.exp,
-    };
+    return p;
   } catch {
     return null;
   }
+}
+
+export function issueSession(acct: Account): string {
+  const now = Math.floor(Date.now() / 1000);
+  return issueJwt({ sub: acct.id, email: acct.email, aud: JWT_AUD, iat: now, exp: now + SESSION_TTL_SEC });
+}
+
+export function verifySession(token: string | undefined): SessionPayload | null {
+  const p = verifyJwt(token, JWT_AUD);
+  if (!p) return null;
+  if (typeof p.sub !== 'string' || !p.sub) return null;
+  return {
+    sub: p.sub,
+    email: typeof p.email === 'string' ? p.email : '',
+    iat: typeof p.iat === 'number' ? p.iat : 0,
+    exp: p.exp as number,
+  };
+}
+
+/** A long-lived credential a paired hub presents on every heartbeat / uplink. */
+export function issueHubToken(hubId: string, accountId: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  return issueJwt({ sub: hubId, acc: accountId, aud: JWT_AUD_HUB, iat: now, exp: now + HUB_TOKEN_TTL_SEC });
+}
+
+export function verifyHubToken(token: string | undefined): HubTokenPayload | null {
+  const p = verifyJwt(token, JWT_AUD_HUB);
+  if (!p) return null;
+  if (typeof p.sub !== 'string' || !p.sub) return null;
+  if (typeof p.acc !== 'string' || !p.acc) return null;
+  return { sub: p.sub, acc: p.acc, iat: typeof p.iat === 'number' ? p.iat : 0, exp: p.exp as number };
+}
+
+/** Keyed HMAC-SHA256 (hex) over an arbitrary string — used to store enrollment-token hashes. */
+export function hmacHex(input: string): string {
+  return createHmac('sha256', sessionSecret()).update(input).digest('hex');
 }
 
 /* --------------------------------------------------------------- email (Zepto) */

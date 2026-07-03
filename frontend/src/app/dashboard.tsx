@@ -29,6 +29,7 @@ import {
   type RunEvent,
   type Watch,
 } from '@/lib/home';
+import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 
@@ -76,18 +77,26 @@ export default function DashboardScreen() {
   const [wish, setWish] = useState('');
   const [authoring, setAuthoring] = useState(false);
 
+  const [hubs, setHubs] = useState<HubView[] | null>(null);
+  const [claimCode, setClaimCode] = useState('');
+  const [claiming, setClaiming] = useState(false);
+  const [hubError, setHubError] = useState<string | null>(null);
+  const [hubNotice, setHubNotice] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [h, w, e] = await Promise.all([
+      const [h, w, e, hb] = await Promise.all([
         describeHome(token),
         listWatches(token),
         listEvents(20, token),
+        listHubs(token).catch(() => [] as HubView[]),
       ]);
       setHome(h);
       setWatches(w);
       setEvents(e);
+      setHubs(hb);
       const sensors = h.capabilities.filter((c) => c.kind === 'sensor');
       const pairs = await Promise.all(
         sensors.map(async (c) => [c.id, await readInput(c.id, token).catch(() => null)] as const),
@@ -116,6 +125,35 @@ export default function DashboardScreen() {
       setError((err as Error).message);
     } finally {
       setAuthoring(false);
+    }
+  };
+
+  const submitClaim = async () => {
+    const code = claimCode.trim();
+    if (!code || claiming) return;
+    setClaiming(true);
+    setHubError(null);
+    setHubNotice(null);
+    try {
+      const hub = await claimHub(code, token);
+      setClaimCode('');
+      setHubNotice(`Connected “${hub.name}”. It’ll come online once it checks in.`);
+      await load();
+    } catch (err) {
+      setHubError((err as Error).message);
+    } finally {
+      setClaiming(false);
+    }
+  };
+
+  const removeHub = async (hub: HubView) => {
+    setHubError(null);
+    setHubNotice(null);
+    try {
+      await unpairHub(hub.id, token);
+      setHubs((prev) => (prev ? prev.filter((h) => h.id !== hub.id) : prev));
+    } catch (err) {
+      setHubError((err as Error).message);
     }
   };
 
@@ -163,7 +201,7 @@ export default function DashboardScreen() {
 
           {/* summary chips */}
           <View style={styles.chips}>
-            <Stat theme={theme} value={home?.zones.length ?? '—'} label="zones" />
+            <Stat theme={theme} value={hubs?.length ?? '—'} label="hubs" />
             <Stat theme={theme} value={devices || '—'} label="devices" />
             <Stat theme={theme} value={sensors.length || '—'} label="sensors" />
             <Stat theme={theme} value={watches?.length ?? '—'} label="watches" />
@@ -179,6 +217,83 @@ export default function DashboardScreen() {
               </Text>
             </Card>
           ) : null}
+
+          {/* hubs */}
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>
+              Hubs{hubs ? ` (${hubs.length})` : ''}
+            </Text>
+
+            {hubs && hubs.length ? (
+              <View style={{ gap: Spacing.two }}>
+                {hubs.map((h) => (
+                  <Card key={h.id} style={styles.hubRow}>
+                    <View style={[styles.hubDot, { backgroundColor: h.online ? theme.success : theme.textMuted }]} />
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text style={[styles.hubName, { color: theme.text }]} numberOfLines={1}>
+                        {h.name}
+                      </Text>
+                      <Text style={[styles.hubMeta, { color: theme.textMuted }]} numberOfLines={1}>
+                        {h.online
+                          ? 'Online'
+                          : h.lastSeenAt
+                            ? `Offline · last seen ${ago(h.lastSeenAt)}`
+                            : 'Waiting for first check-in…'}
+                        {h.fw ? ` · fw ${h.fw}` : ''}
+                      </Text>
+                    </View>
+                    <Pressable
+                      onPress={() => removeHub(h)}
+                      style={[styles.unpairBtn, { borderColor: theme.border }]}>
+                      <Text style={[styles.unpairText, { color: theme.textSecondary }]}>Unpair</Text>
+                    </Pressable>
+                  </Card>
+                ))}
+              </View>
+            ) : null}
+
+            <Card glow={!hubs?.length} style={{ gap: Spacing.two }}>
+              <Text style={[styles.cardTitle, { color: theme.text }]}>Connect a hub</Text>
+              <Text style={[styles.hubHint, { color: theme.textSecondary }]}>
+                Power on your Hearth hub and enter the 8-character code it displays.
+              </Text>
+              <View style={[styles.describeRow, { flexDirection: isNarrow ? 'column' : 'row' }]}>
+                <TextInput
+                  value={claimCode}
+                  onChangeText={setClaimCode}
+                  onSubmitEditing={submitClaim}
+                  editable={!claiming}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  placeholder="ABCD-2345"
+                  placeholderTextColor={theme.textMuted}
+                  style={[
+                    styles.input,
+                    styles.codeInput,
+                    { backgroundColor: theme.codeBg, borderColor: theme.borderStrong, color: theme.text },
+                    webNoOutline,
+                  ]}
+                />
+                <Pressable
+                  onPress={submitClaim}
+                  disabled={!claimCode.trim() || claiming}
+                  style={[
+                    styles.authorBtn,
+                    { backgroundColor: claimCode.trim() && !claiming ? theme.ember : theme.backgroundSelected },
+                  ]}>
+                  {claiming ? (
+                    <ActivityIndicator color={theme.onEmber} />
+                  ) : (
+                    <Text style={[styles.authorText, { color: claimCode.trim() ? theme.onEmber : theme.textMuted }]}>
+                      Connect →
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+              {hubError ? <Text style={[styles.hubMsg, { color: theme.info }]}>{hubError}</Text> : null}
+              {hubNotice ? <Text style={[styles.hubMsg, { color: theme.success }]}>{hubNotice}</Text> : null}
+            </Card>
+          </View>
 
           {/* describe a new watch */}
           <Card glow style={{ gap: Spacing.three }}>
@@ -384,6 +499,16 @@ const styles = StyleSheet.create({
   },
   authorBtn: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 22, borderRadius: Radius.pill, minHeight: 46, minWidth: 110 },
   authorText: { fontFamily: Fonts?.sans, fontSize: 15, fontWeight: '700' },
+
+  hubHint: { fontFamily: Fonts?.sans, fontSize: 13.5, lineHeight: 20 },
+  codeInput: { fontFamily: Fonts?.mono, letterSpacing: 2, textTransform: 'uppercase' },
+  hubMsg: { fontFamily: Fonts?.mono, fontSize: 12.5, lineHeight: 18 },
+  hubRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+  hubDot: { width: 10, height: 10, borderRadius: 5 },
+  hubName: { fontFamily: Fonts?.sans, fontSize: 15, fontWeight: '700' },
+  hubMeta: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '600' },
+  unpairBtn: { paddingVertical: 7, paddingHorizontal: 14, borderRadius: Radius.pill, borderWidth: 1 },
+  unpairText: { fontFamily: Fonts?.mono, fontSize: 12, fontWeight: '700' },
 
   section: { gap: Spacing.three },
   sectionTitle: { fontFamily: Fonts?.sans, fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
