@@ -42,10 +42,7 @@ export function AuthMenu({ align = 'right', width = 210 }: { align?: 'left' | 'r
 
           <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
-          {signedIn ? (
-            <Option icon="▦" label="Dashboard" onPress={() => { close(); router.push('/dashboard' as never); }} />
-          ) : null}
-          <Option icon="🏠" label="Home" onPress={() => { close(); router.push('/'); }} />
+          <Option icon="🏠" label="Home" onPress={() => { close(); router.push((signedIn ? '/dashboard' : '/') as never); }} />
           <Option icon="🔥" label="Live demo" onPress={() => { close(); router.push('/demo'); }} />
           <Option icon="↗" label="GitHub" onPress={() => { close(); void Linking.openURL(REPO_URL); }} />
 
