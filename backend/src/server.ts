@@ -1,0 +1,108 @@
+/**
+ * Hearth cloud HTTP server — the Home MCP surface + Qwen orchestration.
+ *
+ * Runs identically on a laptop (`npm run dev`) and on Alibaba Function Compute
+ * (custom runtime, web-server mode: FC forwards HTTP to the port we listen on).
+ *
+ * Routes:
+ *   GET  /health         liveness + which brain/store are active
+ *   GET  /mcp/tools       function-calling catalog (transport-agnostic MCP tools)
+ *   POST /mcp/call        { tool, args } → dispatch a tool
+ *   POST /qwen            { task:"author"|"judge", ... } — parity with the app's route
+ */
+
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+
+import { hasKey, author, judge, type JudgeInput } from './qwen';
+import { makeStore, type HomeStore } from './store';
+import { TOOL_BY_NAME, toolSchemas, type ToolCtx } from './tools';
+
+let storePromise: Promise<HomeStore> | null = null;
+const getStore = () => (storePromise ??= makeStore());
+
+function send(res: ServerResponse, status: number, body: unknown) {
+  const json = JSON.stringify(body);
+  res.writeHead(status, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+  res.end(json);
+}
+
+async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  if (!chunks.length) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    throw new Error('invalid JSON body');
+  }
+}
+
+export async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const path = url.pathname;
+  const method = req.method ?? 'GET';
+
+  if (method === 'OPTIONS') {
+    res.writeHead(204, {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET,POST,OPTIONS',
+      'access-control-allow-headers': 'content-type',
+    });
+    res.end();
+    return;
+  }
+
+  try {
+    if (path === '/health' || path === '/') {
+      return send(res, 200, {
+        ok: true,
+        service: 'hearth-cloud',
+        brain: hasKey() ? 'qwen' : 'mock',
+        store: process.env.HEARTH_STORE === 'tablestore' ? 'tablestore' : 'memory',
+        tools: TOOL_BY_NAME.size,
+      });
+    }
+
+    if (path === '/mcp/tools' && method === 'GET') {
+      return send(res, 200, { tools: toolSchemas() });
+    }
+
+    if (path === '/mcp/call' && method === 'POST') {
+      const body = await readBody(req);
+      const name = String(body.tool ?? '');
+      const tool = TOOL_BY_NAME.get(name);
+      if (!tool) return send(res, 404, { error: `unknown tool: ${name}` });
+      const ctx: ToolCtx = { store: await getStore() };
+      const result = await tool.handler((body.args as Record<string, unknown>) ?? {}, ctx);
+      return send(res, 200, { tool: name, result });
+    }
+
+    if (path === '/qwen' && method === 'POST') {
+      const body = await readBody(req);
+      if (body.task === 'author' && typeof body.wish === 'string') {
+        const { question, engine } = await author(body.wish);
+        return send(res, 200, { question, engine });
+      }
+      if (body.task === 'judge') {
+        const { judgment, engine } = await judge(body as unknown as JudgeInput);
+        return send(res, 200, { judgment, engine });
+      }
+      return send(res, 400, { error: 'unknown task' });
+    }
+
+    return send(res, 404, { error: `not found: ${method} ${path}` });
+  } catch (e) {
+    return send(res, 500, { error: (e as Error).message });
+  }
+}
+
+/** FC custom-runtime + local both boot the same server. */
+export function start(): void {
+  const port = Number(process.env.FC_SERVER_PORT ?? process.env.PORT ?? 9000);
+  createServer(handle).listen(port, () => {
+    console.log(`[hearth-cloud] listening on :${port}  brain=${hasKey() ? 'qwen' : 'mock'}  store=${process.env.HEARTH_STORE ?? 'memory'}`);
+  });
+}
+
+// Boot when run directly (tsx src/server.ts, or `node server.js` on FC).
+start();

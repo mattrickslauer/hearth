@@ -1,0 +1,55 @@
+# Serverless Devs manifest — deploys the Hearth cloud backend to Alibaba
+# Function Compute 3.0 as a custom-runtime web server (FC forwards HTTP to :9000).
+#
+# Prereqs (see backend/README.md):
+#   - Alibaba Cloud account + AccessKey with FC access
+#   - `npm i -g @serverless-devs/s` and `s config add` (or env AccessKey)
+#   - `npm run build`  (produces ./dist/server.js)
+#
+# Deploy:  s deploy
+edition: 3.0.0
+name: hearth-cloud
+access: default
+
+vars:
+  region: ${env.FC_REGION}
+
+resources:
+  hearth-mcp:
+    component: fc3
+    props:
+      region: ${vars.region}
+      functionName: hearth-mcp
+      description: Hearth Home MCP server + Qwen orchestration
+      runtime: custom.debian10
+      code: ./dist
+      cpu: 0.35
+      memorySize: 512
+      diskSize: 512
+      timeout: 60
+      instanceConcurrency: 10
+      customRuntimeConfig:
+        command:
+          - node
+          - server.js
+        port: 9000
+      environmentVariables:
+        # Qwen (Model Studio / DashScope) — the brain. Endpoint per account region.
+        QWEN_API_KEY: ${env.QWEN_API_KEY}
+        QWEN_BASE_URL: ${env.QWEN_BASE_URL}
+        QWEN_MODEL: qwen-plus
+        # Store: 'memory' (default) or 'tablestore'
+        HEARTH_STORE: ${env.HEARTH_STORE}
+        TABLESTORE_ENDPOINT: ${env.TABLESTORE_ENDPOINT}
+        TABLESTORE_INSTANCE: ${env.TABLESTORE_INSTANCE}
+        # Notifications (optional; Telegram needs no Alibaba setup)
+        TELEGRAM_BOT_TOKEN: ${env.TELEGRAM_BOT_TOKEN}
+        TELEGRAM_CHAT_ID: ${env.TELEGRAM_CHAT_ID}
+      triggers:
+        - triggerName: http
+          triggerType: http
+          triggerConfig:
+            authType: anonymous
+            methods:
+              - GET
+              - POST
