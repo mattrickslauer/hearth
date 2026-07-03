@@ -27,8 +27,17 @@ import {
   type AuthDeps,
 } from './auth';
 
-let storePromise: Promise<HomeStore> | null = null;
-const getStore = () => (storePromise ??= makeStore());
+// One home per account (keyed by the session subject). The world MODEL is
+// static; what's per-account is the authored watches, events, and readings.
+const stores = new Map<string, Promise<HomeStore>>();
+const getStoreFor = (accountId: string): Promise<HomeStore> => {
+  let s = stores.get(accountId);
+  if (!s) {
+    s = makeStore();
+    stores.set(accountId, s);
+  }
+  return s;
+};
 
 let authPromise: Promise<AuthDeps> | null = null;
 const accounts = new MemoryAccountStore();
@@ -82,7 +91,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     res.writeHead(204, {
       'access-control-allow-origin': '*',
       'access-control-allow-methods': 'GET,POST,OPTIONS',
-      'access-control-allow-headers': 'content-type',
+      'access-control-allow-headers': 'content-type, authorization',
     });
     res.end();
     return;
@@ -105,12 +114,13 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
 
     if (path === '/mcp/call' && method === 'POST') {
-      if (!requireSession(req, res)) return;
+      const session = requireSession(req, res);
+      if (!session) return;
       const body = await readBody(req);
       const name = String(body.tool ?? '');
       const tool = TOOL_BY_NAME.get(name);
       if (!tool) return send(res, 404, { error: `unknown tool: ${name}` });
-      const ctx: ToolCtx = { store: await getStore() };
+      const ctx: ToolCtx = { store: await getStoreFor(session.sub) };
       const result = await tool.handler((body.args as Record<string, unknown>) ?? {}, ctx);
       return send(res, 200, { tool: name, result });
     }
