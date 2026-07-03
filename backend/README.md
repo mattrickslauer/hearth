@@ -106,17 +106,25 @@ and attempt-limited (5). Session tokens are HMAC-signed (30-day).
 Env (all optional for dev — with none set, the OTP is logged to the server console
 and the flow is fully testable):
 
+Email goes over ZeptoMail **SMTP** (`smtp.zeptomail.com`):
+
 | Var | Purpose |
 |---|---|
-| `ZEPTOMAIL_TOKEN` | ZeptoMail send token (`Zoho-enczapikey …`). Unset → console fallback. |
-| `ZEPTOMAIL_FROM` | sender, default `hearth@agfarms.dev` (must be a verified ZeptoMail sender) |
+| `ZEPTOMAIL_SMTP_PASS` | ZeptoMail SMTP password / send-mail token. Unset → console fallback. |
+| `ZEPTOMAIL_SMTP_USER` | default `emailapikey` |
+| `ZEPTOMAIL_SMTP_HOST` / `_PORT` | default `smtp.zeptomail.com` / `465` (SSL; `587` = STARTTLS) |
+| `ZEPTOMAIL_FROM` | sender, default `hearth@agfarms.dev` (a verified sender on the domain) |
 | `AUTH_SESSION_SECRET` | HMAC secret for session tokens — **set a strong value in prod** |
 | `HEARTH_OTP_STORE` | `memory` (default) or `tablestore` (short-lived NoSQL, per-row TTL) |
 
-To go live: set `ZEPTOMAIL_TOKEN` (+ verify `hearth@agfarms.dev` as a ZeptoMail
-sender for the domain) and `AUTH_SESSION_SECRET`; for durable OTP storage set
-`HEARTH_OTP_STORE=tablestore` and implement `createTablestoreOtpStore()` once a
-Tablestore instance exists.
+Verify the mail path without wiring the whole flow:
+
+```bash
+npm run mail-check you@example.com   # SMTP verify() + one real send
+```
+
+For durable OTP storage set `HEARTH_OTP_STORE=tablestore` and implement
+`createTablestoreOtpStore()` once a Tablestore instance exists.
 
 ## Point the app at it
 

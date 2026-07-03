@@ -14,6 +14,7 @@
  */
 
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import nodemailer, { type Transporter } from 'nodemailer';
 
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
 const MAX_ATTEMPTS = 5;
@@ -179,33 +180,56 @@ export function verifySession(token: string | undefined): SessionPayload | null 
 /* --------------------------------------------------------------- email (Zepto) */
 
 /**
- * Send the OTP via ZeptoMail. With no token set it logs the code to the server
- * console (dev) and reports delivered:false, so the flow is testable end-to-end
- * without the key. Set ZEPTOMAIL_TOKEN + ZEPTOMAIL_FROM to go live.
+ * Send the OTP via ZeptoMail over SMTP (smtp.zeptomail.com). With no SMTP password
+ * set it logs the code to the server console (dev) and reports delivered:false, so
+ * the flow is testable end-to-end without creds. Set ZEPTOMAIL_SMTP_PASS to go live.
+ *
+ * ZeptoMail's SMTP password IS the "send mail token", so the same secret would also
+ * work against the HTTP API (Authorization: Zoho-enczapikey <pass>) if a deploy
+ * target ever blocks outbound SMTP.
  */
+let transporter: Transporter | null = null;
+function smtp(): Transporter | null {
+  const pass = process.env.ZEPTOMAIL_SMTP_PASS;
+  if (!pass) return null;
+  if (!transporter) {
+    const port = Number(process.env.ZEPTOMAIL_SMTP_PORT || 465);
+    transporter = nodemailer.createTransport({
+      host: process.env.ZEPTOMAIL_SMTP_HOST || 'smtp.zeptomail.com',
+      port,
+      secure: port === 465, // 465 = implicit TLS; 587 = STARTTLS
+      auth: { user: process.env.ZEPTOMAIL_SMTP_USER || 'emailapikey', pass },
+    });
+  }
+  return transporter;
+}
+
 export async function sendOtpEmail(email: string, code: string): Promise<{ delivered: boolean; note?: string }> {
-  const token = process.env.ZEPTOMAIL_TOKEN;
   const from = process.env.ZEPTOMAIL_FROM || 'hearth@agfarms.dev';
   const fromName = process.env.ZEPTOMAIL_FROM_NAME || 'Hearth';
-  const url = process.env.ZEPTOMAIL_API_URL || 'https://api.zeptomail.com/v1.1/email';
+  const tx = smtp();
 
-  if (!token) {
-    console.log(`[auth] DEV: OTP for ${email} = ${code} (set ZEPTOMAIL_TOKEN to actually email)`);
-    return { delivered: false, note: 'no ZEPTOMAIL_TOKEN — code logged to server console (dev mode)' };
+  if (!tx) {
+    console.log(`[auth] DEV: OTP for ${email} = ${code} (set ZEPTOMAIL_SMTP_PASS to actually email)`);
+    return { delivered: false, note: 'no ZEPTOMAIL_SMTP_PASS — code logged to server console (dev mode)' };
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Zoho-enczapikey ${token}` },
-    body: JSON.stringify({
-      from: { address: from, name: fromName },
-      to: [{ email_address: { address: email } }],
-      subject: 'Your Hearth sign-in code',
-      htmlbody: `<div style="font-family:system-ui,sans-serif"><p>Your Hearth sign-in code is:</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p style="color:#888">Expires in 10 minutes. If you didn't request this, ignore it.</p></div>`,
-    }),
+  await tx.sendMail({
+    from: { address: from, name: fromName },
+    to: email,
+    subject: 'Your Hearth sign-in code',
+    text: `Your Hearth sign-in code is ${code}. It expires in 10 minutes.`,
+    html: `<div style="font-family:system-ui,sans-serif"><p>Your Hearth sign-in code is:</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p style="color:#888">Expires in 10 minutes. If you didn't request this, ignore it.</p></div>`,
   });
-  if (!res.ok) throw new Error(`zeptomail ${res.status}: ${await res.text()}`);
   return { delivered: true };
+}
+
+/** Validate the SMTP connection/login without sending (nodemailer verify). */
+export async function verifyMailer(): Promise<{ ok: boolean; note: string }> {
+  const tx = smtp();
+  if (!tx) return { ok: false, note: 'no ZEPTOMAIL_SMTP_PASS set (console-fallback mode)' };
+  await tx.verify();
+  return { ok: true, note: `SMTP ready via ${process.env.ZEPTOMAIL_SMTP_HOST || 'smtp.zeptomail.com'}` };
 }
 
 /* ---------------------------------------------------------------- the service */

@@ -66,5 +66,37 @@ ok('actuate returns a shadow-command shape', act.status === 'sent');
 const not = (await call('notify', { channelId: 'expo_push', message: 'hi' })) as { ok: boolean };
 ok('notify returns ok', not.ok === true);
 
+// ---- auth: OTP verify + session (hermetic; email uses console fallback) --------
+const { MemoryOtpStore, MemoryAccountStore, requestOtp, verifyOtp, issueSession, verifySession, normalizeEmail } =
+  await import('../src/auth.ts');
+
+ok('normalizeEmail lowercases + trims', normalizeEmail('  Foo@Bar.COM ') === 'foo@bar.com');
+ok('normalizeEmail rejects junk', normalizeEmail('nope') === null);
+
+const session = issueSession({ id: 'acct-1', email: 'a@b.co', createdAt: 0, lastLoginAt: 0 });
+const decoded = verifySession(session);
+ok('session roundtrips', decoded?.sub === 'acct-1' && decoded?.email === 'a@b.co');
+ok('tampered session rejected', verifySession(session.slice(0, -2) + 'xx') === null);
+ok('missing session rejected', verifySession(undefined) === null);
+
+// full OTP flow: capture the console-logged dev code, then verify
+const authDeps = { otp: new MemoryOtpStore(), accounts: new MemoryAccountStore() };
+let devCode = '';
+const origLog = console.log;
+console.log = (...a: unknown[]) => {
+  const m = a.join(' ').match(/= (\d{6})/);
+  if (m) devCode = m[1];
+};
+const req = await requestOtp(authDeps, 'user@hearth.test');
+console.log = origLog;
+ok('requestOtp ok (dev console fallback)', req.ok === true && req.delivered === false);
+ok('captured a 6-digit dev code', /^\d{6}$/.test(devCode));
+const bad = await verifyOtp(authDeps, 'user@hearth.test', '000000');
+ok('wrong code rejected', bad.ok === false);
+const good = await verifyOtp(authDeps, 'user@hearth.test', devCode);
+ok('correct code → token + account', good.ok === true && !!good.token && good.account?.email === 'user@hearth.test');
+const reuse = await verifyOtp(authDeps, 'user@hearth.test', devCode);
+ok('code is one-time-use', reuse.ok === false);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
