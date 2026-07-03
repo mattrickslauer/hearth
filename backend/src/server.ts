@@ -100,8 +100,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 /** FC custom-runtime + local both boot the same server. */
 export function start(): void {
   const port = Number(process.env.FC_SERVER_PORT ?? process.env.PORT ?? 9000);
-  createServer(handle).listen(port, () => {
-    console.log(`[hearth-cloud] listening on :${port}  brain=${hasKey() ? 'qwen' : 'mock'}  store=${process.env.HEARTH_STORE ?? 'memory'}`);
+  // FC custom-runtime requires binding 0.0.0.0 (not localhost) or requests time out.
+  createServer(handle).listen(port, '0.0.0.0', () => {
+    console.log(`[hearth-cloud] listening on 0.0.0.0:${port}  brain=${hasKey() ? 'qwen' : 'mock'}  store=${process.env.HEARTH_STORE ?? 'memory'}`);
   });
 }
 
