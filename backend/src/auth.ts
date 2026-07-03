@@ -118,7 +118,28 @@ export class MemoryAccountStore implements AccountStore {
 
 /* ---------------------------------------------------------------- code + hash */
 
-const sessionSecret = () => process.env.AUTH_SESSION_SECRET || 'hearth-dev-secret-change-me';
+/**
+ * The HMAC key for session tokens (and OTP hashing). There is NO fallback default:
+ * an unset or weak secret would let anyone forge session tokens for any account, so
+ * we fail loud instead. The same secret is used in dev and prod — set it once in a
+ * gitignored .env (loaded by src/env.ts locally) and reference it in the deploy env
+ * (see s.yaml / backend/README.md).
+ */
+function sessionSecret(): string {
+  const s = process.env.AUTH_SESSION_SECRET;
+  if (typeof s !== 'string' || s.length < 16) {
+    throw new Error(
+      'AUTH_SESSION_SECRET is required (>=16 chars). Set it in backend/.env for local dev ' +
+        'and in the deploy env before deploying — see backend/README.md.',
+    );
+  }
+  return s;
+}
+
+/** Fail fast at startup if the session secret is missing/weak, rather than on first login. */
+export function assertAuthConfig(): void {
+  sessionSecret(); // throws when AUTH_SESSION_SECRET is unset or too short
+}
 
 export function normalizeEmail(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -232,6 +253,36 @@ export async function verifyMailer(): Promise<{ ok: boolean; note: string }> {
   return { ok: true, note: `SMTP ready via ${process.env.ZEPTOMAIL_SMTP_HOST || 'smtp.zeptomail.com'}` };
 }
 
+/* --------------------------------------------------------------- rate limiting */
+
+/**
+ * In-memory sliding-window limiter. Per-instance (consistent with the memory OTP/
+ * account stores) — good enough to blunt email-bombing and slow OTP brute force;
+ * swap for a shared store (Tablestore/Redis) alongside those when they're wired.
+ */
+class RateLimiter {
+  private hits = new Map<string, number[]>();
+  constructor(private max: number, private windowMs: number) {}
+  allow(key: string): boolean {
+    const now = Date.now();
+    const cutoff = now - this.windowMs;
+    const arr = (this.hits.get(key) ?? []).filter((t) => t > cutoff);
+    // bound memory: drop the map wholesale if it grows pathologically (per-instance)
+    if (this.hits.size > 50_000) this.hits.clear();
+    if (arr.length >= this.max) {
+      this.hits.set(key, arr);
+      return false;
+    }
+    arr.push(now);
+    this.hits.set(key, arr);
+    return true;
+  }
+}
+
+// A given email may be sent at most 5 codes / 15 min; a given client IP at most 30 / 15 min.
+const emailOtpLimiter = new RateLimiter(5, 15 * 60_000);
+const ipOtpLimiter = new RateLimiter(30, 15 * 60_000);
+
 /* ---------------------------------------------------------------- the service */
 
 export interface AuthDeps {
@@ -239,10 +290,20 @@ export interface AuthDeps {
   accounts: AccountStore;
 }
 
-/** Request an OTP. Always returns ok (don't leak whether an email is registered). */
-export async function requestOtp(deps: AuthDeps, rawEmail: unknown): Promise<{ ok: boolean; delivered: boolean; note?: string }> {
+/**
+ * Request an OTP. Always returns ok (don't leak whether an email is registered).
+ * Rate-limited per email and per client IP; over the limit we silently skip the
+ * send and return the same positive shape (no oracle) rather than emailing.
+ */
+export async function requestOtp(
+  deps: AuthDeps,
+  rawEmail: unknown,
+  opts: { ip?: string } = {},
+): Promise<{ ok: boolean; delivered: boolean; note?: string }> {
   const email = normalizeEmail(rawEmail);
   if (!email) return { ok: false, delivered: false, note: 'invalid email' };
+  if (opts.ip && !ipOtpLimiter.allow(opts.ip)) return { ok: true, delivered: false };
+  if (!emailOtpLimiter.allow(email)) return { ok: true, delivered: false };
   const code = generateCode();
   await deps.otp.put(email, { codeHash: hashCode(email, code), expiresAt: Date.now() + OTP_TTL_MS, attempts: 0 });
   const sent = await sendOtpEmail(email, code);
