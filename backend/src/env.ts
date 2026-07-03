@@ -1,17 +1,20 @@
 /**
  * Load a local .env into process.env if present (dev only). On Function Compute
- * there is no .env — vars come from s.yaml — and the existsSync guards skip it.
- * Uses Node's built-in loader (no dependency). Import this FIRST, for side effects.
+ * there is no .env — vars come from the platform — and the existsSync guards skip
+ * it. Uses Node's built-in loader (no dependency). Import this FIRST, for side effects.
  *
- * Looks at the repo-root .env (../../.env from src/) and backend/.env (../.env).
+ * Resolved from the working directory (not import.meta.url), so it survives being
+ * bundled to CommonJS by esbuild (where import.meta.url is stubbed out).
  */
 
 import { existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const candidates = [resolve(here, '../../.env'), resolve(here, '../.env')];
+const candidates = [
+  resolve(process.cwd(), '.env'),
+  resolve(process.cwd(), '../.env'),
+  resolve(process.cwd(), '../../.env'),
+];
 
 for (const p of candidates) {
   if (existsSync(p) && typeof process.loadEnvFile === 'function') {

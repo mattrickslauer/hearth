@@ -49,16 +49,37 @@ curl -XPOST localhost:9000/mcp/call -d '{"tool":"suggest_runs","args":{}}'
 
 ## Deploy to Function Compute
 
+Live: **https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run** (region `ap-southeast-1`,
+chosen to colocate with the Singapore-hosted DashScope-Intl backend — see the region
+note below).
+
 ```bash
-npm run build                 # → dist/server.js (single bundle)
 npm i -g @serverless-devs/s   # once
-s config add                  # Alibaba AccessKey
-FC_REGION=us-east-1 QWEN_API_KEY=... s deploy
+s config add                  # once: Alibaba AccessKey (stored in ~/.s/access.yaml)
+
+npm run build                 # → dist/server.cjs (single CommonJS bundle)
+
+# s.yaml reads FC_REGION + QWEN_API_KEY from a project .env via ${env('...')}:
+printf 'FC_REGION=ap-southeast-1\nQWEN_API_KEY=%s\n' "$QWEN_API_KEY" > .env
+
+# fc3 hardcodes the -internal OSS endpoint for code upload (unreachable from outside
+# Alibaba) — force the public one, or the upload times out:
+export FC_CODE_TEMP_OSS_ENDPOINT=oss-ap-southeast-1.aliyuncs.com
+
+s deploy -y
 ```
 
-`s.yaml` provisions an HTTP-triggered custom-runtime function running
-`node server.js` on :9000. The HTTP trigger URL is your judge-accessible
-"Proof of Alibaba Cloud Deployment".
+`s.yaml` provisions an HTTP-triggered custom-runtime function that runs
+`/var/fc/lang/nodejs20/bin/node server.cjs` on `0.0.0.0:9000`. The HTTP trigger URL is
+your judge-accessible "Proof of Alibaba Cloud Deployment".
+
+**Deploy gotchas (all handled in the repo, noted so they're not re-discovered):**
+- `${env.X}` dot-form isn't supported by this `s` build — use `${env('X')}`.
+- `custom.debian10` has node at `/var/fc/lang/nodejs20/bin/node`, not on `$PATH`.
+- Bundle must be CommonJS (`.cjs`) — the FC code dir has no `package.json`.
+- Code upload needs `FC_CODE_TEMP_OSS_ENDPOINT` set to the public OSS endpoint.
+- The trigger is `authType: anonymous` (public) — fine for a judge demo, but anyone
+  with the URL can spend Qwen tokens. Add auth / a rate cap before wider exposure.
 
 ## What's real vs stubbed today
 
