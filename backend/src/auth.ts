@@ -14,6 +14,8 @@
  */
 
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import nodemailer, { type Transporter } from 'nodemailer';
 
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
@@ -114,6 +116,68 @@ export class MemoryAccountStore implements AccountStore {
   async getById(id: string): Promise<Account | null> {
     return this.byId.get(id) ?? null;
   }
+}
+
+/**
+ * File-backed account store — persists accounts to a JSON file so they survive a
+ * backend restart (local dev). Atomic temp-write + rename on every change. Same FC
+ * caveat as FileStore: use Tablestore/a hosted DB for production durability.
+ */
+export class FileAccountStore implements AccountStore {
+  private byEmail = new Map<string, Account>();
+  private byId = new Map<string, Account>();
+  private constructor(private readonly file: string) {}
+
+  static open(file: string): FileAccountStore {
+    const s = new FileAccountStore(file);
+    if (existsSync(file)) {
+      try {
+        for (const a of JSON.parse(readFileSync(file, 'utf8')) as Account[]) {
+          s.byEmail.set(a.email, a);
+          s.byId.set(a.id, a);
+        }
+      } catch {
+        /* corrupt/empty file → start fresh */
+      }
+    }
+    return s;
+  }
+
+  private persist(): void {
+    const dir = dirname(this.file);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, JSON.stringify([...this.byId.values()]));
+    renameSync(tmp, this.file);
+  }
+
+  async upsertByEmail(email: string): Promise<Account> {
+    const now = Date.now();
+    const existing = this.byEmail.get(email);
+    if (existing) {
+      existing.lastLoginAt = now;
+      this.persist();
+      return existing;
+    }
+    const acct: Account = { id: `acct-${now.toString(36)}-${(acctSeq += 1)}`, email, createdAt: now, lastLoginAt: now };
+    this.byEmail.set(email, acct);
+    this.byId.set(acct.id, acct);
+    this.persist();
+    return acct;
+  }
+  async getById(id: string): Promise<Account | null> {
+    return this.byId.get(id) ?? null;
+  }
+}
+
+/** Pick the account store from env: HEARTH_STORE=file → persisted, else in-memory. */
+export function makeAccountStore(): AccountStore {
+  const mode = process.env.HEARTH_ACCOUNT_STORE || process.env.HEARTH_STORE;
+  if (mode === 'file') {
+    const dir = process.env.HEARTH_DATA_DIR || join(process.cwd(), '.data');
+    return FileAccountStore.open(join(dir, 'accounts.json'));
+  }
+  return new MemoryAccountStore();
 }
 
 /* ---------------------------------------------------------------- code + hash */

@@ -18,7 +18,7 @@ import { hasKey, author, judge, type JudgeInput } from './qwen';
 import { makeStore, type HomeStore } from './store';
 import { TOOL_BY_NAME, toolSchemas, type ToolCtx } from './tools';
 import {
-  MemoryAccountStore,
+  makeAccountStore,
   makeOtpStore,
   requestOtp,
   verifyOtp,
@@ -33,14 +33,14 @@ const stores = new Map<string, Promise<HomeStore>>();
 const getStoreFor = (accountId: string): Promise<HomeStore> => {
   let s = stores.get(accountId);
   if (!s) {
-    s = makeStore();
+    s = makeStore(accountId);
     stores.set(accountId, s);
   }
   return s;
 };
 
 let authPromise: Promise<AuthDeps> | null = null;
-const accounts = new MemoryAccountStore();
+const accounts = makeAccountStore();
 const getAuth = (): Promise<AuthDeps> => (authPromise ??= makeOtpStore().then((otp) => ({ otp, accounts })));
 
 function send(res: ServerResponse, status: number, body: unknown) {

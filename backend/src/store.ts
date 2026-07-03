@@ -10,6 +10,9 @@
  * Function Compute over Tablestore.
  */
 
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+
 import {
   CAPABILITIES,
   NODES,
@@ -76,18 +79,55 @@ export function aggregate(readings: Reading[], agg: Agg, windowMs: number, now: 
   return { input: last.input, ts: now, value };
 }
 
-export class MemoryStore implements HomeStore {
-  private readings = new Map<string, Reading[]>();
-  private questions = new Map<string, Question>();
-  private records = new Map<string, RecordPolicy>();
-  private events: RunEventRow[] = [];
+/** Serializable form of a home — what FileStore reads/writes. */
+interface StoreSnapshot {
+  model: HomeModel;
+  questions: Question[];
+  records: RecordPolicy[];
+  events: RunEventRow[];
+  readings: [string, Reading[]][];
+}
 
-  constructor(seed = true) {
+const emptyModel = (): HomeModel => ({ zones: [], nodes: [], capabilities: [] });
+
+export class MemoryStore implements HomeStore {
+  protected model: HomeModel = emptyModel();
+  protected readings = new Map<string, Reading[]>();
+  protected questions = new Map<string, Question>();
+  protected records = new Map<string, RecordPolicy>();
+  protected events: RunEventRow[] = [];
+
+  /**
+   * A new home is EMPTY — no zones, devices, watches, or readings. Pass seed=true
+   * only for the legacy demo world (kept for tests / the judge-accessible path).
+   */
+  constructor(seed = false) {
     if (seed) {
+      this.model = { zones: ZONES, nodes: NODES, capabilities: CAPABILITIES };
       const w = initialWorld();
       const now = Date.now();
       for (const [id, v] of Object.entries(w.sensors)) if (v !== null) this.push(id, v as Scalar, now);
     }
+  }
+
+  /** Persistence hook — a no-op in memory; FileStore overrides it to flush to disk. */
+  protected persist(): void {}
+
+  protected snapshot(): StoreSnapshot {
+    return {
+      model: this.model,
+      questions: [...this.questions.values()],
+      records: [...this.records.values()],
+      events: this.events,
+      readings: [...this.readings.entries()],
+    };
+  }
+  protected restore(s: Partial<StoreSnapshot>): void {
+    this.model = s.model ?? emptyModel();
+    this.questions = new Map((s.questions ?? []).map((q) => [q.id, q]));
+    this.records = new Map((s.records ?? []).map((r) => [r.inputId, r]));
+    this.events = s.events ?? [];
+    this.readings = new Map(s.readings ?? []);
   }
 
   private push(input: string, value: Scalar, ts: number) {
@@ -98,13 +138,14 @@ export class MemoryStore implements HomeStore {
   }
 
   async describeHome(): Promise<HomeModel> {
-    return { zones: ZONES, nodes: NODES, capabilities: CAPABILITIES };
+    return this.model;
   }
   async listInputs(filter?: 'sensor' | 'actuator'): Promise<Capability[]> {
-    return CAPABILITIES.filter((c) => !filter || c.kind === filter);
+    return this.model.capabilities.filter((c) => !filter || c.kind === filter);
   }
   async appendReading(input: string, value: Scalar, ts: number): Promise<void> {
     this.push(input, value, ts);
+    this.persist();
   }
   async readInput(input: string, agg: Agg, windowMs: number, now: number): Promise<Reading | null> {
     return aggregate(this.readings.get(input) ?? [], agg, windowMs, now);
@@ -115,12 +156,14 @@ export class MemoryStore implements HomeStore {
   async putQuestion(q: Question): Promise<void> {
     this.questions.set(q.id, q);
     if (q.record) this.records.set(q.record.inputId, q.record);
+    this.persist();
   }
   async listQuestions(): Promise<Question[]> {
     return [...this.questions.values()];
   }
   async putRecord(policy: RecordPolicy): Promise<void> {
     this.records.set(policy.inputId, policy);
+    this.persist();
   }
   async listRecords(): Promise<RecordPolicy[]> {
     return [...this.records.values()];
@@ -128,9 +171,42 @@ export class MemoryStore implements HomeStore {
   async appendEvent(ev: RunEventRow): Promise<void> {
     this.events.unshift(ev);
     this.events = this.events.slice(0, 500);
+    this.persist();
   }
   async listEvents(limit: number): Promise<RunEventRow[]> {
     return this.events.slice(0, limit);
+  }
+}
+
+/**
+ * File-backed home — one JSON file per account, loaded on open and flushed on every
+ * mutation (atomic temp-write + rename). Zero deps, survives restarts. Local dev only:
+ * on Function Compute's ephemeral/multi-instance disk this does NOT persist — use the
+ * Tablestore adapter (or a hosted DB) for production durability.
+ */
+export class FileStore extends MemoryStore {
+  private constructor(private readonly file: string) {
+    super(false);
+  }
+
+  static open(file: string): FileStore {
+    const s = new FileStore(file);
+    if (existsSync(file)) {
+      try {
+        s.restore(JSON.parse(readFileSync(file, 'utf8')) as Partial<StoreSnapshot>);
+      } catch {
+        /* corrupt/empty file → start fresh */
+      }
+    }
+    return s;
+  }
+
+  protected persist(): void {
+    const dir = dirname(this.file);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const tmp = `${this.file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(this.snapshot()));
+    renameSync(tmp, this.file);
   }
 }
 
@@ -168,15 +244,34 @@ export async function createTablestore(_cfg: TablestoreConfig): Promise<HomeStor
   );
 }
 
-/** Pick the store from env. Defaults to memory so the server always boots. */
-export async function makeStore(): Promise<HomeStore> {
-  if (process.env.HEARTH_STORE === 'tablestore') {
+/** Root dir for file-backed persistence (HEARTH_STORE=file). */
+export function dataDir(): string {
+  return process.env.HEARTH_DATA_DIR || join(process.cwd(), '.data');
+}
+
+/** Filesystem-safe form of an account id (used as a filename). */
+function safeId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_-]/g, '_') || 'default';
+}
+
+/**
+ * Pick the store for an account from env. Each account gets its own home:
+ *   - file       → .data/homes/<account>.json (persists across restarts, local dev)
+ *   - tablestore → Alibaba Tablestore (production; not yet provisioned)
+ *   - default    → in-memory (empty, lost on restart)
+ */
+export async function makeStore(accountId = 'default'): Promise<HomeStore> {
+  const mode = process.env.HEARTH_STORE;
+  if (mode === 'tablestore') {
     return createTablestore({
       endpoint: must('TABLESTORE_ENDPOINT'),
       instance: must('TABLESTORE_INSTANCE'),
       accessKeyId: must('ALI_ACCESS_KEY_ID', 'ALIBABA_ACCESS_KEY_ID'),
       accessKeySecret: must('ALI_ACCESS_KEY_SECRET', 'ALIBABA_ACCESS_KEY_SECRET'),
     });
+  }
+  if (mode === 'file') {
+    return FileStore.open(join(dataDir(), 'homes', `${safeId(accountId)}.json`));
   }
   return new MemoryStore();
 }
