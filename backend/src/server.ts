@@ -17,9 +17,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { hasKey, author, judge, type JudgeInput } from './qwen';
 import { makeStore, type HomeStore } from './store';
 import { TOOL_BY_NAME, toolSchemas, type ToolCtx } from './tools';
+import { MemoryAccountStore, makeOtpStore, requestOtp, verifyOtp, verifySession, type AuthDeps } from './auth';
 
 let storePromise: Promise<HomeStore> | null = null;
 const getStore = () => (storePromise ??= makeStore());
+
+let authPromise: Promise<AuthDeps> | null = null;
+const accounts = new MemoryAccountStore();
+const getAuth = (): Promise<AuthDeps> => (authPromise ??= makeOtpStore().then((otp) => ({ otp, accounts })));
 
 function send(res: ServerResponse, status: number, body: unknown) {
   const json = JSON.stringify(body);
@@ -76,6 +81,27 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const ctx: ToolCtx = { store: await getStore() };
       const result = await tool.handler((body.args as Record<string, unknown>) ?? {}, ctx);
       return send(res, 200, { tool: name, result });
+    }
+
+    if (path === '/auth/request-otp' && method === 'POST') {
+      const body = await readBody(req);
+      const result = await requestOtp(await getAuth(), body.email);
+      return send(res, result.ok ? 200 : 400, result);
+    }
+
+    if (path === '/auth/verify-otp' && method === 'POST') {
+      const body = await readBody(req);
+      const result = await verifyOtp(await getAuth(), body.email, body.code);
+      return send(res, result.ok ? 200 : 401, result);
+    }
+
+    if (path === '/auth/me' && method === 'GET') {
+      const auth = req.headers['authorization'];
+      const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+      const session = verifySession(token);
+      if (!session) return send(res, 401, { error: 'invalid or missing session' });
+      const account = await accounts.getById(session.sub);
+      return send(res, 200, { account: account ?? { id: session.sub, email: session.email } });
     }
 
     if (path === '/qwen' && method === 'POST') {

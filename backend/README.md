@@ -92,6 +92,32 @@ your judge-accessible "Proof of Alibaba Cloud Deployment".
 | `notify` via Telegram | ✅ works with a bot token (no Alibaba needed) |
 | Snapshots (OSS), actuation (IoT shadow) | ⏳ shapes final, `provisioned:false` until account exists |
 
+## Auth (passwordless email OTP)
+
+```
+POST /auth/request-otp  { email }         → emails a 6-digit code (ZeptoMail from hearth@agfarms.dev)
+POST /auth/verify-otp   { email, code }    → { token, account }  (account created on first verify)
+GET  /auth/me           Bearer <token>     → { account }
+```
+
+Codes are held in a short-lived store (TTL ~10 min), stored **hashed**, one-time-use,
+and attempt-limited (5). Session tokens are HMAC-signed (30-day).
+
+Env (all optional for dev — with none set, the OTP is logged to the server console
+and the flow is fully testable):
+
+| Var | Purpose |
+|---|---|
+| `ZEPTOMAIL_TOKEN` | ZeptoMail send token (`Zoho-enczapikey …`). Unset → console fallback. |
+| `ZEPTOMAIL_FROM` | sender, default `hearth@agfarms.dev` (must be a verified ZeptoMail sender) |
+| `AUTH_SESSION_SECRET` | HMAC secret for session tokens — **set a strong value in prod** |
+| `HEARTH_OTP_STORE` | `memory` (default) or `tablestore` (short-lived NoSQL, per-row TTL) |
+
+To go live: set `ZEPTOMAIL_TOKEN` (+ verify `hearth@agfarms.dev` as a ZeptoMail
+sender for the domain) and `AUTH_SESSION_SECRET`; for durable OTP storage set
+`HEARTH_OTP_STORE=tablestore` and implement `createTablestoreOtpStore()` once a
+Tablestore instance exists.
+
 ## Point the app at it
 
 Set the app's `/qwen` calls at this backend (it serves a compatible `POST /qwen`
