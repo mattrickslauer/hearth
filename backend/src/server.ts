@@ -11,6 +11,7 @@
  *   POST /qwen            { task:"author"|"judge", ... } — parity with the app's route
  */
 
+import './env'; // load .env (dev) before anything reads process.env
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 import { hasKey, author, judge, type JudgeInput } from './qwen';

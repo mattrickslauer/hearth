@@ -174,17 +174,20 @@ export async function makeStore(): Promise<HomeStore> {
     return createTablestore({
       endpoint: must('TABLESTORE_ENDPOINT'),
       instance: must('TABLESTORE_INSTANCE'),
-      accessKeyId: must('ALIBABA_ACCESS_KEY_ID'),
-      accessKeySecret: must('ALIBABA_ACCESS_KEY_SECRET'),
+      accessKeyId: must('ALI_ACCESS_KEY_ID', 'ALIBABA_ACCESS_KEY_ID'),
+      accessKeySecret: must('ALI_ACCESS_KEY_SECRET', 'ALIBABA_ACCESS_KEY_SECRET'),
     });
   }
   return new MemoryStore();
 }
 
-function must(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`missing env ${name} (required for HEARTH_STORE=tablestore)`);
-  return v;
+/** First present env var among the given names, else throw with a clear hint. */
+function must(...names: string[]): string {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v) return v;
+  }
+  throw new Error(`missing env ${names.join('/')} (required for HEARTH_STORE=tablestore)`);
 }
 
 export { parseDuration };

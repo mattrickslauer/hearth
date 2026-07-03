@@ -10,13 +10,18 @@ Deployable to **Alibaba Function Compute** (custom runtime, web-server mode). Bo
 on the in-memory store with the deterministic brain, so it runs with **zero setup**;
 add a Qwen key and Tablestore creds to make it real.
 
+The root `.env` (`QWEN_API_KEY`, `ALI_ACCESS_KEY_ID/SECRET`) is auto-loaded by
+`src/env.ts` in dev, so real Qwen is already active locally. On Function Compute
+the same vars come from `s.yaml`.
+
 ## Run locally
 
 ```bash
 cd backend
 npm install
-npm run smoke     # end-to-end: describe_home → author → persist → read  (no creds)
-npm run dev       # http://localhost:9000
+npm run smoke        # hermetic: describe_home → author → persist → read (mock brain, no network)
+npm run qwen-check   # LIVE: real Qwen authors + judges (uses root .env)
+npm run dev          # http://localhost:9000
 ```
 
 Try it:
@@ -30,10 +35,9 @@ curl -XPOST localhost:9000/mcp/call -d '{"tool":"suggest_runs","args":{}}'
 
 ## Make it real (in priority order)
 
-1. **Qwen key** — the one true blocker (INVENTORY: "blocks all interesting work").
-   Set `QWEN_API_KEY` (+ `QWEN_BASE_URL` for your account region: `dashscope-intl`
-   vs `dashscope-us`). Authoring + judging switch from mock to real Qwen instantly;
-   nothing else changes.
+1. **Qwen key** — ✅ done. Present in root `.env`; International region
+   (`dashscope-intl`, the default) verified via `npm run qwen-check`. Authoring +
+   judging are real. Override `QWEN_BASE_URL` only if the account moves to `us`.
 2. **Tablestore** — `npm i tablestore`, set `HEARTH_STORE=tablestore` +
    `TABLESTORE_ENDPOINT`/`TABLESTORE_INSTANCE` + Alibaba AccessKey. Fill
    `createTablestore()` in `src/store.ts` (tables: `twin`, `readings`, `questions`,

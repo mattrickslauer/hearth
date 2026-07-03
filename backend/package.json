@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "smoke": "tsx scripts/smoke.ts",
+    "qwen-check": "tsx scripts/qwen-check.ts",
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs"
   },
