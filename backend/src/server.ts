@@ -82,7 +82,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     res.writeHead(204, {
       'access-control-allow-origin': '*',
       'access-control-allow-methods': 'GET,POST,OPTIONS',
-      'access-control-allow-headers': 'content-type',
+      // MUST include 'authorization' — the app sends Bearer tokens on /auth/me,
+      // /mcp/*, /qwen. Without it the browser's preflight blocks every authed
+      // request, so sessions never rehydrate on refresh.
+      'access-control-allow-headers': 'content-type, authorization',
     });
     res.end();
     return;
