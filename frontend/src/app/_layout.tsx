@@ -35,6 +35,7 @@ export default function RootLayout() {
           }}>
           <Stack.Screen name="index" />
           <Stack.Screen name="demo" />
+          <Stack.Screen name="dashboard" />
           <Stack.Screen name="signin" options={{ presentation: 'modal', animation: 'fade' }} />
         </Stack>
       </ThemeProvider>

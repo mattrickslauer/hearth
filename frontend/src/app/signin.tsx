@@ -45,7 +45,7 @@ export default function SignInScreen() {
     setErr(null);
     const r = await verifyCode(email, code);
     setBusy(false);
-    if (r.ok) done();
+    if (r.ok) router.replace('/dashboard' as never);
     else setErr(r.error ?? 'Incorrect code.');
   };
 

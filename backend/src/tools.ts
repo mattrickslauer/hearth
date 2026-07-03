@@ -102,6 +102,25 @@ export const TOOLS: Tool[] = [
     }),
   },
   {
+    name: 'list_questions',
+    description: 'List the authored Questions (watches) currently deployed on the home.',
+    mode: ['authoring', 'runtime'],
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    handler: (_a, { store }) => store.listQuestions(),
+  },
+  {
+    name: 'list_events',
+    description:
+      'Recent run events (authored / fired / actuate / notify) with reasoning — the home activity feed.',
+    mode: ['authoring', 'runtime'],
+    parameters: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'Max events to return (default 20)' } },
+      additionalProperties: false,
+    },
+    handler: (a, { store }) => store.listEvents(num(a.limit, 20) || 20),
+  },
+  {
     name: 'author_question',
     description:
       'Program synthesis: compile a plain-language wish into a runnable Question (local predicate or cloud/VL check) and persist it. The hero authoring path.',
