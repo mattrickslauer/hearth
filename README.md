@@ -152,13 +152,27 @@ solid. Track: **EdgeAgent**. Deadline: **2026-07-09**.
 ## Running the app
 
 The `frontend/` directory is the Hearth app — an [Expo](https://expo.dev) (React Native + web)
-project. The landing page is live; the browser-runnable simulated-home demo is next.
+project. Both the landing page **and** the browser-runnable simulated-home demo (`/demo`) are live.
 
 ```bash
 cd frontend
 npm install
 npm run web      # or: npm run ios / npm run android
 ```
+
+### The `/demo` — a home you set up by talking
+
+Open `/demo`: describe a watch in plain words and it compiles against real node capabilities;
+then *poke the world* (day↔night, open the garage, drop the temperature, send someone to the
+door, kill the network). Watches that are plain thresholds run locally on the hub — free, and
+they keep firing offline; watches that need judgement (an unfamiliar face) reason in the cloud
+with Qwen-VL. Every one of them explains itself, and raw frames never leave the hub.
+
+**Qwen wiring.** Out of the box the "brain" is a deterministic in-browser mock, so the demo runs
+with zero setup. The authoring + judgement calls are already routed through a key-holding server
+proxy (`src/app/qwen+api.ts`, requires `web.output: "server"`), so to make them *real*: copy
+`frontend/.env.example` → `.env`, set `QWEN_API_KEY`, and set `EXPO_PUBLIC_USE_QWEN=1`. Same JSON
+shapes, now produced by Qwen Cloud.
 
 ## License
 

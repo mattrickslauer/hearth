@@ -54,10 +54,9 @@ export function GlowOrb({
         style={[
           { width: size, height: size, borderRadius: size / 2 },
           {
-            // @ts-expect-error web-only style
             backgroundImage: `radial-gradient(closest-side, ${color}, transparent)`,
             opacity: intensity,
-          },
+          } as object,
           style,
         ]}
       />

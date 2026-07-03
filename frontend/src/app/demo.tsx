@@ -1,52 +1,89 @@
-import { useRouter } from 'expo-router';
-import { StyleSheet, Text, View } from 'react-native';
+import { Platform, ScrollView, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { FlameMark } from '@/components/landing/flame-mark';
-import { EmberButton, GlowOrb, Pill, Wordmark } from '@/components/landing/ui';
-import { Fonts, Spacing } from '@/constants/theme';
+import { ActivityFeed } from '@/components/demo/activity-feed';
+import { DescribeConsole } from '@/components/demo/describe-console';
+import { FloorPlan } from '@/components/demo/floor-plan';
+import { HomeView } from '@/components/demo/home-view';
+import { PushToast } from '@/components/demo/push-toast';
+import { TopBar } from '@/components/demo/top-bar';
+import { GlowOrb } from '@/components/landing/ui';
+import { Spacing } from '@/constants/theme';
+import { useSimulation } from '@/demo/use-simulation';
 import { useTheme } from '@/hooks/use-theme';
+
+const LEFT_W = 360;
+const RIGHT_W = 360;
+const GUT = Spacing.four;
 
 export default function DemoScreen() {
   const theme = useTheme();
-  const router = useRouter();
+  const sim = useSimulation();
+  const { width } = useWindowDimensions();
+
+  // Overlay ("HUD") layout needs room for both side panels + a legible home.
+  const overlay = width >= 1120;
+  const isDark = theme.background === '#12100D';
+  const fullHeight = Platform.OS === 'web' ? ({ height: '100vh' } as object) : null;
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: theme.background }}>
-      <View style={styles.center}>
-        <GlowOrb size={520} color={theme.emberGlow} style={styles.glow} />
-        <View style={{ alignItems: 'center', gap: Spacing.four, maxWidth: 480 }}>
-          <FlameMark size={52} />
-          <Pill dotColor={theme.warn}>Simulated home · coming online</Pill>
-          <Text style={[styles.title, { color: theme.text }]}>The live demo lands here.</Text>
-          <Text style={[styles.body, { color: theme.textSecondary }]}>
-            This is where the browser-runnable Hearth demo will live: a simulated home with zones,
-            sensors and actuators — describe something in plain words and watch Qwen wire it up, turn
-            the world past dark, and see a deployment fire. No hardware required.
-          </Text>
-          <View style={{ marginTop: Spacing.two }}>
-            <EmberButton label="Back to the landing" trailing="←" variant="ghost" size="lg" onPress={() => router.back()} />
+    <SafeAreaView style={[{ flex: 1, backgroundColor: theme.background }, fullHeight]}>
+      <TopBar sim={sim} compact={!overlay} />
+
+      {overlay ? (
+        <View style={styles.stage}>
+          <GlowOrb size={620} color={theme.emberGlow} intensity={isDark ? 0.9 : 0.6} style={styles.glow} />
+
+          {/* the home — a birds-eye floor plan the panels float over */}
+          <View style={styles.homeWrap}>
+            <FloorPlan sim={sim} />
           </View>
+
+          {/* floating overlays */}
+          <View style={[styles.panel, styles.leftPanel]}>
+            <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false} contentContainerStyle={styles.panelScroll}>
+              <DescribeConsole sim={sim} />
+            </ScrollView>
+          </View>
+
+          <View style={[styles.panel, styles.rightPanel]}>
+            <ScrollView style={styles.scroll} showsVerticalScrollIndicator={false} contentContainerStyle={styles.panelScroll}>
+              <ActivityFeed events={sim.activity} />
+            </ScrollView>
+          </View>
+
+          <PushToast text={sim.push?.text ?? null} />
         </View>
-        <View style={styles.foot}>
-          <Wordmark size={18} />
+      ) : (
+        // Narrow fallback: stacked + scrollable (settings still live in the TopBar).
+        <View style={{ flex: 1 }}>
+          <ScrollView
+            contentContainerStyle={{ padding: GUT, gap: GUT, paddingBottom: Spacing.six }}
+            showsVerticalScrollIndicator={false}>
+            <DescribeConsole sim={sim} />
+            <HomeView world={sim.world} />
+            <ActivityFeed events={sim.activity} />
+          </ScrollView>
+          <PushToast text={sim.push?.text ?? null} />
         </View>
-      </View>
+      )}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.four },
-  glow: { position: 'absolute', top: '18%' },
-  title: {
-    fontFamily: Fonts?.sans,
-    fontSize: 32,
-    lineHeight: 38,
-    fontWeight: '800',
-    letterSpacing: -0.8,
-    textAlign: 'center',
+  stage: { flex: 1, position: 'relative', overflow: 'hidden' },
+  scroll: { flex: 1 },
+  glow: { position: 'absolute', top: -160, alignSelf: 'center' },
+  homeWrap: {
+    position: 'absolute',
+    top: GUT,
+    bottom: GUT,
+    left: LEFT_W + GUT * 2,
+    right: RIGHT_W + GUT * 2,
   },
-  body: { fontFamily: Fonts?.sans, fontSize: 16, lineHeight: 25, textAlign: 'center' },
-  foot: { position: 'absolute', bottom: Spacing.five, alignItems: 'center' },
+  panel: { position: 'absolute', top: GUT, bottom: GUT },
+  leftPanel: { left: GUT, width: LEFT_W },
+  rightPanel: { right: GUT, width: RIGHT_W },
+  panelScroll: { paddingBottom: Spacing.two },
 });
