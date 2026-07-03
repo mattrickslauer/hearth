@@ -4,6 +4,9 @@
  * the cloud deploy will run unchanged (with Qwen + Tablestore swapped in).
  */
 
+// Auth has no fallback secret — give the hermetic run a fixed one (a real env wins).
+process.env.AUTH_SESSION_SECRET ??= 'smoke-test-session-secret-0123456789';
+
 import { MemoryStore } from '../src/store.ts';
 import { TOOL_BY_NAME, type ToolCtx } from '../src/tools.ts';
 

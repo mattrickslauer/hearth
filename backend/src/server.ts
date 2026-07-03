@@ -17,7 +17,15 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { hasKey, author, judge, type JudgeInput } from './qwen';
 import { makeStore, type HomeStore } from './store';
 import { TOOL_BY_NAME, toolSchemas, type ToolCtx } from './tools';
-import { MemoryAccountStore, makeOtpStore, requestOtp, verifyOtp, verifySession, type AuthDeps } from './auth';
+import {
+  MemoryAccountStore,
+  makeOtpStore,
+  requestOtp,
+  verifyOtp,
+  verifySession,
+  assertAuthConfig,
+  type AuthDeps,
+} from './auth';
 
 let storePromise: Promise<HomeStore> | null = null;
 const getStore = () => (storePromise ??= makeStore());
@@ -30,6 +38,28 @@ function send(res: ServerResponse, status: number, body: unknown) {
   const json = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
   res.end(json);
+}
+
+function bearer(req: IncomingMessage): string | undefined {
+  const auth = req.headers['authorization'];
+  return typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
+}
+
+/** Verify the session; on failure send 401 and return null so the caller returns early. */
+function requireSession(req: IncomingMessage, res: ServerResponse) {
+  const session = verifySession(bearer(req));
+  if (!session) {
+    send(res, 401, { error: 'authentication required' });
+    return null;
+  }
+  return session;
+}
+
+/** Best-effort client IP (behind the FC HTTP trigger, x-forwarded-for carries it). */
+function clientIp(req: IncomingMessage): string | undefined {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string' && xff) return xff.split(',')[0].trim();
+  return req.socket?.remoteAddress ?? undefined;
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -70,10 +100,12 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
 
     if (path === '/mcp/tools' && method === 'GET') {
+      if (!requireSession(req, res)) return;
       return send(res, 200, { tools: toolSchemas() });
     }
 
     if (path === '/mcp/call' && method === 'POST') {
+      if (!requireSession(req, res)) return;
       const body = await readBody(req);
       const name = String(body.tool ?? '');
       const tool = TOOL_BY_NAME.get(name);
@@ -85,7 +117,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 
     if (path === '/auth/request-otp' && method === 'POST') {
       const body = await readBody(req);
-      const result = await requestOtp(await getAuth(), body.email);
+      const result = await requestOtp(await getAuth(), body.email, { ip: clientIp(req) });
       return send(res, result.ok ? 200 : 400, result);
     }
 
@@ -96,15 +128,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     }
 
     if (path === '/auth/me' && method === 'GET') {
-      const auth = req.headers['authorization'];
-      const token = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
-      const session = verifySession(token);
-      if (!session) return send(res, 401, { error: 'invalid or missing session' });
+      const session = requireSession(req, res);
+      if (!session) return;
       const account = await accounts.getById(session.sub);
       return send(res, 200, { account: account ?? { id: session.sub, email: session.email } });
     }
 
     if (path === '/qwen' && method === 'POST') {
+      if (!requireSession(req, res)) return;
       const body = await readBody(req);
       if (body.task === 'author' && typeof body.wish === 'string') {
         const { question, engine } = await author(body.wish);
@@ -125,6 +156,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 
 /** FC custom-runtime + local both boot the same server. */
 export function start(): void {
+  assertAuthConfig(); // fail loud at boot if AUTH_SESSION_SECRET is missing/weak
   const port = Number(process.env.FC_SERVER_PORT ?? process.env.PORT ?? 9000);
   // FC custom-runtime requires binding 0.0.0.0 (not localhost) or requests time out.
   createServer(handle).listen(port, '0.0.0.0', () => {

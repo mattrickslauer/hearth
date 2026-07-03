@@ -7,11 +7,16 @@
 #   - `npm run build`  (produces ./dist/server.js)
 #
 # Serverless Devs errors on ANY unresolved ${env.X}, so this file references only
-# the two vars a deploy truly needs — FC_REGION and QWEN_API_KEY. Everything else
-# has a safe default in the server code (QWEN_BASE_URL→intl, HEARTH_STORE→memory);
-# add those envs here only once you actually wire Tablestore / Telegram.
+# the vars a deploy truly needs — QWEN_API_KEY and AUTH_SESSION_SECRET (the server
+# refuses to boot without the latter). Everything else has a safe default in the
+# server code (QWEN_BASE_URL→intl, HEARTH_STORE→memory); add those envs here only
+# once you actually wire Tablestore / Telegram.
 #
-# Deploy:  FC_REGION=us-west-1 QWEN_API_KEY=... s deploy
+# AUTH_SESSION_SECRET must be the SAME value as backend/.env (gitignored). Easiest:
+#   set -a; . ./.env; set +a; QWEN_API_KEY=... s deploy
+# so the secret is sourced from .env and never lands in this committed file.
+#
+# Deploy:  set -a; . ./.env; set +a; QWEN_API_KEY=... s deploy
 edition: 3.0.0
 name: hearth-cloud
 access: default
@@ -46,6 +51,9 @@ resources:
         # International endpoint in code; override it here only for a US-region account.
         QWEN_API_KEY: ${env('QWEN_API_KEY')}
         QWEN_MODEL: qwen-plus
+        # HMAC secret for session tokens — REQUIRED (no fallback). Sourced from the
+        # deploy env; keep it identical to backend/.env. See the deploy note above.
+        AUTH_SESSION_SECRET: ${env('AUTH_SESSION_SECRET')}
         # To go beyond in-memory, add here once wired:
         #   HEARTH_STORE: tablestore
         #   TABLESTORE_ENDPOINT / TABLESTORE_INSTANCE
