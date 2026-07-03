@@ -286,6 +286,7 @@ export function SectionHeading({
   maxWidth?: number;
 }) {
   const theme = useTheme();
+  const { isNarrow } = useResponsive();
   const centered = align === 'center';
   return (
     <View style={{ alignItems: centered ? 'center' : 'flex-start', maxWidth, gap: Spacing.three }}>
@@ -293,6 +294,7 @@ export function SectionHeading({
       <Text
         style={[
           styles.heading,
+          isNarrow && { fontSize: 29, lineHeight: 34, letterSpacing: -0.5 },
           { color: theme.text, textAlign: centered ? 'center' : 'left' },
         ]}>
         {title}
@@ -302,6 +304,7 @@ export function SectionHeading({
         <Text
           style={[
             styles.subtitle,
+            isNarrow && { fontSize: 16, lineHeight: 24 },
             { color: theme.textSecondary, textAlign: centered ? 'center' : 'left' },
           ]}>
           {subtitle}

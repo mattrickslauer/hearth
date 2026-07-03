@@ -10,6 +10,7 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AuthMenu } from '@/components/auth-menu';
 import { ArchDiagram } from '@/components/landing/arch-diagram';
@@ -75,6 +76,7 @@ const OLD_WAY = [
 export default function HomeScreen() {
   const theme = useTheme();
   const { isWide, isNarrow, gutter } = useResponsive();
+  const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const [reasonY, setReasonY] = useState(0);
 
@@ -85,6 +87,7 @@ export default function HomeScreen() {
   const h1lh = h1 + 6;
   const bandPad = isWide ? Spacing.six : Spacing.five;
   const isDark = theme.background === '#12100D';
+  const navPadTop = (Platform.OS === 'web' ? Spacing.four : Spacing.five) + insets.top;
 
   const content = {
     width: '100%' as const,
@@ -100,26 +103,40 @@ export default function HomeScreen() {
       contentContainerStyle={{ backgroundColor: theme.background }}
       showsVerticalScrollIndicator={false}>
       {/* ============================================================ NAV */}
-      <View style={[pad, styles.navWrap]}>
+      <View style={[pad, styles.navWrap, { paddingTop: navPadTop }]}>
         <View style={[content, styles.nav]}>
-          <Wordmark size={26} />
+          <Wordmark size={isNarrow ? 22 : 26} />
           <View style={styles.navRight}>
             {isWide ? (
               <Pill dotColor={theme.ember} tone="ember">
                 Built on Qwen Cloud
               </Pill>
             ) : null}
-            <EmberButton label="Live demo" trailing="→" href="/demo" />
+            {!isNarrow ? <EmberButton label="Live demo" trailing="→" href="/demo" /> : null}
             <AuthMenu align="right" width={210} />
           </View>
         </View>
       </View>
 
       {/* =========================================================== HERO */}
-      <View style={[pad, { paddingTop: isWide ? Spacing.five : Spacing.four, paddingBottom: bandPad }]}>
+      <View
+        style={[
+          pad,
+          { paddingTop: isWide ? Spacing.five : Spacing.four, paddingBottom: bandPad, overflow: 'hidden' },
+        ]}>
         {/* ambient ember glows */}
-        <GlowOrb size={620} color={theme.emberGlow} intensity={isDark ? 1 : 0.85} style={styles.heroGlowA} />
-        <GlowOrb size={420} color={theme.emberGlow} intensity={isDark ? 0.9 : 0.6} style={styles.heroGlowB} />
+        <GlowOrb
+          size={isNarrow ? 380 : 620}
+          color={theme.emberGlow}
+          intensity={isDark ? 1 : 0.85}
+          style={styles.heroGlowA}
+        />
+        <GlowOrb
+          size={isNarrow ? 260 : 420}
+          color={theme.emberGlow}
+          intensity={isDark ? 0.9 : 0.6}
+          style={styles.heroGlowB}
+        />
 
         <View
           style={[
@@ -316,7 +333,11 @@ export default function HomeScreen() {
             subtitle="The agent loop runs on your hub, so raw video and audio stay put. Only a minimized, redacted payload is ever sent — and only when something actually happens."
             maxWidth={720}
           />
-          <View style={[styles.privacyRow, { flexDirection: isNarrow ? 'column' : 'row' }]}>
+          <View
+            style={[
+              styles.privacyRow,
+              { flexDirection: isNarrow ? 'column' : 'row', alignItems: isNarrow ? 'stretch' : 'center' },
+            ]}>
             <Card style={{ flex: 1 }}>
               <View style={styles.privacyHead}>
                 <Text style={{ fontSize: 16 }}>🎥</Text>

@@ -5,6 +5,7 @@ import { ActivityFeed } from '@/components/demo/activity-feed';
 import { DescribeConsole } from '@/components/demo/describe-console';
 import { FloorPlan } from '@/components/demo/floor-plan';
 import { HomeView } from '@/components/demo/home-view';
+import { MobileDemo } from '@/components/demo/mobile-demo';
 import { PushToast } from '@/components/demo/push-toast';
 import { TopBar } from '@/components/demo/top-bar';
 import { GlowOrb } from '@/components/landing/ui';
@@ -21,10 +22,14 @@ export default function DemoScreen() {
   const sim = useSimulation();
   const { width } = useWindowDimensions();
 
+  // Phone: full-screen floor plan + a tap-toggle bottom sheet.
+  const mobile = width < 760;
   // Overlay ("HUD") layout needs room for both side panels + a legible home.
   const overlay = width >= 1120;
   const isDark = theme.background === '#12100D';
   const fullHeight = Platform.OS === 'web' ? ({ height: '100vh' } as object) : null;
+
+  if (mobile) return <MobileDemo sim={sim} />;
 
   return (
     <SafeAreaView style={[{ flex: 1, backgroundColor: theme.background }, fullHeight]}>

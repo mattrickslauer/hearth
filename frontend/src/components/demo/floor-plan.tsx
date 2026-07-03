@@ -32,13 +32,39 @@ const PLACE: Record<string, Pos> = {
   'entry.lcd': { left: '34%', top: '74%' },
 };
 
+// Portrait / phone: rooms stacked full-width, devices spread along a row.
+const STACKED_ROOMS: Record<'living' | 'garage' | 'entry', Rect> = {
+  living: { left: '2%', top: '1.5%', width: '96%', height: '31%' },
+  garage: { left: '2%', top: '34%', width: '96%', height: '30%' },
+  entry: { left: '2%', top: '65.5%', width: '96%', height: '33%' },
+};
+
+const STACKED_PLACE: Record<string, Pos> = {
+  'living.light': { left: '10%', top: '44%' },
+  'living.thermostat': { left: '42%', top: '44%' },
+  'living.temp': { left: '73%', top: '44%' },
+  'garage.door': { left: '10%', top: '42%' },
+  'garage.temp': { left: '42%', top: '42%' },
+  'garage.heater': { left: '73%', top: '42%' },
+  'camera.frame': { left: '9%', top: '26%' },
+  'entry.pan': { left: '40%', top: '26%' },
+  'entry.presence': { left: '70%', top: '26%' },
+  'entry.rfid': { left: '24%', top: '56%' },
+  'entry.lcd': { left: '58%', top: '56%' },
+};
+
 /** A top-down, Sims-style view of the home. Rooms are spatial; devices sit
  *  where they'd physically live and light up with their live state. Tap a room
- *  to poke it (open the garage, move in the living room, cycle who's at the door). */
-export function FloorPlan({ sim }: { sim: Simulation }) {
+ *  to poke it (open the garage, move in the living room, cycle who's at the door).
+ *  `stacked` reflows to a vertical, portrait-friendly layout for phones. */
+export function FloorPlan({ sim, stacked }: { sim: Simulation; stacked?: boolean }) {
   const theme = useTheme();
   const { world } = sim;
   const night = world.timeOfDay === 'night';
+  const rooms = stacked ? STACKED_ROOMS : ROOMS;
+  const place = stacked ? STACKED_PLACE : PLACE;
+  const livingAvatar: Pos = stacked ? { left: '10%', top: '62%' } : { left: '30%', top: '58%' };
+  const entryAvatar: Pos = stacked ? { left: '44%', top: '2%' } : { left: '36%', top: '2%' };
 
   const cycleVisitor = () => {
     const order = [null, ...VISITORS];
@@ -58,7 +84,13 @@ export function FloorPlan({ sim }: { sim: Simulation }) {
       />
 
       {/* status pill */}
-      <View style={[styles.status, { backgroundColor: night ? 'rgba(0,0,0,0.4)' : theme.card, borderColor: theme.border }]}>
+      <View
+        style={[
+          styles.status,
+          stacked ? { alignSelf: 'flex-end', right: Spacing.three } : { alignSelf: 'center' },
+          { backgroundColor: night ? 'rgba(0,0,0,0.4)' : theme.card, borderColor: theme.border },
+        ]}>
+
         <Text style={[styles.clock, { color: night ? '#E7E2D8' : theme.text }]}>
           {night ? '🌙' : '☀️'} {formatClock(world.clock)}
         </Text>
@@ -68,7 +100,7 @@ export function FloorPlan({ sim }: { sim: Simulation }) {
       </View>
 
       <Room
-        rect={ROOMS.living}
+        rect={rooms.living}
         name="Living room"
         icon="🛋"
         hint="tap: toggle motion"
@@ -76,14 +108,14 @@ export function FloorPlan({ sim }: { sim: Simulation }) {
         wall={wall}
         bg={roomBg}
         onPress={() => sim.setLivingMotion(!world.sensors['living.motion'])}>
-        {world.sensors['living.motion'] ? <Avatar emoji="🧍" pos={{ left: '30%', top: '58%' }} label="motion" theme={theme} /> : null}
+        {world.sensors['living.motion'] ? <Avatar emoji="🧍" pos={livingAvatar} label="motion" theme={theme} /> : null}
         {['living.light', 'living.thermostat', 'living.temp'].map((id) => (
-          <Device key={id} cap={capability(id)!} world={world} night={night} />
+          <Device key={id} cap={capability(id)!} world={world} night={night} pos={place[id]} />
         ))}
       </Room>
 
       <Room
-        rect={ROOMS.garage}
+        rect={rooms.garage}
         name="Garage"
         icon="🚗"
         hint="tap: open / close door"
@@ -92,12 +124,12 @@ export function FloorPlan({ sim }: { sim: Simulation }) {
         bg={roomBg}
         onPress={() => sim.setGarageDoor(world.sensors['garage.door'] !== 'open')}>
         {['garage.door', 'garage.temp', 'garage.heater'].map((id) => (
-          <Device key={id} cap={capability(id)!} world={world} night={night} />
+          <Device key={id} cap={capability(id)!} world={world} night={night} pos={place[id]} />
         ))}
       </Room>
 
       <Room
-        rect={ROOMS.entry}
+        rect={rooms.entry}
         name="Front door"
         icon="🚪"
         hint="tap: cycle visitor"
@@ -105,9 +137,9 @@ export function FloorPlan({ sim }: { sim: Simulation }) {
         wall={wall}
         bg={roomBg}
         onPress={cycleVisitor}>
-        {world.visitor ? <Avatar emoji={world.visitor.emoji} pos={{ left: '36%', top: '2%' }} label={world.visitor.label} theme={theme} /> : null}
+        {world.visitor ? <Avatar emoji={world.visitor.emoji} pos={entryAvatar} label={world.visitor.label} theme={theme} /> : null}
         {['camera.frame', 'entry.pan', 'entry.presence', 'entry.rfid', 'entry.lcd'].map((id) => (
-          <Device key={id} cap={capability(id)!} world={world} night={night} />
+          <Device key={id} cap={capability(id)!} world={world} night={night} pos={place[id]} />
         ))}
       </Room>
     </View>
@@ -148,9 +180,8 @@ function Room({
   );
 }
 
-function Device({ cap, world, night }: { cap: Capability; world: WorldState; night: boolean }) {
+function Device({ cap, world, night, pos }: { cap: Capability; world: WorldState; night: boolean; pos?: Pos }) {
   const theme = useTheme();
-  const pos = PLACE[cap.id];
   if (!pos) return null;
   const { text, tone } = readCapability(cap, world);
   const active = cap.kind === 'actuator' && isActuatorActive(cap.id, world);
