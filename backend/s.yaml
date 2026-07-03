@@ -22,7 +22,12 @@ name: hearth-cloud
 access: default
 
 vars:
-  region: ${env('FC_REGION')}
+  # Hardcoded (not ${env('FC_REGION')}): FC_REGION is a RESERVED var that Function
+  # Compute injects at runtime, and the fc3 uploader treats "process.env.FC_REGION
+  # === region" as "I'm running inside FC" → switches code upload to the VPC-only
+  # oss-*-internal endpoint, which times out from a laptop. Setting FC_REGION to
+  # satisfy this file is exactly what broke `s deploy`. Keep it out of the env.
+  region: ap-southeast-1
 
 resources:
   hearth-mcp:
