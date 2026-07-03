@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Wordmark } from '@/components/landing/ui';
-import { useAuth } from '@/auth/context';
+import { AuthMenu } from '@/components/auth-menu';
 import type { Simulation } from '@/demo/use-simulation';
 import { SPEEDS } from '@/demo/use-simulation';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
@@ -115,25 +115,8 @@ export function TopBar({ sim, compact }: { sim: Simulation; compact?: boolean })
         <Text style={[styles.resetText, { color: theme.textSecondary }]}>reset ↺</Text>
       </Pressable>
 
-      <AuthPill />
+      <AuthMenu align="right" width={210} />
     </View>
-  );
-}
-
-/** Non-blocking account affordance: "Sign in" for guests, the account when signed in. */
-function AuthPill() {
-  const theme = useTheme();
-  const router = useRouter();
-  const { status, account } = useAuth();
-  const label = status === 'signedIn' ? (account?.email?.split('@')[0] ?? 'Account') : 'Sign in';
-  return (
-    <Pressable
-      onPress={() => router.push('/signin')}
-      hitSlop={6}
-      style={[styles.auth, { borderColor: status === 'signedIn' ? theme.ember : theme.border, backgroundColor: status === 'signedIn' ? theme.emberGlow : 'transparent' }]}>
-      <Text style={[styles.authIcon, { color: status === 'signedIn' ? theme.ember : theme.textSecondary }]}>{status === 'signedIn' ? '●' : '○'}</Text>
-      <Text style={[styles.authText, { color: status === 'signedIn' ? theme.ember : theme.textSecondary }]} numberOfLines={1}>{label}</Text>
-    </Pressable>
   );
 }
 
@@ -185,9 +168,6 @@ const styles = StyleSheet.create({
   settings: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: Spacing.two, justifyContent: 'center', flexWrap: 'wrap' },
   reset: { paddingVertical: 7, paddingHorizontal: 12, borderRadius: Radius.pill, borderWidth: 1 },
   resetText: { fontFamily: Fonts?.mono, fontSize: 12, fontWeight: '700' },
-  auth: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 7, paddingHorizontal: 12, borderRadius: Radius.pill, borderWidth: 1, maxWidth: 160 },
-  authIcon: { fontSize: 9 },
-  authText: { fontFamily: Fonts?.mono, fontSize: 12, fontWeight: '700' },
   time: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   play: { width: 30, height: 30, borderRadius: Radius.sm, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   speedRow: { flexDirection: 'row', borderRadius: Radius.sm, borderWidth: 1, padding: 2, gap: 2 },

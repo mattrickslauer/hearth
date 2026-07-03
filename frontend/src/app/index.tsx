@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
+import { AuthMenu } from '@/components/auth-menu';
 import { ArchDiagram } from '@/components/landing/arch-diagram';
 import { DescribeDemo } from '@/components/landing/describe-demo';
 import { FlameMark } from '@/components/landing/flame-mark';
@@ -109,6 +110,7 @@ export default function HomeScreen() {
               </Pill>
             ) : null}
             <EmberButton label="Live demo" trailing="→" href="/demo" />
+            <AuthMenu align="right" width={210} />
           </View>
         </View>
       </View>
