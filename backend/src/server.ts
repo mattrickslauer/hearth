@@ -26,6 +26,7 @@ import {
   assertAuthConfig,
   type AuthDeps,
 } from './auth';
+import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub } from './hubs';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
@@ -90,7 +91,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
   if (method === 'OPTIONS') {
     res.writeHead(204, {
       'access-control-allow-origin': '*',
-      'access-control-allow-methods': 'GET,POST,OPTIONS',
+      'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
       'access-control-allow-headers': 'content-type, authorization',
     });
     res.end();
@@ -142,6 +143,47 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       if (!session) return;
       const account = await accounts.getById(session.sub);
       return send(res, 200, { account: account ?? { id: session.sub, email: session.email } });
+    }
+
+    /* --- hub pairing (edge agent) --- */
+
+    // Device-facing: no user session. The enrollToken (device secret) is the credential.
+    if (path === '/hub/enroll' && method === 'POST') {
+      const result = await enrollHub(await readBody(req), { ip: clientIp(req) });
+      return send(res, result.ok ? 200 : 429, result);
+    }
+
+    if (path === '/hub/poll' && method === 'POST') {
+      const result = await pollHub(await readBody(req));
+      return send(res, result.ok ? 200 : 401, result);
+    }
+
+    if (path === '/hub/heartbeat' && method === 'POST') {
+      const result = await heartbeatHub(bearer(req), await readBody(req));
+      return send(res, result.ok ? 200 : 401, result);
+    }
+
+    // User-facing: require a signed-in session.
+    if (path === '/hub/claim' && method === 'POST') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const body = await readBody(req);
+      const result = await claimHub(session.sub, body.claimCode, { ip: clientIp(req) });
+      return send(res, result.ok ? 200 : 400, result);
+    }
+
+    if (path === '/hubs' && method === 'GET') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      return send(res, 200, { hubs: await listHubs(session.sub) });
+    }
+
+    if (path.startsWith('/hubs/') && method === 'DELETE') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const id = decodeURIComponent(path.slice('/hubs/'.length));
+      const ok = await unpairHub(session.sub, id);
+      return send(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'hub not found' });
     }
 
     if (path === '/qwen' && method === 'POST') {
