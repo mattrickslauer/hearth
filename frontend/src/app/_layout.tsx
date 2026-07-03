@@ -2,6 +2,7 @@ import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useColorScheme } from 'react-native';
 
+import { AuthProvider } from '@/auth/context';
 import { Colors } from '@/constants/theme';
 
 function navTheme(scheme: 'light' | 'dark') {
@@ -24,16 +25,19 @@ export default function RootLayout() {
   const scheme = useColorScheme() === 'light' ? 'light' : 'dark';
 
   return (
-    <ThemeProvider value={navTheme(scheme)}>
-      <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
-      <Stack
-        screenOptions={{
-          headerShown: false,
-          contentStyle: { backgroundColor: Colors[scheme].background },
-        }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="demo" />
-      </Stack>
-    </ThemeProvider>
+    <AuthProvider>
+      <ThemeProvider value={navTheme(scheme)}>
+        <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
+        <Stack
+          screenOptions={{
+            headerShown: false,
+            contentStyle: { backgroundColor: Colors[scheme].background },
+          }}>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="demo" />
+          <Stack.Screen name="signin" options={{ presentation: 'modal', animation: 'fade' }} />
+        </Stack>
+      </ThemeProvider>
+    </AuthProvider>
   );
 }
