@@ -38,13 +38,30 @@ curl -XPOST localhost:9000/mcp/call -d '{"tool":"suggest_runs","args":{}}'
 1. **Qwen key** — ✅ done. Present in root `.env`; International region
    (`dashscope-intl`, the default) verified via `npm run qwen-check`. Authoring +
    judging are real. Override `QWEN_BASE_URL` only if the account moves to `us`.
-2. **Tablestore** — `npm i tablestore`, set `HEARTH_STORE=tablestore` +
-   `TABLESTORE_ENDPOINT`/`TABLESTORE_INSTANCE` + Alibaba AccessKey. Fill
-   `createTablestore()` in `src/store.ts` (tables: `twin`, `readings`, `questions`,
-   `records`, `events`; reserved CU=0 for cheap-at-idle).
-3. **OSS snapshots** — presigned GET/PUT in `get_snapshot` (currently
+2. **Tablestore (control plane: signups)** — ✅ wired. The account + OTP stores
+   persist to Tablestore so signups survive restarts and verify across FC instances
+   (the in-memory OTP store breaks when request-otp and verify-otp hit different
+   instances). Set `HEARTH_STORE=tablestore` + `TABLESTORE_ENDPOINT` /
+   `TABLESTORE_INSTANCE` + `ALI_ACCESS_KEY_ID` / `ALI_ACCESS_KEY_SECRET`, then create
+   these tables in the Tablestore console (reserved read/write CU = 0 → cheap-at-idle):
+
+   | Table | Primary key | Attributes | Notes |
+   |---|---|---|---|
+   | `accounts` | `id` STRING | `email` STRING, `createdAt` INTEGER, `lastLoginAt` INTEGER | hot path (GET /auth/me) |
+   | `account_email` | `email` STRING | `id` STRING | email→id login lookup |
+   | `auth_otp` | `email` STRING | `codeHash` STRING, `expiresAt` INTEGER, `attempts` INTEGER | set table **TTL ≈ 1 day**; max versions 1 |
+
+   The `tablestore` SDK is bundled into `dist/server.cjs` at build (esbuild), so no
+   `node_modules` is needed on the function. Code lives in `src/tablestore.ts` +
+   `src/auth.ts`.
+3. **Tablestore (data plane: home/readings)** — ⏳ remaining. `createTablestore()` in
+   `src/store.ts` still throws (loud). The Home Model + append-heavy readings/events are
+   a time-series shape — implement on `src/tablestore.ts` (tables `twin`, `readings`,
+   `questions`, `records`, `events`) or point at a TSDB (Lindorm). Use `HEARTH_STORE=file`
+   locally until then.
+4. **OSS snapshots** — presigned GET/PUT in `get_snapshot` (currently
    `provisioned:false`). Raw frames stay local; only minimized frames get a temp URL.
-4. **IoT device shadow** — `actuate` publishes desired-state to the hub
+5. **IoT device shadow** — `actuate` publishes desired-state to the hub
    (currently `provisioned:false`). This is the edge↔cloud link (docs `01` OD-1).
 
 ## Deploy to Function Compute
@@ -88,7 +105,8 @@ your judge-accessible "Proof of Alibaba Cloud Deployment".
 | Home MCP tool catalog (11 tools) | ✅ real, typed, tested |
 | Authoring (NL → compiled Question) | ✅ real (Qwen w/ key, deterministic fallback) |
 | Runtime judge (verdict + reasoning) | ✅ real (Qwen w/ key, fallback) |
-| Home Model + readings/events store | ✅ in-memory; Tablestore adapter interface-ready |
+| Accounts + OTP store (signups) | ✅ real (Tablestore w/ `HEARTH_STORE=tablestore`); in-memory/file otherwise |
+| Home Model + readings/events store | ✅ in-memory/file; Tablestore HomeStore still a stub (data plane) |
 | `notify` via Telegram | ✅ works with a bot token (no Alibaba needed) |
 | Snapshots (OSS), actuation (IoT shadow) | ⏳ shapes final, `provisioned:false` until account exists |
 
@@ -136,8 +154,9 @@ Verify the mail path without wiring the whole flow:
 npm run mail-check you@example.com   # SMTP verify() + one real send
 ```
 
-For durable OTP storage set `HEARTH_OTP_STORE=tablestore` and implement
-`createTablestoreOtpStore()` once a Tablestore instance exists.
+For durable OTP storage set `HEARTH_OTP_STORE=tablestore` (or just `HEARTH_STORE=tablestore`,
+which flips both OTP and accounts). Requires the `auth_otp` table above + the Tablestore
+env vars. This is what makes verification work across FC instances — see "Make it real" §2.
 
 ## Point the app at it
 

@@ -17,7 +17,7 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  external: ['tablestore', 'ali-oss'],
+  external: ['ali-oss'],
   logLevel: 'info',
 });
 

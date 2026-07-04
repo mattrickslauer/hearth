@@ -59,9 +59,16 @@ resources:
         # HMAC secret for session tokens — REQUIRED (no fallback). Sourced from the
         # deploy env; keep it identical to backend/.env. See the deploy note above.
         AUTH_SESSION_SECRET: ${env('AUTH_SESSION_SECRET')}
-        # To go beyond in-memory, add here once wired:
+        # Durable signups (accounts + OTP) on Tablestore. Uncomment all five to flip
+        # the control plane off in-memory; needs the tables in backend/README.md §2.
+        # The ALI_ keys are sourced from the deploy env (keep them out of this file),
+        # same pattern as AUTH_SESSION_SECRET above.
         #   HEARTH_STORE: tablestore
-        #   TABLESTORE_ENDPOINT / TABLESTORE_INSTANCE
+        #   TABLESTORE_ENDPOINT: https://<instance>.<region>.ots.aliyuncs.com
+        #   TABLESTORE_INSTANCE: <instance-name>
+        #   ALI_ACCESS_KEY_ID: ${env('ALI_ACCESS_KEY_ID')}
+        #   ALI_ACCESS_KEY_SECRET: ${env('ALI_ACCESS_KEY_SECRET')}
+        # And notifications:
         #   TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
       triggers:
         - triggerName: http
