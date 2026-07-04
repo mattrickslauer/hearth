@@ -2,6 +2,7 @@ import { Redirect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -292,6 +293,16 @@ export default function DashboardScreen() {
               </View>
               {hubError ? <Text style={[styles.hubMsg, { color: theme.info }]}>{hubError}</Text> : null}
               {hubNotice ? <Text style={[styles.hubMsg, { color: theme.success }]}>{hubNotice}</Text> : null}
+              <Text style={[styles.hubHint, { color: theme.textMuted }]}>
+                Don’t have a hub yet?{' '}
+                <Text
+                  onPress={() =>
+                    Linking.openURL('https://github.com/mattrickslauer/hearth/tree/main/hub')
+                  }
+                  style={{ color: theme.ember, fontWeight: '600' }}>
+                  Install it on any machine →
+                </Text>
+              </Text>
             </Card>
           </View>
 

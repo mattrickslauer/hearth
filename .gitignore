@@ -25,5 +25,7 @@ yarn-error.*
 .vscode/*
 !.vscode/extensions.json
 
-# simulated hub identity
+# local hub identity (default lives in ~/.hearth; this covers dev overrides in-repo)
 hub/.sim-hub-state.json
+hub/*-state.json
+.hearth/
