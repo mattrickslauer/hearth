@@ -245,12 +245,16 @@ export async function createTablestore(_cfg: TablestoreConfig): Promise<HomeStor
     );
   }
   void TableStore;
-  // NOTE: table creation + row read/write land here once an Alibaba account + keys
-  // exist. Tables: `twin` (home model, low write), `readings` (append, TTL'd),
-  // `questions`, `records`, `events`. Keyed by (homeId, inputId|ts). Reserved CU=0.
+  // NOTE: the control plane (accounts + OTP) is now Tablestore-backed — see
+  // src/tablestore.ts + src/auth.ts. HomeStore is the remaining data-plane piece:
+  // tables `twin` (home model, low write), `readings` (append, TTL'd), `questions`,
+  // `records`, `events`, keyed by (homeId, inputId|ts). It's append/aggregation-heavy
+  // (a time-series shape) — implement it on the shared tablestore.ts helpers, or point
+  // it at a TSDB (Lindorm), when the home data plane goes live. Until then, loud-fail.
   throw new Error(
-    'Tablestore adapter not yet provisioned. Set HEARTH_STORE=memory for now; ' +
-      'fill createTablestore() when the Alibaba account + keys are available (backend/README.md).',
+    'Tablestore HomeStore not implemented yet (accounts + OTP already are — set ' +
+      'HEARTH_STORE=tablestore for those). For home/readings persistence use ' +
+      'HEARTH_STORE=file locally, or implement createTablestore() (backend/README.md).',
   );
 }
 

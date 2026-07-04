@@ -18,6 +18,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import nodemailer, { type Transporter } from 'nodemailer';
 
+import { getTablestore, tsDeleteRow, tsGetRow, tsPutRow, tsUpdatePut } from './tablestore';
+
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
 const MAX_ATTEMPTS = 5;
 const SESSION_TTL_SEC = 30 * 24 * 60 * 60; // 30 days (JWT exp, in seconds per RFC 7519)
@@ -71,15 +73,51 @@ export class MemoryOtpStore implements OtpStore {
  * Table: PK [ email:STRING ]; attrs [ codeHash:STRING, expiresAt:INTEGER, attempts:INTEGER ].
  * Set the table's time-to-live to ~1 day (a floor; we also enforce OTP_TTL_MS in code).
  */
+const OTP_TABLE = 'auth_otp';
+
+/** Tablestore-backed OTP store — one shared table so codes survive restarts and are
+ *  visible across FC instances (request-otp and verify-otp may hit different ones). */
+class TablestoreOtpStore implements OtpStore {
+  async put(email: string, rec: OtpRecord): Promise<void> {
+    await tsPutRow(OTP_TABLE, { email }, { codeHash: rec.codeHash, expiresAt: rec.expiresAt, attempts: rec.attempts });
+  }
+  async get(email: string): Promise<OtpRecord | null> {
+    const row = await tsGetRow(OTP_TABLE, { email });
+    if (!row) return null;
+    const rec: OtpRecord = {
+      codeHash: String(row.codeHash),
+      expiresAt: Number(row.expiresAt),
+      attempts: Number(row.attempts),
+    };
+    // Lazy expiry (mirrors MemoryOtpStore); the table's TTL is the backstop cleanup.
+    if (Date.now() > rec.expiresAt) {
+      await tsDeleteRow(OTP_TABLE, { email });
+      return null;
+    }
+    return rec;
+  }
+  async bumpAttempts(email: string): Promise<number> {
+    const row = await tsGetRow(OTP_TABLE, { email });
+    if (!row) return MAX_ATTEMPTS;
+    const attempts = Number(row.attempts) + 1;
+    await tsUpdatePut(OTP_TABLE, { email }, { attempts });
+    return attempts;
+  }
+  async del(email: string): Promise<void> {
+    await tsDeleteRow(OTP_TABLE, { email });
+  }
+}
+
 export async function createTablestoreOtpStore(): Promise<OtpStore> {
-  throw new Error(
-    'Tablestore OTP store not provisioned. Create a Tablestore instance (TABLESTORE_ENDPOINT/INSTANCE + ALI_ keys) ' +
-      'and implement createTablestoreOtpStore(); until then HEARTH_OTP_STORE defaults to memory.',
-  );
+  // Build the client eagerly so a misconfigured deploy fails loud at boot, not on
+  // the first OTP request.
+  await getTablestore();
+  return new TablestoreOtpStore();
 }
 
 export async function makeOtpStore(): Promise<OtpStore> {
-  if (process.env.HEARTH_OTP_STORE === 'tablestore') return createTablestoreOtpStore();
+  const mode = process.env.HEARTH_OTP_STORE || process.env.HEARTH_STORE;
+  if (mode === 'tablestore') return createTablestoreOtpStore();
   return new MemoryOtpStore();
 }
 
@@ -170,9 +208,48 @@ export class FileAccountStore implements AccountStore {
   }
 }
 
-/** Pick the account store from env: HEARTH_STORE=file → persisted, else in-memory. */
+const ACCOUNTS_TABLE = 'accounts'; // PK [id:STRING] → email, createdAt, lastLoginAt
+const ACCOUNT_EMAIL_TABLE = 'account_email'; // PK [email:STRING] → id  (email→id lookup)
+
+/**
+ * Tablestore-backed account store — the production home for signups. Two tables so
+ * both access patterns are single-row gets (no scans): `accounts` keyed by id (the
+ * hot path — GET /auth/me on every authed request) and `account_email` keyed by
+ * email (login lookup). A brand-new email logging in twice concurrently across FC
+ * instances could create two `accounts` rows; last write to `account_email` wins and
+ * the loser is an unreferenced orphan (harmless). Ids carry random entropy so they
+ * don't collide across instances even within the same millisecond.
+ */
+export class TablestoreAccountStore implements AccountStore {
+  async upsertByEmail(email: string): Promise<Account> {
+    const now = Date.now();
+    const idx = await tsGetRow(ACCOUNT_EMAIL_TABLE, { email });
+    if (idx?.id) {
+      const id = String(idx.id);
+      const row = await tsGetRow(ACCOUNTS_TABLE, { id });
+      if (row) {
+        await tsUpdatePut(ACCOUNTS_TABLE, { id }, { lastLoginAt: now });
+        return { id, email, createdAt: Number(row.createdAt), lastLoginAt: now };
+      }
+      // Index points at a missing account row → fall through and recreate.
+    }
+    const id = `acct-${now.toString(36)}-${randomInt(0x1000000).toString(36)}`;
+    await tsPutRow(ACCOUNTS_TABLE, { id }, { email, createdAt: now, lastLoginAt: now });
+    await tsPutRow(ACCOUNT_EMAIL_TABLE, { email }, { id });
+    return { id, email, createdAt: now, lastLoginAt: now };
+  }
+  async getById(id: string): Promise<Account | null> {
+    const row = await tsGetRow(ACCOUNTS_TABLE, { id });
+    if (!row) return null;
+    return { id, email: String(row.email), createdAt: Number(row.createdAt), lastLoginAt: Number(row.lastLoginAt) };
+  }
+}
+
+/** Pick the account store from env: tablestore → prod durability, file → persisted
+ *  local dev, else in-memory (lost on restart). */
 export function makeAccountStore(): AccountStore {
   const mode = process.env.HEARTH_ACCOUNT_STORE || process.env.HEARTH_STORE;
+  if (mode === 'tablestore') return new TablestoreAccountStore();
   if (mode === 'file') {
     const dir = process.env.HEARTH_DATA_DIR || join(process.cwd(), '.data');
     return FileAccountStore.open(join(dir, 'accounts.json'));
