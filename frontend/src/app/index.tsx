@@ -34,6 +34,7 @@ import { useTheme } from '@/hooks/use-theme';
 const REPO_URL = 'https://github.com/mattrickslauer/hearth';
 const HUB_INSTALL_CMD = 'curl -fsSL https://raw.githubusercontent.com/mattrickslauer/hearth/main/hub/install.sh | bash';
 const HUB_SOURCE_URL = `${REPO_URL}/tree/main/hub`;
+const FIRMWARE_SOURCE_URL = `${REPO_URL}/tree/main/firmware`;
 
 const PILLARS = [
   {
@@ -309,6 +310,14 @@ export default function HomeScreen() {
           <View style={{ marginTop: Spacing.five }}>
             <ArchDiagram />
           </View>
+          <View style={[styles.ctaRow, { marginTop: Spacing.five, flexDirection: isNarrow ? 'column' : 'row' }]}>
+            <EmberButton label="Build your own node" trailing="→" href="/build-a-node" />
+            <EmberButton
+              label="View the firmware"
+              variant="ghost"
+              onPress={() => Linking.openURL(FIRMWARE_SOURCE_URL)}
+            />
+          </View>
         </View>
       </View>
 
@@ -497,6 +506,7 @@ export default function HomeScreen() {
             </View>
             <View style={styles.footLinks}>
               <FooterLink label="Live demo" href="/demo" />
+              <FooterLink label="Build a node" href="/build-a-node" />
               <FooterLink label="GitHub" onPress={() => Linking.openURL(REPO_URL)} />
             </View>
           </View>
