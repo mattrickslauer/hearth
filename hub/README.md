@@ -34,8 +34,17 @@ curl http://localhost:8899/nodes             # inspect the live registry
 ```
 
 Flash a node (see [`../firmware`](../firmware)) with **empty** Wi-Fi/endpoint config beyond
-the SSID, and it will discover this hub and start reporting on its own. The registry is
-in-memory today; next it persists and feeds the rule engine / Hearth Cloud.
+the SSID, and it will discover this hub and start reporting on its own.
+
+### Syncing devices to Hearth Cloud
+
+Once the hub is paired (`node hearth-hub.mjs` → claim it in the dashboard), `agent.mjs`
+also pushes its registry **up to Hearth Cloud** every ~15s (and immediately when a new node
+appears), authenticated with the hub token from `~/.hearth/hub-state.json`. The cloud folds
+each ESP32 into that account's **Home Model** and its readings into the time series — so the
+existing MCP tools (`describe_home`, `list_hub_devices`, `read_input`, `query_history`) and
+Qwen-authored Questions all operate on **real hardware**. Until the hub is paired it just
+logs `not paired` and keeps serving the LAN. Override the target with `BACKEND_URL`.
 
 `sim-hub.mjs` is a single, zero-dependency Node script (Node 18+, global `fetch`). It runs the
 same four-call pairing handshake on your laptop today and on the real Pi later.

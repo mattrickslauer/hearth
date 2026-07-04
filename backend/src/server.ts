@@ -23,10 +23,12 @@ import {
   requestOtp,
   verifyOtp,
   verifySession,
+  verifyHubToken,
   assertAuthConfig,
   type AuthDeps,
 } from './auth';
-import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub } from './hubs';
+import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore } from './hubs';
+import { syncHubDevices } from './hub-devices';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
@@ -161,6 +163,24 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
     if (path === '/hub/heartbeat' && method === 'POST') {
       const result = await heartbeatHub(bearer(req), await readBody(req));
       return send(res, result.ok ? 200 : 401, result);
+    }
+
+    // A paired hub pushes its live device registry (real ESP32 nodes + readings).
+    // Same auth + revocation checkpoint as heartbeat: a token, re-verified against
+    // the hub record so an unpaired hub is rejected.
+    if (path === '/hub/devices' && method === 'POST') {
+      const claims = verifyHubToken(bearer(req));
+      if (!claims) return send(res, 401, { error: 'invalid hub token' });
+      const hub = await getHubStore().getById(claims.sub);
+      if (!hub || hub.accountId !== claims.acc || hub.status !== 'claimed') {
+        return send(res, 403, { error: 'hub no longer paired' });
+      }
+      const body = await readBody(req);
+      const store = await getStoreFor(claims.acc);
+      const result = await syncHubDevices(store, { hubId: hub.id, hubName: hub.name, fw: hub.fw }, body);
+      hub.lastSeenAt = Date.now(); // a device sync also proves liveness
+      await getHubStore().save(hub);
+      return send(res, 200, result);
     }
 
     // User-facing: require a signed-in session.
