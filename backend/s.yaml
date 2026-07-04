@@ -7,10 +7,10 @@
 #   - `npm run build`  (produces ./dist/server.js)
 #
 # Serverless Devs errors on ANY unresolved ${env.X}, so this file references only
-# the vars a deploy truly needs — QWEN_API_KEY and AUTH_SESSION_SECRET (the server
-# refuses to boot without the latter). Everything else has a safe default in the
-# server code (QWEN_BASE_URL→intl, HEARTH_STORE→memory); add those envs here only
-# once you actually wire Tablestore / Telegram.
+# the vars a deploy truly needs — QWEN_API_KEY, AUTH_SESSION_SECRET (the server
+# refuses to boot without the latter), and ZEPTOMAIL_SMTP_PASS (real OTP email).
+# Everything else has a safe default in the server code (QWEN_BASE_URL→intl,
+# HEARTH_STORE→memory); add those envs here only once you actually wire Tablestore.
 #
 # AUTH_SESSION_SECRET must be the SAME value as backend/.env (gitignored). Easiest:
 #   set -a; . ./.env; set +a; QWEN_API_KEY=... s deploy
@@ -59,6 +59,12 @@ resources:
         # HMAC secret for session tokens — REQUIRED (no fallback). Sourced from the
         # deploy env; keep it identical to backend/.env. See the deploy note above.
         AUTH_SESSION_SECRET: ${env('AUTH_SESSION_SECRET')}
+        # ZeptoMail SMTP — presence of the pass flips OTP delivery from console-log to
+        # real email. The token is a secret, sourced from the deploy env (keep it in
+        # backend/.env, same pattern as AUTH_SESSION_SECRET); the sender isn't secret
+        # so it's inline. Host/port/user fall back to smtp.zeptomail.com:465/emailapikey.
+        ZEPTOMAIL_SMTP_PASS: ${env('ZEPTOMAIL_SMTP_PASS')}
+        ZEPTOMAIL_FROM: hearth@agfarms.dev
         # Durable signups (accounts + OTP) on Tablestore. Uncomment all five to flip
         # the control plane off in-memory; needs the tables in backend/README.md §2.
         # The ALI_ keys are sourced from the deploy env (keep them out of this file),
