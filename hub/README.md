@@ -86,6 +86,8 @@ BACKEND_URL=http://localhost:9000 node hub/hearth-hub.mjs
 ```
 
 > **Deploy note:** the downloadable installer points hubs at the deployed Function Compute
-> backend. That function must be redeployed (`cd backend && s deploy`) with the current `main`
-> before end-users can pair — the hub routes (`/hub/*`) only exist on `main`, not yet on the
-> live function. Until then, pairing works against a local backend only.
+> backend, which serves the `/hub/*` routes (verified live). When backend hub code changes,
+> redeploy so prod stays current: `cd backend && npm run build && \`
+> `export FC_CODE_TEMP_OSS_ENDPOINT=oss-ap-southeast-1.aliyuncs.com && \`
+> `set -a; . ./.env; set +a; s deploy -y`. FC uses an in-memory store, so hub pairings do
+> not survive cold starts yet — wiring Tablestore (`HEARTH_STORE=tablestore`) makes them durable.
