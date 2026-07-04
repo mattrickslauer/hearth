@@ -11,7 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AuthMenu } from '@/components/auth-menu';
 import { Card, GlowOrb, Pill, Wordmark, useResponsive } from '@/components/landing/ui';
@@ -33,6 +33,9 @@ import {
 import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
+// Give the scroll frame a bounded height on web so the ScrollView actually scrolls
+// (matches the pattern in demo.tsx). Native gets its height from flex.
+const webFullHeight = Platform.OS === 'web' ? ({ height: '100vh' } as object) : null;
 
 function ago(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -66,6 +69,7 @@ export default function DashboardScreen() {
   const theme = useTheme();
   const router = useRouter();
   const { isNarrow, gutter } = useResponsive();
+  const insets = useSafeAreaInsets();
   const { status, account, token } = useAuth();
 
   const [home, setHome] = useState<HomeModel | null>(null);
@@ -172,8 +176,11 @@ export default function DashboardScreen() {
   const pad = { paddingHorizontal: gutter };
 
   return (
-    <SafeAreaView style={[styles.fill, { backgroundColor: theme.background }]}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: Spacing.six }}>
+    <SafeAreaView style={[styles.screen, webFullHeight, { backgroundColor: theme.background }]} edges={['top']}>
+      <ScrollView
+        style={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: Spacing.six + insets.bottom }}>
         <GlowOrb size={560} color={theme.emberGlow} intensity={0.7} style={styles.glow} />
 
         {/* nav */}
@@ -189,7 +196,7 @@ export default function DashboardScreen() {
           <View style={styles.headRow}>
             <View style={{ flex: 1, gap: Spacing.two }}>
               <Pill dotColor={theme.success}>Signed in · {account?.email ?? 'account'}</Pill>
-              <Text style={[styles.h1, { color: theme.text }]}>Your home</Text>
+              <Text style={[styles.h1, isNarrow && styles.h1Narrow, { color: theme.text }]}>Your home</Text>
             </View>
             <Pressable
               onPress={load}
@@ -467,6 +474,8 @@ function Tag({ theme, on, text }: { theme: ReturnType<typeof useTheme>; on?: boo
 
 const styles = StyleSheet.create({
   fill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  screen: { flex: 1 },
+  scroll: { flex: 1, width: '100%' },
   glow: { position: 'absolute', top: -200, alignSelf: 'center' },
   nav: {
     flexDirection: 'row',
@@ -479,6 +488,7 @@ const styles = StyleSheet.create({
   body: { width: '100%', maxWidth: 960, alignSelf: 'center', gap: Spacing.four },
   headRow: { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing.three },
   h1: { fontFamily: Fonts?.sans, fontSize: 34, fontWeight: '800', letterSpacing: -1 },
+  h1Narrow: { fontSize: 27, letterSpacing: -0.6 },
   refresh: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: Radius.pill, borderWidth: 1 },
   refreshText: { fontFamily: Fonts?.mono, fontSize: 12.5, fontWeight: '700' },
 
