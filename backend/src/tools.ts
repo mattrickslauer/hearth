@@ -102,6 +102,14 @@ export const TOOLS: Tool[] = [
     }),
   },
   {
+    name: 'list_hub_devices',
+    description:
+      'Real devices reported by paired on-prem hubs: each ESP32 node, what it can sense, its latest readings, and whether it is online. This is live hardware in the home (distinct from any demo world). Their sensor readings are also queryable via read_input/query_history using the id "<nodeId>.<sensorKey>".',
+    mode: ['authoring', 'runtime'],
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    handler: (_a, { store }) => store.listHubDevices(),
+  },
+  {
     name: 'list_questions',
     description: 'List the authored Questions (watches) currently deployed on the home.',
     mode: ['authoring', 'runtime'],

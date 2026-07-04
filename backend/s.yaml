@@ -7,10 +7,10 @@
 #   - `npm run build`  (produces ./dist/server.js)
 #
 # Serverless Devs errors on ANY unresolved ${env.X}, so this file references only
-# the vars a deploy truly needs — QWEN_API_KEY and AUTH_SESSION_SECRET (the server
-# refuses to boot without the latter). Everything else has a safe default in the
-# server code (QWEN_BASE_URL→intl, HEARTH_STORE→memory); add those envs here only
-# once you actually wire Tablestore / Telegram.
+# the vars a deploy truly needs — QWEN_API_KEY, AUTH_SESSION_SECRET (the server
+# refuses to boot without the latter), and ZEPTOMAIL_SMTP_PASS (real OTP email).
+# Everything else has a safe default in the server code (QWEN_BASE_URL→intl,
+# HEARTH_STORE→memory); add those envs here only once you actually wire Tablestore.
 #
 # AUTH_SESSION_SECRET must be the SAME value as backend/.env (gitignored). Easiest:
 #   set -a; . ./.env; set +a; QWEN_API_KEY=... s deploy
@@ -59,15 +59,27 @@ resources:
         # HMAC secret for session tokens — REQUIRED (no fallback). Sourced from the
         # deploy env; keep it identical to backend/.env. See the deploy note above.
         AUTH_SESSION_SECRET: ${env('AUTH_SESSION_SECRET')}
-        # Durable store — authored watches persist across FC instances/cold-starts
-        # (Tablestore instance `hearth-mvp`, region-colocated). All four sourced from
-        # the deploy env; `s` errors on any unresolved ${env('...')}, so they must be
-        # present when you run `s deploy` (root .env has the ALI keys).
+        # ZeptoMail SMTP — presence of the pass flips OTP delivery from console-log to
+        # real email. The token is a secret, sourced from the deploy env (keep it in
+        # backend/.env, same pattern as AUTH_SESSION_SECRET); the sender isn't secret
+        # so it's inline. Host/port/user fall back to smtp.zeptomail.com:465/emailapikey.
+        ZEPTOMAIL_SMTP_PASS: ${env('ZEPTOMAIL_SMTP_PASS')}
+        ZEPTOMAIL_FROM: hearth@agfarms.dev
+        # Durable HomeStore on Tablestore (instance `hearth-mvp`, region-colocated):
+        # authored watches persist across FC instances/cold-starts (read-through; the
+        # `hearth_home` table auto-creates on first use). All sourced from the deploy
+        # env; `s` errors on any unresolved ${env('...')}, so they must be present at
+        # `s deploy` (root .env has the ALI keys).
         HEARTH_STORE: tablestore
         TABLESTORE_ENDPOINT: ${env('TABLESTORE_ENDPOINT')}
         TABLESTORE_INSTANCE: ${env('TABLESTORE_INSTANCE')}
         ALI_ACCESS_KEY_ID: ${env('ALI_ACCESS_KEY_ID')}
         ALI_ACCESS_KEY_SECRET: ${env('ALI_ACCESS_KEY_SECRET')}
+        # Auth control plane (accounts + OTP) stays in-memory for now — its Tablestore
+        # tables (accounts/account_email/auth_otp) aren't provisioned yet, so pin these
+        # rather than inherit HEARTH_STORE. Flip to `tablestore` once those tables exist.
+        HEARTH_ACCOUNT_STORE: memory
+        HEARTH_OTP_STORE: memory
         # Add once wired: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
       triggers:
         - triggerName: http
