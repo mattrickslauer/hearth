@@ -63,10 +63,18 @@ pio device monitor     # watch it talk (115200 baud)
 Headless read-back (used by the flashing pipeline):
 `python scripts/monitor.py /dev/ttyUSB0 115200 18`.
 
+## Finding the hub
+
+The node **discovers the hub automatically** — you don't configure an address.
+The hub agent (`../hub/agent.mjs`) advertises itself on the LAN over mDNS as
+`_hearth._tcp`; on boot the node browses for it, resolves the hub's IP + port,
+and POSTs its `DESCRIBE` + readings there. If the hub starts *after* the node,
+the node keeps browsing and attaches when it appears. `HUB_ENDPOINT` in
+`config.h` is only a fallback for networks that filter multicast.
+
 ## Roadmap
 
-- POST DESCRIBE/READING to the Hearth hub's node-ingest endpoint (structure is
-  in place; point `HUB_ENDPOINT` at it).
 - More sensors behind the same self-describe contract (HC-SR04 distance,
   RC522 identity, relay/servo actuation).
+- Hub persists the registry + forwards to Hearth Cloud / the rule engine.
 - Signed enrollment so a node pairs to an account the way the hub does.

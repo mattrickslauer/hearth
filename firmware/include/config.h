@@ -9,8 +9,9 @@
 #define WIFI_SSID ""
 #define WIFI_PASS ""
 
-// Where readings are POSTed as JSON (your hub's ingest URL or Hearth Cloud).
-// Empty = don't POST (serial-only). Only used once Wi-Fi is connected.
+// Hub endpoint. Normally you leave this EMPTY: the node discovers the hub on the
+// LAN over mDNS (it advertises itself as _hearth._tcp) — no address to configure.
+// Set it only as a fallback for networks where mDNS/multicast is filtered.
 #define HUB_ENDPOINT ""
 
 // DHT temperature/humidity sensor.
