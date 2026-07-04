@@ -40,6 +40,36 @@ export interface HomeModel {
   capabilities: Capability[];
 }
 
+/** One sensor a real hub-reported node exposes. */
+export interface HubSensorReport {
+  key: string; // e.g. 'board.temp'
+  kind?: string; // 'temperature' | 'humidity' | ...
+  unit?: string;
+}
+/** A real ESP32 node as reported by a paired on-prem hub. */
+export interface HubNodeReport {
+  id: string;
+  board?: string;
+  fw?: string;
+  online: boolean;
+  lastSeen: number;
+  sensors: HubSensorReport[];
+  readings: Record<string, number | null>;
+}
+/** A paired hub's live device snapshot, pushed up by the hub agent. */
+export interface HubDeviceSnapshot {
+  hubId: string;
+  hubName?: string;
+  platform?: string;
+  fw?: string;
+  nodes: HubNodeReport[];
+  syncedAt: number;
+}
+
+/** Emoji marker for a sensor kind — mirrors the demo Capability.icon convention. */
+const iconFor = (kind?: string): string =>
+  kind === 'temperature' ? '🌡️' : kind === 'humidity' ? '💧' : kind === 'distance' ? '📏' : kind === 'motion' ? '🚶' : '📟';
+
 export interface RunEventRow {
   id: string;
   ts: number;
@@ -62,6 +92,10 @@ export interface HomeStore {
   listRecords(): Promise<RecordPolicy[]>;
   appendEvent(ev: RunEventRow): Promise<void>;
   listEvents(limit: number): Promise<RunEventRow[]>;
+  /** Upsert a paired hub's device snapshot (keyed by hubId). Feeds the Home Model. */
+  putHubDevices(snap: HubDeviceSnapshot): Promise<void>;
+  /** All paired hubs' latest device snapshots. */
+  listHubDevices(): Promise<HubDeviceSnapshot[]>;
 }
 
 /** Compute an aggregate over a window ending at `now` (numbers only for mean/min/max). */
@@ -86,6 +120,7 @@ interface StoreSnapshot {
   records: RecordPolicy[];
   events: RunEventRow[];
   readings: [string, Reading[]][];
+  hubDevices: HubDeviceSnapshot[];
 }
 
 const emptyModel = (): HomeModel => ({ zones: [], nodes: [], capabilities: [] });
@@ -96,6 +131,7 @@ export class MemoryStore implements HomeStore {
   protected questions = new Map<string, Question>();
   protected records = new Map<string, RecordPolicy>();
   protected events: RunEventRow[] = [];
+  protected hubDevices = new Map<string, HubDeviceSnapshot>();
 
   /**
    * A new home is EMPTY — no zones, devices, watches, or readings. Pass seed=true
@@ -120,6 +156,7 @@ export class MemoryStore implements HomeStore {
       records: [...this.records.values()],
       events: this.events,
       readings: [...this.readings.entries()],
+      hubDevices: [...this.hubDevices.values()],
     };
   }
   protected restore(s: Partial<StoreSnapshot>): void {
@@ -128,6 +165,46 @@ export class MemoryStore implements HomeStore {
     this.records = new Map((s.records ?? []).map((r) => [r.inputId, r]));
     this.events = s.events ?? [];
     this.readings = new Map(s.readings ?? []);
+    this.hubDevices = new Map((s.hubDevices ?? []).map((h) => [h.hubId, h]));
+  }
+
+  /** Capabilities derived from every paired hub's real nodes (merged into the model). */
+  private hubCapabilities(): Capability[] {
+    const caps: Capability[] = [];
+    for (const snap of this.hubDevices.values())
+      for (const n of snap.nodes)
+        for (const s of n.sensors)
+          caps.push({
+            id: `${n.id}.${s.key}`,
+            label: `${n.id} · ${s.key}`,
+            kind: 'sensor',
+            icon: iconFor(s.kind),
+            unit: s.unit,
+            describes: `live ${s.kind ?? 'sensor'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''}`,
+          });
+    return caps;
+  }
+  /** Home-Model nodes derived from paired hubs' real ESP32 nodes. */
+  private hubModelNodes(): HomeNode[] {
+    const out: HomeNode[] = [];
+    for (const snap of this.hubDevices.values())
+      for (const n of snap.nodes)
+        out.push({
+          id: n.id,
+          name: n.id,
+          // Real hub nodes aren't bound to the demo zones; label the zone by hub.
+          zone: snap.hubName ?? snap.hubId,
+          hardware: n.board ?? 'esp32',
+          capabilities: n.sensors.map((s) => ({
+            id: `${n.id}.${s.key}`,
+            label: `${n.id} · ${s.key}`,
+            kind: 'sensor' as const,
+            icon: iconFor(s.kind),
+            unit: s.unit,
+            describes: `live ${s.kind ?? 'sensor'} on ${n.id}`,
+          })),
+        } as HomeNode);
+    return out;
   }
 
   private push(input: string, value: Scalar, ts: number) {
@@ -138,10 +215,17 @@ export class MemoryStore implements HomeStore {
   }
 
   async describeHome(): Promise<HomeModel> {
-    return this.model;
+    const hubNodes = this.hubModelNodes();
+    if (!hubNodes.length) return this.model;
+    return {
+      zones: this.model.zones,
+      nodes: [...this.model.nodes, ...hubNodes],
+      capabilities: [...this.model.capabilities, ...this.hubCapabilities()],
+    };
   }
   async listInputs(filter?: 'sensor' | 'actuator'): Promise<Capability[]> {
-    return this.model.capabilities.filter((c) => !filter || c.kind === filter);
+    const caps = [...this.model.capabilities, ...this.hubCapabilities()];
+    return caps.filter((c) => !filter || c.kind === filter);
   }
   async appendReading(input: string, value: Scalar, ts: number): Promise<void> {
     this.push(input, value, ts);
@@ -175,6 +259,13 @@ export class MemoryStore implements HomeStore {
   }
   async listEvents(limit: number): Promise<RunEventRow[]> {
     return this.events.slice(0, limit);
+  }
+  async putHubDevices(snap: HubDeviceSnapshot): Promise<void> {
+    this.hubDevices.set(snap.hubId, snap);
+    this.persist();
+  }
+  async listHubDevices(): Promise<HubDeviceSnapshot[]> {
+    return [...this.hubDevices.values()];
   }
 }
 

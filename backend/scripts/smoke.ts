@@ -20,7 +20,10 @@ const ok = (name: string, cond: boolean) => {
   }
 };
 
-const ctx: ToolCtx = { store: new MemoryStore() };
+// Seed the demo world for this hermetic run (production homes start empty; this
+// test exercises the seeded world + tools). See the hub-sync block below for the
+// empty-home → real-device path.
+const ctx: ToolCtx = { store: new MemoryStore(true) };
 const call = (tool: string, args: Record<string, unknown> = {}) => TOOL_BY_NAME.get(tool)!.handler(args, ctx);
 
 const home = (await call('describe_home')) as { zones: unknown[]; nodes: unknown[]; capabilities: unknown[] };
@@ -129,6 +132,47 @@ const good = await verifyOtp(authDeps, 'user@hearth.test', devCode);
 ok('correct code → token + account', good.ok === true && !!good.token && good.account?.email === 'user@hearth.test');
 const reuse = await verifyOtp(authDeps, 'user@hearth.test', devCode);
 ok('code is one-time-use', reuse.ok === false);
+
+// ---- hub → cloud device sync: a paired hub's REAL nodes flow into an EMPTY home,
+//      and become visible/queryable through the existing tools -------------------
+const { syncHubDevices } = await import('../src/hub-devices.ts');
+const hubStore = new MemoryStore(); // an empty production home
+const hubCtx: ToolCtx = { store: hubStore };
+const hcall = (tool: string, args: Record<string, unknown> = {}) => TOOL_BY_NAME.get(tool)!.handler(args, hubCtx);
+
+const payload = {
+  platform: 'linux',
+  nodes: [
+    {
+      id: 'node-A442FB38BCD8',
+      describe: {
+        board: 'esp32-wroom-32',
+        fw: '0.1.0',
+        sensors: [
+          { key: 'board.temp', kind: 'temperature', unit: 'C' },
+          { key: 'dht.temp', kind: 'temperature', unit: 'C' },
+        ],
+      },
+      lastReading: { 'board.temp': 46.7, 'dht.temp': null },
+    },
+  ],
+};
+const sync = await syncHubDevices(hubStore, { hubId: 'hub-mr5m9h8j-1', hubName: 'Simulated Pi' }, payload);
+ok('syncHubDevices registers the node', sync.nodes === 1);
+ok('syncHubDevices writes numeric readings only (skips null)', sync.readings === 1);
+
+const hhome = (await hcall('describe_home')) as { nodes: { id: string }[]; capabilities: { id: string }[] };
+ok('describe_home surfaces the real node', hhome.nodes.some((n) => n.id === 'node-A442FB38BCD8'));
+ok('describe_home surfaces its capability', hhome.capabilities.some((c) => c.id === 'node-A442FB38BCD8.board.temp'));
+
+const hdev = (await hcall('list_hub_devices')) as { hubId: string; nodes: { id: string }[] }[];
+ok('list_hub_devices returns the paired hub + node', hdev.length === 1 && hdev[0].nodes[0]?.id === 'node-A442FB38BCD8');
+
+const hread = (await hcall('read_input', { input: 'node-A442FB38BCD8.board.temp', agg: 'latest' })) as { value: number } | null;
+ok('read_input returns the live hardware reading', !!hread && hread.value === 46.7);
+
+const hinputs = (await hcall('list_inputs', { filter: 'sensor' })) as { id: string }[];
+ok('list_inputs includes the hub sensor (bindable by Qwen)', hinputs.some((c) => c.id === 'node-A442FB38BCD8.board.temp'));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
