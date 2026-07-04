@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <ESPmDNS.h>
 #include <DHT.h>
 #include "config.h"
 
@@ -25,6 +26,9 @@ DHT dht(DHT_PIN, DHT_TYPE);
 static String   gNodeId;
 static uint32_t gLastSample = 0;
 static bool     gAnnounced  = false;
+static String   gHubUrl;                 // resolved hub ingest URL (mDNS, or fallback)
+static bool     gMdnsUp     = false;
+static uint32_t gLastDiscover = 0;
 
 // Stable per-chip identity, derived from the factory-burned MAC.
 static String nodeId() {
@@ -98,18 +102,38 @@ static void connectWifi() {
     Serial.println(" FAILED — continuing serial-only");
 }
 
-// Best-effort POST. Returns true on a 2xx/3xx. Never blocks the node for long.
+// Best-effort POST to the discovered hub. Returns true on a 2xx/3xx.
 static bool postJson(const String& body) {
-  if (WiFi.status() != WL_CONNECTED || strlen(HUB_ENDPOINT) == 0) return false;
+  if (WiFi.status() != WL_CONNECTED || gHubUrl.length() == 0) return false;
   HTTPClient http;
   http.setConnectTimeout(4000);
   http.setTimeout(4000);
-  http.begin(HUB_ENDPOINT);
+  http.begin(gHubUrl);
   http.addHeader("Content-Type", "application/json");
   int code = http.POST(body);
-  Serial.printf("[post] %s -> %d\n", HUB_ENDPOINT, code);
+  Serial.printf("[post] %s -> %d\n", gHubUrl.c_str(), code);
   http.end();
   return code >= 200 && code < 400;
+}
+
+// ─── hub discovery (mDNS / DNS-SD) ─────────────────────────────────────────
+// The hub advertises itself as _hearth._tcp on the LAN; the node browses for it,
+// so you never tell a node the hub's address. Falls back to a configured
+// HUB_ENDPOINT if nothing is advertised (empty config = serial-only).
+static void mdnsBegin() {
+  if (gMdnsUp) return;
+  if (MDNS.begin("hearth-node")) gMdnsUp = true;
+  else Serial.println("[mdns] responder failed to start");
+}
+
+// The hub's ingest URL if one is on the LAN right now, else "".
+static String queryHub() {
+  if (!gMdnsUp) return "";
+  int n = MDNS.queryService("hearth", "tcp");   // _hearth._tcp
+  if (n <= 0) return "";
+  String url = "http://" + MDNS.IP(0).toString() + ":" + String(MDNS.port(0)) + "/ingest";
+  Serial.printf("[mdns] discovered hub at %s\n", url.c_str());
+  return url;
 }
 
 void setup() {
@@ -126,11 +150,29 @@ void setup() {
   // Always announce over serial, even offline.
   Serial.println("DESCRIBE " + describeJson());
   connectWifi();
+
+  // Find the hub on the LAN with zero config; fall back to a configured URL.
+  if (WiFi.status() == WL_CONNECTED) {
+    mdnsBegin();
+    gHubUrl = queryHub();
+  }
+  if (gHubUrl.length() == 0 && strlen(HUB_ENDPOINT) > 0) {
+    gHubUrl = HUB_ENDPOINT;
+    Serial.println("[mdns] no hub advertised — using configured HUB_ENDPOINT");
+  }
 }
 
 void loop() {
-  // Announce ourselves once to the hub as soon as we're online.
-  if (!gAnnounced && WiFi.status() == WL_CONNECTED) {
+  // Keep browsing until we know a hub — it may come online after the node does.
+  if (WiFi.status() == WL_CONNECTED && gHubUrl.length() == 0 &&
+      millis() - gLastDiscover >= 15000) {
+    gLastDiscover = millis();
+    gHubUrl = queryHub();
+    if (gHubUrl.length() > 0) gAnnounced = false;   // announce to the new hub
+  }
+
+  // Announce ourselves once, as soon as we can reach a hub.
+  if (!gAnnounced && gHubUrl.length() > 0 && WiFi.status() == WL_CONNECTED) {
     gAnnounced = postJson(describeJson());
   }
 

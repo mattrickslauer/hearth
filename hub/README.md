@@ -2,8 +2,42 @@
 
 The hub is the on-prem device — a Raspberry Pi, a spare laptop, a mini PC — that runs
 watches locally and syncs with **Hearth Cloud** (the platform backend on Alibaba Function
-Compute). Before it can do anything it must be **paired to an account**. `hearth-hub.mjs` is
-that agent: a single, zero-dependency Node script (Node 18+, global `fetch`). It runs the
+Compute).
+
+The hub has two faces:
+
+- **Up to the cloud** — `sim-hub.mjs` runs the pairing handshake that binds the hub to an
+  account (a single zero-dependency Node script; **[Pairing flow](#pairing-flow-device-initiated-claim-code)** below).
+- **Down to the LAN** — `agent.mjs` **discovers and ingests nodes**. It advertises itself
+  over mDNS as `_hearth._tcp`, so ESP32 nodes find it with zero configuration, then it
+  receives their `DESCRIBE` + `READING` documents into a live registry
+  (**[Nodes](#nodes-auto-discovery--ingest)** below).
+
+## Nodes: auto-discovery + ingest
+
+`agent.mjs` is the node-facing side. You never tell a node where the hub is — the hub
+announces itself and the node browses for it:
+
+```
+node (ESP32)                         hub (agent.mjs)
+ │                          advertise _hearth._tcp.local  (mDNS)
+ │  browse _hearth._tcp ──────────▶ resolve hub IP:port
+ │  POST /ingest  DESCRIBE ───────▶ register node + its sensor menu
+ │  POST /ingest  READING  ───────▶ update latest readings  (every few seconds)
+```
+
+Run it (one dependency, `bonjour-service`, for mDNS):
+
+```bash
+cd hub && npm install && node agent.mjs      # ingest on :8899, advertises on the LAN
+curl http://localhost:8899/nodes             # inspect the live registry
+```
+
+Flash a node (see [`../firmware`](../firmware)) with **empty** Wi-Fi/endpoint config beyond
+the SSID, and it will discover this hub and start reporting on its own. The registry is
+in-memory today; next it persists and feeds the rule engine / Hearth Cloud.
+
+`sim-hub.mjs` is a single, zero-dependency Node script (Node 18+, global `fetch`). It runs the
 same four-call pairing handshake on your laptop today and on the real Pi later.
 
 ## Install & run (end users)
