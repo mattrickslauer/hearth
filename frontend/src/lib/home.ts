@@ -103,5 +103,10 @@ export const readInput = (input: string, token?: string | null) =>
   call<Reading | null>('read_input', { input, agg: 'latest' }, token);
 export const authorWatch = (wish: string, token?: string | null) =>
   call<{ questionId: string; question: Watch; engine: string }>('author_question', { wish }, token);
+/** Edit a watch: re-compiles the new wording into a fresh Question, keeping its id. */
+export const updateWatch = (id: string, wish: string, token?: string | null) =>
+  call<{ questionId: string; question: Watch; engine: string }>('update_question', { id, wish }, token);
+export const deleteWatch = (id: string, token?: string | null) =>
+  call<{ ok: boolean; questionId: string }>('delete_question', { id }, token);
 export const suggestRuns = (token?: string | null) =>
   call<{ suggestions: string[]; brain: string }>('suggest_runs', {}, token);

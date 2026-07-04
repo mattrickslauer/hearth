@@ -87,6 +87,8 @@ export interface HomeStore {
   readInput(input: string, agg: Agg, windowMs: number, now: number): Promise<Reading | null>;
   history(input: string, from: number, to: number): Promise<Reading[]>;
   putQuestion(q: Question): Promise<void>;
+  getQuestion(id: string): Promise<Question | null>;
+  deleteQuestion(id: string): Promise<boolean>;
   listQuestions(): Promise<Question[]>;
   putRecord(policy: RecordPolicy): Promise<void>;
   listRecords(): Promise<RecordPolicy[]>;
@@ -241,6 +243,14 @@ export class MemoryStore implements HomeStore {
     this.questions.set(q.id, q);
     if (q.record) this.records.set(q.record.inputId, q.record);
     this.persist();
+  }
+  async getQuestion(id: string): Promise<Question | null> {
+    return this.questions.get(id) ?? null;
+  }
+  async deleteQuestion(id: string): Promise<boolean> {
+    const existed = this.questions.delete(id);
+    if (existed) this.persist();
+    return existed;
   }
   async listQuestions(): Promise<Question[]> {
     return [...this.questions.values()];
