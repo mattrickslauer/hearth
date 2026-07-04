@@ -144,6 +144,51 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'update_question',
+    description:
+      'Edit an authored Question: re-compile a revised plain-language wish into a fresh runnable Question and replace the existing one in place (same id). Editing always re-runs program synthesis — the trigger, action, bindings and local/cloud plan are re-derived from the new wording.',
+    mode: ['authoring'],
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string' }, wish: { type: 'string' } },
+      required: ['id', 'wish'],
+      additionalProperties: false,
+    },
+    handler: async (a, { store }) => {
+      const id = str(a.id);
+      const existing = await store.getQuestion(id);
+      if (!existing) throw new Error(`unknown question: ${id}`);
+      // Recompile from scratch — same path as author_question — but keep the id.
+      const { question, engine } = await qwenAuthor(str(a.wish));
+      const q: Question = { ...question, id };
+      if (q.compiledSpec.kind === 'cloud' && !q.record) {
+        const inputId = q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0] ?? 'camera.frame';
+        q.record = defaultRecord(inputId, q.compiledSpec.cloud.maxCadence ?? '10s');
+      }
+      await store.putQuestion(q);
+      await store.appendEvent({ id: `ev-edit-${id}-${Date.now().toString(36)}`, ts: Date.now(), questionId: id, kind: 'edited', reasoning: `re-compiled by ${engine}` });
+      return { questionId: q.id, question: q, engine };
+    },
+  },
+  {
+    name: 'delete_question',
+    description: 'Permanently remove an authored Question (watch) from the home.',
+    mode: ['authoring'],
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (a, { store }) => {
+      const id = str(a.id);
+      const existed = await store.deleteQuestion(id);
+      if (!existed) throw new Error(`unknown question: ${id}`);
+      await store.appendEvent({ id: `ev-del-${id}-${Date.now().toString(36)}`, ts: Date.now(), questionId: id, kind: 'removed', reasoning: 'watch removed' });
+      return { ok: true, questionId: id };
+    },
+  },
+  {
     name: 'create_question',
     description: 'Persist an already-compiled Question spec (inputs are grounded against the registry).',
     mode: ['authoring'],

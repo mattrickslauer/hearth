@@ -20,7 +20,9 @@ const ok = (name: string, cond: boolean) => {
   }
 };
 
-const ctx: ToolCtx = { store: new MemoryStore() };
+// Seed the legacy demo world so describe_home/list_inputs have zones+devices to
+// assert against (a fresh per-account home is intentionally empty — see MemoryStore).
+const ctx: ToolCtx = { store: new MemoryStore(true) };
 const call = (tool: string, args: Record<string, unknown> = {}) => TOOL_BY_NAME.get(tool)!.handler(args, ctx);
 
 const home = (await call('describe_home')) as { zones: unknown[]; nodes: unknown[]; capabilities: unknown[] };
@@ -62,6 +64,45 @@ const sug = (await call('suggest_runs')) as { suggestions: string[] };
 ok('suggest_runs proposes questions', sug.suggestions.length >= 2);
 const qs = await ctx.store.listQuestions();
 ok('two questions persisted', qs.length === 2);
+
+// ---- watch CRUD: edit recompiles in place, delete removes --------------------
+const made = (await call('author_question', {
+  wish: 'Warn me if the garage is left open for more than 5 minutes.',
+})) as { questionId: string; question: { compiledTo: string } };
+ok('author returns an id', typeof made.questionId === 'string' && made.questionId.length > 0);
+ok('authored watch is local', made.question.compiledTo === 'local');
+const beforeCount = (await ctx.store.listQuestions()).length;
+
+// edit the SAME watch with a vision wish → must recompile (local → cloud_vl) + keep id
+const upd = (await call('update_question', {
+  id: made.questionId,
+  wish: "Tell me if someone who isn't family is at the front door.",
+})) as { questionId: string; question: { compiledTo: string; usesVision: boolean } };
+ok('update keeps the same id', upd.questionId === made.questionId);
+ok('update recompiles the plan (local → cloud_vl)', upd.question.compiledTo === 'cloud_vl' && upd.question.usesVision === true);
+ok('update does not add a new watch', (await ctx.store.listQuestions()).length === beforeCount);
+const stored = await ctx.store.getQuestion(made.questionId);
+ok('update persisted the recompiled watch', !!stored && stored.compiledTo === 'cloud_vl');
+let updThrew = false;
+try {
+  await call('update_question', { id: 'q-nope', wish: 'x' });
+} catch {
+  updThrew = true;
+}
+ok('update of unknown id throws', updThrew);
+
+// delete removes it (and only it)
+const del = (await call('delete_question', { id: made.questionId })) as { ok: boolean };
+ok('delete returns ok', del.ok === true);
+ok('delete removed the watch', (await ctx.store.getQuestion(made.questionId)) === null);
+ok('delete decremented the count', (await ctx.store.listQuestions()).length === beforeCount - 1);
+let delThrew = false;
+try {
+  await call('delete_question', { id: made.questionId });
+} catch {
+  delThrew = true;
+}
+ok('delete of unknown id throws', delThrew);
 
 // actuate + notify report their (unprovisioned) shapes without throwing
 const act = (await call('actuate', { input: 'garage.door', value: 'closed', reason: 'coyote in frame' })) as { status: string };
