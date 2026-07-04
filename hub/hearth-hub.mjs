@@ -1,32 +1,38 @@
 #!/usr/bin/env node
 /**
- * Simulated Hearth hub — a reference edge-agent client for the pairing flow.
+ * Hearth hub — the edge-agent client you run on your always-on machine.
  *
- * This is exactly what the Raspberry Pi runs, minus the hardware. It:
+ * This is the software the on-prem hub (a Raspberry Pi, a spare laptop, a mini PC)
+ * runs to pair with your Hearth account and stay online. It:
  *   1. On first run, mints a secret enrollment token and POSTs /hub/enroll.
- *   2. Prints the CLAIM CODE for you to type into the dashboard's "Connect a hub" card.
- *   3. Polls /hub/poll until a user claims it, then stores the returned hub token.
+ *   2. Prints a CLAIM CODE for you to type into the dashboard's "Connect a hub" card.
+ *   3. Polls /hub/poll until you claim it, then stores the returned hub token.
  *   4. Heartbeats /hub/heartbeat every 30s so the dashboard shows it online.
  *
- * State (the enroll token + hub id + hub token) persists to a JSON file so the hub keeps
- * its identity across restarts — re-running does NOT re-enroll an already-paired hub.
+ * Identity (the enroll token + hub id + hub token) persists to ~/.hearth/hub-state.json
+ * so the hub keeps its identity across restarts — re-running does NOT re-enroll an
+ * already-paired hub. It runs forever in the foreground; wrap it in a service manager
+ * (systemd, launchd, pm2, `nohup … &`) to keep it alive as a daemon.
  *
  * Zero dependencies (Node 18+ global fetch). Usage:
- *   node hub/sim-hub.mjs
- *   BACKEND_URL=http://localhost:9000 HUB_NAME="Kitchen Pi" node hub/sim-hub.mjs
- *   node hub/sim-hub.mjs --reset      # forget identity and enroll fresh
+ *   node hearth-hub.mjs                                   # pair with Hearth Cloud
+ *   HUB_NAME="Kitchen Pi" node hearth-hub.mjs             # custom display name
+ *   BACKEND_URL=http://localhost:9000 node hearth-hub.mjs # point at a local backend (dev)
+ *   node hearth-hub.mjs --reset                           # forget identity and enroll fresh
  */
 
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 
-const BACKEND_URL = (process.env.BACKEND_URL || 'http://localhost:9000').replace(/\/$/, '');
-const HUB_NAME = process.env.HUB_NAME || 'Simulated Pi';
-const FW = process.env.HUB_FW || 'sim-1.0.0';
-const HERE = dirname(fileURLToPath(import.meta.url));
-const STATE_FILE = process.env.HUB_STATE_FILE || join(HERE, '.sim-hub-state.json');
+// Hearth Cloud (the platform backend on Alibaba Function Compute). Override for local dev.
+const DEFAULT_BACKEND = 'https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run';
+const BACKEND_URL = (process.env.BACKEND_URL || DEFAULT_BACKEND).replace(/\/$/, '');
+const HUB_NAME = process.env.HUB_NAME || hostname() || 'Hearth hub';
+const FW = process.env.HUB_FW || 'hearth-hub/0.1.0';
+const STATE_DIR = process.env.HEARTH_HOME || join(homedir(), '.hearth');
+const STATE_FILE = process.env.HUB_STATE_FILE || join(STATE_DIR, 'hub-state.json');
 const POLL_MS = 3000;
 const HEARTBEAT_MS = 30_000;
 
@@ -45,6 +51,7 @@ function loadState() {
 }
 
 function saveState(state) {
+  mkdirSync(dirname(STATE_FILE), { recursive: true });
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
@@ -73,6 +80,7 @@ async function enroll(state) {
   console.log(`  │            >>>   ${data.claimCode}   <<<            │`);
   console.log('  │                                               │');
   console.log('  └─────────────────────────────────────────────┘\n');
+  console.log('  Open your Hearth dashboard → "Connect a hub" and enter the code above.');
   console.log(`  (code expires in ~15 min; hub id ${data.hubId})\n`);
 }
 
@@ -115,7 +123,7 @@ async function heartbeatLoop(state) {
 }
 
 async function main() {
-  console.log(`[sim-hub] backend ${BACKEND_URL}  name "${HUB_NAME}"  state ${STATE_FILE}`);
+  console.log(`[hearth-hub] backend ${BACKEND_URL}  name "${HUB_NAME}"  state ${STATE_FILE}`);
   const state = loadState();
   if (!state.hubId || !state.enrollToken) await enroll(state);
   if (!state.hubToken) await waitForClaim(state);
@@ -124,6 +132,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(`[sim-hub] fatal: ${e.message}`);
+  console.error(`[hearth-hub] fatal: ${e.message}`);
   process.exit(1);
 });

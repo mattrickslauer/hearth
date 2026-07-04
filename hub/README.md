@@ -1,9 +1,50 @@
 # Hearth hub (edge agent)
 
-The hub is the on-prem device (a Raspberry Pi) that runs watches locally and syncs with
-Hearth Cloud. Before it can do anything it must be **paired to an account**. This directory
-holds a reference client for that pairing handshake — `sim-hub.mjs` simulates the Pi so the
-whole flow is demoable on a laptop, and the real Pi agent implements the same four calls.
+The hub is the on-prem device — a Raspberry Pi, a spare laptop, a mini PC — that runs
+watches locally and syncs with **Hearth Cloud** (the platform backend on Alibaba Function
+Compute). Before it can do anything it must be **paired to an account**. `hearth-hub.mjs` is
+that agent: a single, zero-dependency Node script (Node 18+, global `fetch`). It runs the
+same four-call pairing handshake on your laptop today and on the real Pi later.
+
+## Install & run (end users)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mattrickslauer/hearth/main/hub/install.sh | bash
+```
+
+The installer checks for Node 18+, downloads `hearth-hub.mjs` into `~/.hearth/`, and starts
+it. The agent prints a **claim code** — open your Hearth dashboard → **"Connect a hub"** and
+enter it. Once claimed, the hub heartbeats every 30s and the dashboard shows it **Online**.
+
+Prefer to run it by hand (no `curl | bash`)? Download the one file and run it:
+
+```bash
+mkdir -p ~/.hearth && curl -fsSL \
+  https://raw.githubusercontent.com/mattrickslauer/hearth/main/hub/hearth-hub.mjs \
+  -o ~/.hearth/hearth-hub.mjs
+node ~/.hearth/hearth-hub.mjs
+```
+
+### Keep it running (daemon)
+
+`hearth-hub.mjs` runs forever in the foreground. To keep it alive across reboots, wrap it in
+a service manager — e.g. a `systemd` unit on Linux/Pi:
+
+```ini
+# /etc/systemd/system/hearth-hub.service
+[Unit]
+Description=Hearth hub
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node %h/.hearth/hearth-hub.mjs
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+`launchd` (macOS), `pm2`, or `nohup … &` work too.
 
 ## Pairing flow (device-initiated claim code)
 
@@ -25,21 +66,26 @@ hub                          cloud                         user (dashboard)
 - The **hub token** is a long-lived JWT (`aud: hearth-hub`). Unpairing deletes the hub record,
   which the heartbeat re-checks — so the stateless token is effectively revoked on next beat.
 
-## Run the simulator
+## Options (env)
 
-Start the backend first (`cd backend && npm run dev` → `:9000`), then:
-
-```bash
-node hub/sim-hub.mjs
-# → prints a claim code; type it into the dashboard's "Connect a hub" card
-```
-
-Options (env):
-
-- `BACKEND_URL` — cloud base URL (default `http://localhost:9000`)
-- `HUB_NAME` — display name shown on the dashboard (default `Simulated Pi`)
+- `BACKEND_URL` — backend base URL (default: **Hearth Cloud**; set to `http://localhost:9000` for local dev)
+- `HUB_NAME` — display name shown on the dashboard (default: the machine's hostname)
+- `HEARTH_HOME` — where identity + the agent live (default `~/.hearth`)
 - `HUB_FW` — reported firmware string
 - `--reset` — forget stored identity and enroll fresh
 
-Identity persists to `hub/.sim-hub-state.json` (gitignored), so re-running keeps the same hub.
+Identity persists to `~/.hearth/hub-state.json`, so re-running keeps the same hub.
+
+## Local development
+
+Point the agent at a locally-running backend instead of the cloud:
+
+```bash
+cd backend && npm run dev            # → http://localhost:9000
+BACKEND_URL=http://localhost:9000 node hub/hearth-hub.mjs
 ```
+
+> **Deploy note:** the downloadable installer points hubs at the deployed Function Compute
+> backend. That function must be redeployed (`cd backend && s deploy`) with the current `main`
+> before end-users can pair — the hub routes (`/hub/*`) only exist on `main`, not yet on the
+> live function. Until then, pairing works against a local backend only.

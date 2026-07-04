@@ -4,7 +4,7 @@
  * backend: claim a code the hub prints, list connected hubs, and unpair.
  *
  * The device-facing half (enroll / poll / heartbeat) lives on the hub itself, not here —
- * see hub/sim-hub.mjs for a reference client.
+ * see hub/hearth-hub.mjs for the reference client (and hub/install.sh for how users get it).
  */
 
 import { backendBase } from '@/auth/client';

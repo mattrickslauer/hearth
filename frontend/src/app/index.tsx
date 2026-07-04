@@ -32,6 +32,8 @@ import { Fonts, MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 const REPO_URL = 'https://github.com/mattrickslauer/hearth';
+const HUB_INSTALL_CMD = 'curl -fsSL https://raw.githubusercontent.com/mattrickslauer/hearth/main/hub/install.sh | bash';
+const HUB_SOURCE_URL = `${REPO_URL}/tree/main/hub`;
 
 const PILLARS = [
   {
@@ -79,6 +81,21 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const scrollRef = useRef<ScrollView>(null);
   const [reasonY, setReasonY] = useState(0);
+  const [copiedCmd, setCopiedCmd] = useState(false);
+
+  const copyInstallCmd = async () => {
+    try {
+      if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard) {
+        await navigator.clipboard.writeText(HUB_INSTALL_CMD);
+        setCopiedCmd(true);
+        setTimeout(() => setCopiedCmd(false), 1600);
+      } else {
+        Linking.openURL(HUB_SOURCE_URL);
+      }
+    } catch {
+      Linking.openURL(HUB_SOURCE_URL);
+    }
+  };
 
   const scrollToReason = () =>
     scrollRef.current?.scrollTo({ y: Math.max(0, reasonY - 40), animated: true });
@@ -377,6 +394,61 @@ export default function HomeScreen() {
         </View>
       </View>
 
+      {/* =================================================== RUN YOUR HUB */}
+      <View style={[pad, { paddingVertical: bandPad }]}>
+        <View style={content}>
+          <SectionHeading
+            kicker="Run your own hub"
+            title="One command, and your"
+            emberWord="home comes online."
+            subtitle="The hub is a tiny agent you run on any always-on machine — a Raspberry Pi, a spare laptop, a mini PC. It pairs to your account, keeps simple watches firing offline, and is the only thing that ever touches your raw video. Zero dependencies beyond Node 18+."
+            maxWidth={760}
+          />
+          <View style={{ marginTop: Spacing.five, alignItems: 'center' }}>
+            <Card style={{ width: '100%', maxWidth: 760 }} elevated>
+              <Text style={[styles.hubStep, { color: theme.textMuted }]}>
+                1 · Install &amp; start it on your machine
+              </Text>
+              <View
+                style={[
+                  styles.hubCmdRow,
+                  { backgroundColor: theme.codeBg, borderColor: theme.border },
+                ]}>
+                <Text
+                  selectable
+                  style={[styles.hubCmd, { color: theme.textSecondary }]}
+                  numberOfLines={1}>
+                  <Text style={{ color: theme.ember }}>$ </Text>
+                  {HUB_INSTALL_CMD}
+                </Text>
+                <Text
+                  onPress={copyInstallCmd}
+                  style={[styles.hubCopy, { color: theme.ember, borderColor: theme.borderStrong }]}>
+                  {copiedCmd ? 'Copied ✓' : 'Copy'}
+                </Text>
+              </View>
+              <Text style={[styles.hubStep, { color: theme.textMuted, marginTop: Spacing.four }]}>
+                2 · It prints a claim code — enter it in your dashboard under{' '}
+                <Text style={{ color: theme.textSecondary }}>“Connect a hub.”</Text>
+              </Text>
+              <View
+                style={[
+                  styles.ctaRow,
+                  { flexDirection: isNarrow ? 'column' : 'row', marginTop: Spacing.four },
+                ]}>
+                <EmberButton label="Open your dashboard" trailing="→" href="/dashboard" size="lg" />
+                <EmberButton
+                  label="View the hub source"
+                  variant="ghost"
+                  size="lg"
+                  onPress={() => Linking.openURL(HUB_SOURCE_URL)}
+                />
+              </View>
+            </Card>
+          </View>
+        </View>
+      </View>
+
       {/* ============================================================ CTA */}
       <View style={[pad, { paddingVertical: isWide ? Spacing.six : Spacing.five }]}>
         <View style={content}>
@@ -544,6 +616,29 @@ const styles = StyleSheet.create({
   },
   frameStubText: { fontFamily: Fonts?.mono, fontSize: 13, lineHeight: 20 },
   privacyArrow: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: Spacing.one },
+
+  hubStep: { fontFamily: Fonts?.sans, fontSize: 14, fontWeight: '600' },
+  hubCmdRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    marginTop: Spacing.two,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.three,
+  },
+  hubCmd: { flex: 1, fontFamily: Fonts?.mono, fontSize: 13, lineHeight: 20 },
+  hubCopy: {
+    fontFamily: Fonts?.mono,
+    fontSize: 12,
+    fontWeight: '700',
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    overflow: 'hidden',
+  },
 
   ctaPanel: {
     borderRadius: Radius.xl,
