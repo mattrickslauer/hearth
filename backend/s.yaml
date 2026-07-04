@@ -59,10 +59,16 @@ resources:
         # HMAC secret for session tokens — REQUIRED (no fallback). Sourced from the
         # deploy env; keep it identical to backend/.env. See the deploy note above.
         AUTH_SESSION_SECRET: ${env('AUTH_SESSION_SECRET')}
-        # To go beyond in-memory, add here once wired:
-        #   HEARTH_STORE: tablestore
-        #   TABLESTORE_ENDPOINT / TABLESTORE_INSTANCE
-        #   TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+        # Durable store — authored watches persist across FC instances/cold-starts
+        # (Tablestore instance `hearth-mvp`, region-colocated). All four sourced from
+        # the deploy env; `s` errors on any unresolved ${env('...')}, so they must be
+        # present when you run `s deploy` (root .env has the ALI keys).
+        HEARTH_STORE: tablestore
+        TABLESTORE_ENDPOINT: ${env('TABLESTORE_ENDPOINT')}
+        TABLESTORE_INSTANCE: ${env('TABLESTORE_INSTANCE')}
+        ALI_ACCESS_KEY_ID: ${env('ALI_ACCESS_KEY_ID')}
+        ALI_ACCESS_KEY_SECRET: ${env('ALI_ACCESS_KEY_SECRET')}
+        # Add once wired: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
       triggers:
         - triggerName: http
           triggerType: http
