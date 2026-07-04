@@ -11,7 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AuthMenu } from '@/components/auth-menu';
 import { Card, GlowOrb, Pill, Wordmark, useResponsive } from '@/components/landing/ui';
@@ -20,10 +20,12 @@ import { useAuth } from '@/auth/context';
 import { useTheme } from '@/hooks/use-theme';
 import {
   authorWatch,
+  deleteWatch,
   describeHome,
   listEvents,
   listWatches,
   readInput,
+  updateWatch,
   type HomeCapability,
   type HomeModel,
   type Reading,
@@ -33,6 +35,9 @@ import {
 import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
+// Give the scroll frame a bounded height on web so the ScrollView actually scrolls
+// (matches the pattern in demo.tsx). Native gets its height from flex.
+const webFullHeight = Platform.OS === 'web' ? ({ height: '100vh' } as object) : null;
 
 function ago(ts: number): string {
   const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
@@ -54,6 +59,8 @@ function formatValue(r: Reading | null, cap: HomeCapability): string {
 
 const EVENT_TONE: Record<string, { icon: string; label: string }> = {
   authored: { icon: '✍️', label: 'Authored' },
+  edited: { icon: '✏️', label: 'Edited' },
+  removed: { icon: '🗑️', label: 'Removed' },
   fired: { icon: '🔥', label: 'Fired' },
   held: { icon: '⏳', label: 'Held' },
   actuate: { icon: '⚡', label: 'Actuated' },
@@ -66,6 +73,7 @@ export default function DashboardScreen() {
   const theme = useTheme();
   const router = useRouter();
   const { isNarrow, gutter } = useResponsive();
+  const insets = useSafeAreaInsets();
   const { status, account, token } = useAuth();
 
   const [home, setHome] = useState<HomeModel | null>(null);
@@ -77,6 +85,12 @@ export default function DashboardScreen() {
 
   const [wish, setWish] = useState('');
   const [authoring, setAuthoring] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [watchError, setWatchError] = useState<string | null>(null);
 
   const [hubs, setHubs] = useState<HubView[] | null>(null);
   const [claimCode, setClaimCode] = useState('');
@@ -129,6 +143,51 @@ export default function DashboardScreen() {
     }
   };
 
+  const startEdit = (w: Watch) => {
+    setWatchError(null);
+    setEditingId(w.id);
+    setEditText(w.text);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditText('');
+  };
+
+  const saveEdit = async () => {
+    if (!editingId || !editText.trim() || savingEdit) return;
+    setSavingEdit(true);
+    setWatchError(null);
+    try {
+      const { question } = await updateWatch(editingId, editText.trim(), token);
+      // Recompiled in place — swap the updated watch into the list without a full reload.
+      setWatches((prev) => (prev ? prev.map((w) => (w.id === question.id ? question : w)) : prev));
+      setEditingId(null);
+      setEditText('');
+      listEvents(20, token).then(setEvents).catch(() => {});
+    } catch (err) {
+      setWatchError((err as Error).message);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const removeWatch = async (w: Watch) => {
+    if (deletingId) return;
+    setWatchError(null);
+    setDeletingId(w.id);
+    try {
+      await deleteWatch(w.id, token);
+      setWatches((prev) => (prev ? prev.filter((x) => x.id !== w.id) : prev));
+      if (editingId === w.id) cancelEdit();
+      listEvents(20, token).then(setEvents).catch(() => {});
+    } catch (err) {
+      setWatchError((err as Error).message);
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   const submitClaim = async () => {
     const code = claimCode.trim();
     if (!code || claiming) return;
@@ -172,8 +231,11 @@ export default function DashboardScreen() {
   const pad = { paddingHorizontal: gutter };
 
   return (
-    <SafeAreaView style={[styles.fill, { backgroundColor: theme.background }]}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: Spacing.six }}>
+    <SafeAreaView style={[styles.screen, webFullHeight, { backgroundColor: theme.background }]} edges={['top']}>
+      <ScrollView
+        style={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: Spacing.six + insets.bottom }}>
         <GlowOrb size={560} color={theme.emberGlow} intensity={0.7} style={styles.glow} />
 
         {/* nav */}
@@ -189,7 +251,7 @@ export default function DashboardScreen() {
           <View style={styles.headRow}>
             <View style={{ flex: 1, gap: Spacing.two }}>
               <Pill dotColor={theme.success}>Signed in · {account?.email ?? 'account'}</Pill>
-              <Text style={[styles.h1, { color: theme.text }]}>Your home</Text>
+              <Text style={[styles.h1, isNarrow && styles.h1Narrow, { color: theme.text }]}>Your home</Text>
             </View>
             <Pressable
               onPress={load}
@@ -372,25 +434,93 @@ export default function DashboardScreen() {
             <Text style={[styles.sectionTitle, { color: theme.text }]}>
               Watches{watches ? ` (${watches.length})` : ''}
             </Text>
+            {watchError ? (
+              <Text style={[styles.hubMsg, { color: theme.info }]}>{watchError}</Text>
+            ) : null}
             {watches && watches.length ? (
               <View style={{ gap: Spacing.three }}>
-                {watches.map((w) => (
-                  <Card key={w.id} style={{ gap: Spacing.two }}>
-                    <View style={styles.watchHead}>
-                      <Text style={[styles.watchTitle, { color: theme.text }]}>{w.title}</Text>
-                      <View style={styles.watchTags}>
-                        <Tag theme={theme} on={w.runsLocally} text={w.runsLocally ? 'local' : 'cloud'} />
-                        {w.usesVision ? <Tag theme={theme} on text="vision" /> : null}
+                {watches.map((w) =>
+                  editingId === w.id ? (
+                    <Card key={w.id} glow style={{ gap: Spacing.two }}>
+                      <Text style={[styles.cardTitle, { color: theme.text }]}>Edit watch</Text>
+                      <Text style={[styles.hubHint, { color: theme.textMuted }]}>
+                        Saving re-compiles the watch from your description — the trigger, action
+                        and bindings are re-derived.
+                      </Text>
+                      <TextInput
+                        value={editText}
+                        onChangeText={setEditText}
+                        editable={!savingEdit}
+                        multiline
+                        placeholder="Describe what this watch should do…"
+                        placeholderTextColor={theme.textMuted}
+                        style={[
+                          styles.input,
+                          styles.editInput,
+                          { backgroundColor: theme.codeBg, borderColor: theme.borderStrong, color: theme.text },
+                          webNoOutline,
+                        ]}
+                      />
+                      <View style={styles.watchActions}>
+                        <Pressable
+                          onPress={cancelEdit}
+                          disabled={savingEdit}
+                          style={[styles.watchBtn, { borderColor: theme.border }]}>
+                          <Text style={[styles.watchBtnText, { color: theme.textSecondary }]}>Cancel</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={saveEdit}
+                          disabled={!editText.trim() || savingEdit}
+                          style={[
+                            styles.watchBtnPrimary,
+                            { backgroundColor: editText.trim() && !savingEdit ? theme.ember : theme.backgroundSelected },
+                          ]}>
+                          {savingEdit ? (
+                            <ActivityIndicator color={theme.onEmber} />
+                          ) : (
+                            <Text style={[styles.watchBtnText, { color: editText.trim() ? theme.onEmber : theme.textMuted }]}>
+                              Re-compile →
+                            </Text>
+                          )}
+                        </Pressable>
                       </View>
-                    </View>
-                    <Text style={[styles.watchLine, { color: theme.textSecondary }]}>
-                      <Text style={{ color: theme.textMuted }}>when </Text>
-                      {w.trigger}
-                      <Text style={{ color: theme.textMuted }}> → </Text>
-                      {w.action}
-                    </Text>
-                  </Card>
-                ))}
+                    </Card>
+                  ) : (
+                    <Card key={w.id} style={{ gap: Spacing.two }}>
+                      <View style={styles.watchHead}>
+                        <Text style={[styles.watchTitle, { color: theme.text }]}>{w.title}</Text>
+                        <View style={styles.watchTags}>
+                          <Tag theme={theme} on={w.runsLocally} text={w.runsLocally ? 'local' : 'cloud'} />
+                          {w.usesVision ? <Tag theme={theme} on text="vision" /> : null}
+                        </View>
+                      </View>
+                      <Text style={[styles.watchLine, { color: theme.textSecondary }]}>
+                        <Text style={{ color: theme.textMuted }}>when </Text>
+                        {w.trigger}
+                        <Text style={{ color: theme.textMuted }}> → </Text>
+                        {w.action}
+                      </Text>
+                      <View style={styles.watchActions}>
+                        <Pressable
+                          onPress={() => startEdit(w)}
+                          disabled={deletingId === w.id}
+                          style={[styles.watchBtn, { borderColor: theme.border }]}>
+                          <Text style={[styles.watchBtnText, { color: theme.textSecondary }]}>Edit</Text>
+                        </Pressable>
+                        <Pressable
+                          onPress={() => removeWatch(w)}
+                          disabled={deletingId === w.id}
+                          style={[styles.watchBtn, { borderColor: theme.border }]}>
+                          {deletingId === w.id ? (
+                            <ActivityIndicator color={theme.warn} />
+                          ) : (
+                            <Text style={[styles.watchBtnText, { color: theme.warn }]}>Delete</Text>
+                          )}
+                        </Pressable>
+                      </View>
+                    </Card>
+                  ),
+                )}
               </View>
             ) : (
               <Card>
@@ -467,6 +597,8 @@ function Tag({ theme, on, text }: { theme: ReturnType<typeof useTheme>; on?: boo
 
 const styles = StyleSheet.create({
   fill: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  screen: { flex: 1 },
+  scroll: { flex: 1, width: '100%' },
   glow: { position: 'absolute', top: -200, alignSelf: 'center' },
   nav: {
     flexDirection: 'row',
@@ -479,6 +611,7 @@ const styles = StyleSheet.create({
   body: { width: '100%', maxWidth: 960, alignSelf: 'center', gap: Spacing.four },
   headRow: { flexDirection: 'row', alignItems: 'flex-end', gap: Spacing.three },
   h1: { fontFamily: Fonts?.sans, fontSize: 34, fontWeight: '800', letterSpacing: -1 },
+  h1Narrow: { fontSize: 27, letterSpacing: -0.6 },
   refresh: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: Radius.pill, borderWidth: 1 },
   refreshText: { fontFamily: Fonts?.mono, fontSize: 12.5, fontWeight: '700' },
 
@@ -541,6 +674,28 @@ const styles = StyleSheet.create({
   watchTitle: { flex: 1, fontFamily: Fonts?.sans, fontSize: 16, fontWeight: '700' },
   watchTags: { flexDirection: 'row', gap: 6 },
   watchLine: { fontFamily: Fonts?.sans, fontSize: 14, lineHeight: 21 },
+  watchActions: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two, marginTop: 2 },
+  watchBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 84,
+    minHeight: 38,
+  },
+  watchBtnPrimary: {
+    paddingVertical: 8,
+    paddingHorizontal: 18,
+    borderRadius: Radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 118,
+    minHeight: 38,
+  },
+  watchBtnText: { fontFamily: Fonts?.mono, fontSize: 12.5, fontWeight: '700' },
+  editInput: { minHeight: 72, textAlignVertical: 'top' },
 
   tag: { paddingVertical: 3, paddingHorizontal: 9, borderRadius: Radius.pill, borderWidth: 1 },
   tagText: { fontFamily: Fonts?.mono, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.3 },
