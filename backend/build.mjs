@@ -17,7 +17,10 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  external: ['tablestore', 'ali-oss'],
+  // tablestore IS bundled (FC's code dir has no node_modules, so the SDK must be
+  // inlined). Its protobuf models are precompiled JS with static requires, so it
+  // bundles cleanly. ali-oss stays external — it isn't referenced at runtime yet.
+  external: ['ali-oss'],
   logLevel: 'info',
 });
 

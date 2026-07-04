@@ -221,10 +221,16 @@ export class FileStore extends MemoryStore {
 }
 
 /**
- * Alibaba Tablestore adapter. Interface-complete; the SDK calls are wired but the
- * package + credentials are provisioned at deploy time (see backend/README.md). We
- * fail loud with a setup hint rather than silently pretend, so a misconfigured
- * deploy is obvious. Until then the server runs on MemoryStore.
+ * Alibaba Tablestore adapter — durable, multi-instance-safe persistence for authored
+ * watches. One table `hearth_home` with a composite primary key (account, sk); each
+ * watch is a row `sk = q#<id>` holding the Question JSON.
+ *
+ * Question reads AND writes go THROUGH to Tablestore on every call (they are not
+ * served from instance memory), so every Function Compute instance sees the same set
+ * of watches — which is exactly what the in-memory / file stores could not guarantee
+ * across FC's multiple, recycled instances. The home model + live readings stay
+ * in-memory (the model is static; readings are transient telemetry that repopulate
+ * from sensors), so only the durable, low-volume authored config hits Tablestore.
  */
 export interface TablestoreConfig {
   endpoint: string;
@@ -233,25 +239,131 @@ export interface TablestoreConfig {
   accessKeySecret: string;
 }
 
-export async function createTablestore(_cfg: TablestoreConfig): Promise<HomeStore> {
-  let TableStore: unknown;
+const TS_TABLE = 'hearth_home';
+
+// The `tablestore` SDK ships no type declarations; treat it as an opaque handle.
+type TsModule = {
+  Client: new (opts: object) => TsClient;
+  Condition: new (existence: unknown, columnCondition: unknown) => unknown;
+  RowExistenceExpectation: { IGNORE: unknown };
+  Direction: { FORWARD: unknown };
+};
+type TsAttr = { columnName: string; columnValue: unknown };
+type TsClient = {
+  createTable(p: object): Promise<unknown>;
+  putRow(p: object): Promise<unknown>;
+  getRow(p: object): Promise<{ row?: { attributes?: TsAttr[] } }>;
+  deleteRow(p: object): Promise<unknown>;
+  getRange(p: object): Promise<{ rows?: { attributes: TsAttr[] }[]; next_start_primary_key?: unknown[] | null }>;
+};
+
+class TablestoreStore extends MemoryStore {
+  private constructor(
+    private readonly ts: TsModule,
+    private readonly client: TsClient,
+    private readonly account: string,
+  ) {
+    super(false);
+  }
+
+  static async open(ts: TsModule, cfg: TablestoreConfig, account: string): Promise<TablestoreStore> {
+    const client = new ts.Client({
+      accessKeyId: cfg.accessKeyId,
+      secretAccessKey: cfg.accessKeySecret,
+      endpoint: cfg.endpoint,
+      instancename: cfg.instance,
+    });
+    const store = new TablestoreStore(ts, client, account);
+    await store.ensureTable();
+    return store;
+  }
+
+  private pk(sk: string) {
+    return [{ account: this.account }, { sk }];
+  }
+  private ignore() {
+    return new this.ts.Condition(this.ts.RowExistenceExpectation.IGNORE, null);
+  }
+  private dataOf(attrs?: TsAttr[]): string | null {
+    const v = attrs?.find((a) => a.columnName === 'data')?.columnValue;
+    return typeof v === 'string' ? v : null;
+  }
+
+  /** Create the shared table on first use; a pre-existing table is the steady state. */
+  private async ensureTable(): Promise<void> {
+    try {
+      await this.client.createTable({
+        tableMeta: {
+          tableName: TS_TABLE,
+          primaryKey: [
+            { name: 'account', type: 'STRING' },
+            { name: 'sk', type: 'STRING' },
+          ],
+        },
+        reservedThroughput: { capacityUnit: { read: 0, write: 0 } },
+        tableOptions: { timeToLive: -1, maxVersions: 1 },
+      });
+    } catch (e) {
+      if (!/already exist/i.test((e as Error).message || '')) throw e;
+    }
+  }
+
+  async putQuestion(q: Question): Promise<void> {
+    await this.client.putRow({
+      tableName: TS_TABLE,
+      condition: this.ignore(),
+      primaryKey: this.pk(`q#${q.id}`),
+      attributeColumns: [{ data: JSON.stringify(q) }],
+    });
+  }
+  async getQuestion(id: string): Promise<Question | null> {
+    const res = await this.client.getRow({ tableName: TS_TABLE, primaryKey: this.pk(`q#${id}`), maxVersions: 1 });
+    const data = this.dataOf(res.row?.attributes);
+    return data ? (JSON.parse(data) as Question) : null;
+  }
+  async deleteQuestion(id: string): Promise<boolean> {
+    if (!(await this.getQuestion(id))) return false;
+    await this.client.deleteRow({ tableName: TS_TABLE, condition: this.ignore(), primaryKey: this.pk(`q#${id}`) });
+    return true;
+  }
+  async listQuestions(): Promise<Question[]> {
+    const out: Question[] = [];
+    // Scan the account's q# rows. '$' (0x24) sorts just after '#' (0x23), so the
+    // exclusive end 'q$' captures every 'q#...' row and nothing beyond it.
+    let start: unknown[] | null = [{ account: this.account }, { sk: 'q#' }];
+    const end = [{ account: this.account }, { sk: 'q$' }];
+    while (start) {
+      const res = await this.client.getRange({
+        tableName: TS_TABLE,
+        direction: this.ts.Direction.FORWARD,
+        inclusiveStartPrimaryKey: start,
+        exclusiveEndPrimaryKey: end,
+        limit: 200,
+      });
+      for (const row of res.rows ?? []) {
+        const data = this.dataOf(row.attributes);
+        if (data) out.push(JSON.parse(data) as Question);
+      }
+      start = res.next_start_primary_key ?? null;
+    }
+    return out;
+  }
+}
+
+export async function createTablestore(cfg: TablestoreConfig, accountId: string): Promise<HomeStore> {
+  let mod: unknown;
   try {
     // optional dependency — only needed when actually deploying against Tablestore
-    TableStore = await import('tablestore');
+    mod = await import('tablestore');
   } catch {
     throw new Error(
       "Tablestore selected but the 'tablestore' SDK is not installed. Run `npm i tablestore` in backend/, " +
         'or unset HEARTH_STORE=tablestore to use the in-memory store.',
     );
   }
-  void TableStore;
-  // NOTE: table creation + row read/write land here once an Alibaba account + keys
-  // exist. Tables: `twin` (home model, low write), `readings` (append, TTL'd),
-  // `questions`, `records`, `events`. Keyed by (homeId, inputId|ts). Reserved CU=0.
-  throw new Error(
-    'Tablestore adapter not yet provisioned. Set HEARTH_STORE=memory for now; ' +
-      'fill createTablestore() when the Alibaba account + keys are available (backend/README.md).',
-  );
+  // tablestore ships CommonJS; under esbuild's interop the namespace may nest it in `.default`.
+  const ts = ((mod as { default?: unknown }).default ?? mod) as TsModule;
+  return TablestoreStore.open(ts, cfg, accountId);
 }
 
 /** Root dir for file-backed persistence (HEARTH_STORE=file). */
@@ -273,12 +385,15 @@ function safeId(id: string): string {
 export async function makeStore(accountId = 'default'): Promise<HomeStore> {
   const mode = process.env.HEARTH_STORE;
   if (mode === 'tablestore') {
-    return createTablestore({
-      endpoint: must('TABLESTORE_ENDPOINT'),
-      instance: must('TABLESTORE_INSTANCE'),
-      accessKeyId: must('ALI_ACCESS_KEY_ID', 'ALIBABA_ACCESS_KEY_ID'),
-      accessKeySecret: must('ALI_ACCESS_KEY_SECRET', 'ALIBABA_ACCESS_KEY_SECRET'),
-    });
+    return createTablestore(
+      {
+        endpoint: must('TABLESTORE_ENDPOINT'),
+        instance: must('TABLESTORE_INSTANCE'),
+        accessKeyId: must('ALI_ACCESS_KEY_ID', 'ALIBABA_ACCESS_KEY_ID'),
+        accessKeySecret: must('ALI_ACCESS_KEY_SECRET', 'ALIBABA_ACCESS_KEY_SECRET'),
+      },
+      accountId,
+    );
   }
   if (mode === 'file') {
     return FileStore.open(join(dataDir(), 'homes', `${safeId(accountId)}.json`));
