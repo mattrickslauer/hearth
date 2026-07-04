@@ -65,17 +65,22 @@ resources:
         # so it's inline. Host/port/user fall back to smtp.zeptomail.com:465/emailapikey.
         ZEPTOMAIL_SMTP_PASS: ${env('ZEPTOMAIL_SMTP_PASS')}
         ZEPTOMAIL_FROM: hearth@agfarms.dev
-        # Durable signups (accounts + OTP) on Tablestore. Uncomment all five to flip
-        # the control plane off in-memory; needs the tables in backend/README.md §2.
-        # The ALI_ keys are sourced from the deploy env (keep them out of this file),
-        # same pattern as AUTH_SESSION_SECRET above.
-        #   HEARTH_STORE: tablestore
-        #   TABLESTORE_ENDPOINT: https://<instance>.<region>.ots.aliyuncs.com
-        #   TABLESTORE_INSTANCE: <instance-name>
-        #   ALI_ACCESS_KEY_ID: ${env('ALI_ACCESS_KEY_ID')}
-        #   ALI_ACCESS_KEY_SECRET: ${env('ALI_ACCESS_KEY_SECRET')}
-        # And notifications:
-        #   TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+        # Durable HomeStore on Tablestore (instance `hearth-mvp`, region-colocated):
+        # authored watches persist across FC instances/cold-starts (read-through; the
+        # `hearth_home` table auto-creates on first use). All sourced from the deploy
+        # env; `s` errors on any unresolved ${env('...')}, so they must be present at
+        # `s deploy` (root .env has the ALI keys).
+        HEARTH_STORE: tablestore
+        TABLESTORE_ENDPOINT: ${env('TABLESTORE_ENDPOINT')}
+        TABLESTORE_INSTANCE: ${env('TABLESTORE_INSTANCE')}
+        ALI_ACCESS_KEY_ID: ${env('ALI_ACCESS_KEY_ID')}
+        ALI_ACCESS_KEY_SECRET: ${env('ALI_ACCESS_KEY_SECRET')}
+        # Auth control plane (accounts + OTP) stays in-memory for now — its Tablestore
+        # tables (accounts/account_email/auth_otp) aren't provisioned yet, so pin these
+        # rather than inherit HEARTH_STORE. Flip to `tablestore` once those tables exist.
+        HEARTH_ACCOUNT_STORE: memory
+        HEARTH_OTP_STORE: memory
+        # Add once wired: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
       triggers:
         - triggerName: http
           triggerType: http
