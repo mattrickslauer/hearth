@@ -1,40 +1,41 @@
-# 06 — Demo Video Script (≤ 3:00)
+# 06 — Demo Video Script (≤ 3:00) — REAL-HARDWARE cut
 
 Submission video for **Track 5: EdgeAgent**. Target runtime **2:50**. Format: 1080p+, YouTube/Vimeo/Youku.
-Base layer = **you on camera** (host segments); everything else is **screen capture**, optional **real hardware footage**,
-and **generated overlay graphics** dropped on top.
+This cut leads with **real footage of real hardware being used** — a chip you flash, a board that lights up in
+your hand, a phone that buzzes. Everything scripted here is genuinely wired and was tested end-to-end
+(see "What's real" below). The browser simulator is the *rehearsal/fallback*, not the hero.
 
-**Legend:** `[CAM]` you to camera · `[SCREEN]` app screen-capture · `[SHOOT]` real hardware footage (optional flex) ·
+**Legend:** `[CAM]` you to camera · `[SHOOT]` real hardware footage · `[SCREEN]` app/terminal capture ·
 `[GFX]` generated graphic/overlay · `[VO]` voiceover over B-roll.
 
-**What changed since the last cut (v1 → v2) — read before you record:**
-- **The word is "watch," not "deployment."** The product says *watch* everywhere on screen ("What should your home watch for?",
-  "N active watches", "Describe a new watch"). Say **watch**. The button says **Compile ↵** and the console flashes
-  **"QWEN IS COMPILING"** — say **compile**, it matches.
-- **New beat — change your mind (live).** You can add a vision watch and tune its **Record policy** live (On-event vs Metered,
-  frame-rate presets 2s/10s/30s/2m, and a **Model** dropdown). On the dashboard, editing a watch's text and hitting
-  **Re-compile →** re-derives the whole thing. This is the strongest new "wow" — it shows synthesis is *interactive*, not one-shot.
-- **New beat — the dashboard is real.** `/dashboard` is a live backend on **Alibaba Cloud Function Compute**: sign in, pair a
-  real hub with an **8-character code**, and real devices + sensor readings show up. Great credibility close and doubles as
-  deployment proof.
-- **Honesty fixes (do NOT overclaim):**
-  - The browser demo's camera + Qwen-VL is **simulated by default** (brain pill reads "Qwen (simulated)"). Present the vision
-    beat as the *demo's* vision watch reasoning — **do not** say "this is a real camera, live Qwen-VL" over screen capture.
-    If you want the real-hardware hero shot, it's an **optional `[SHOOT]`** you must actually film (see shot list).
-  - **Notifications are push toasts, not email.** Email is only the sign-in code. Say "pinged" / "push," never "email."
-  - There is **no raw-vs-redacted split-screen panel** in the UI — only a text privacy note ("nothing left the house").
-    Script the words, not a visual that doesn't exist.
+## What's real in this cut (so you can film it honestly)
+Built and tested for this cut (`hub/engine.mjs`, `hub/runtime.mjs`, `hub/notify.mjs`, firmware actuator):
+- ✅ **Flash a bare ESP32 → it self-describes** (`DESCRIBE`: "can sense: board.temp · can do: led") and streams real temperature.
+- ✅ **Hub auto-discovers it** over mDNS, ingests readings, **pairs to the real cloud** with a claim code, shows it on the dashboard.
+- ✅ **Real Qwen compiles your plain-English wish** into a watch spec (live `QWEN_API_KEY` in the backend).
+- ✅ **The money shot: warm the board → watch fires on the hub → the board's LED lights → your phone buzzes.**
+  The hub now runs the real rule engine (ported from the app) and drives a real GPIO + a real push (ntfy/Telegram).
+  Verified end-to-end in software via `node hub/tools/selftest.mjs` and a full `hub.mjs` + fake-node run.
+- ✅ **Runs offline** — the watch evaluates and fires on the hub with no internet.
 
-**Compliance (from the audit — do not skip):**
-- No third-party **trademarks/logos** on screen. Blur any brand logos, plates, house numbers in `[SHOOT]` footage.
-- **No unlicensed music.** Royalty-free / original only.
-- Naming Qwen / Qwen-VL is required (Stage-1 gate wants visible Qwen use) — that's fine; avoid other companies' logos.
-- The **Alibaba Cloud deployment proof** can be a *separate* screen recording, but the live dashboard beat here also shows it.
+**Still simulated — do NOT film as real hardware (Phase 2):**
+- ❌ **Qwen-VL on a real camera.** There's no camera in the firmware and no image is sent to a model yet. Script it only as
+  "the same contract takes a camera *next*" (future tense), as the read-aloud does. Don't point a lens and claim live vision.
+- The browser `/demo` still simulates a door/visitor/vision — fine as a rehearsal or a "try it yourself" beat, not as hardware.
+
+## Before you shoot — one-time setup
+1. **Flash the node:** `firmware/` → `pio run -t upload` (LED actuator defaults to GPIO2, the built-in LED — zero extra wiring).
+2. **Calibrate the threshold:** run the node, note the idle `board.temp` (it reads warm), set the watch's `right` a few degrees above it.
+3. **Author the watch:** describe it in the Hearth app (real Qwen compiles it), or start from `hub/watches.example.json`; put the
+   compiled spec in `~/.hearth/watches.json` with your node's id and `actuate` → led.
+4. **Turn on phone push:** `export NTFY_TOPIC=hearth-<something-unique>`, install the free **ntfy** app, subscribe to that topic.
+5. **Rehearse with no hardware if needed:** `node hub/hub.mjs` + `node hub/tools/fake-node.mjs` reproduces the whole fire→LED→push
+   loop on one laptop — good for a dry run and for capturing clean terminal B-roll.
 
 ---
 
 ## The one-line spine
-Describe your home in plain words → Qwen **compiles** it into a live watch → and it **reasons** about the real world as it runs.
+Plug in a chip → it introduces itself → you say what you want → Qwen compiles it → and it runs on your real hardware, in your home.
 
 ---
 
@@ -42,54 +43,50 @@ Describe your home in plain words → Qwen **compiles** it into a live watch →
 
 | Time | Visual | Audio |
 |---|---|---|
-| **0:00–0:10** | `[CAM]` You, direct to camera. Clean room, warm light. Fast, punchy. | "Everyone wants a smart home. Almost nobody has one — because to automate *anything*, you first have to *program* it. Rules, thresholds, if-this-then-that. So the rest of us just… don't." |
-| **0:10–0:20** | `[CAM]` → `[GFX]` title card: **Hearth — the home you describe, not program.** | "Hearth kills the rules. You describe your home in plain words — and an AI *compiles* it into something that actually runs." |
-| **0:20–0:38** | `[SCREEN]` Landing → `/demo`. The living floor plan: rooms, sensors, actuators, Describe console on the left, Activity feed on the right. | `[VO]` "No login, no hardware — this is running in your browser right now. A whole simulated home: rooms, sensors, actuators, all live. So watch what happens when I just *say* what I want." |
-| **0:38–1:05** | `[SCREEN]` Type into the Describe box: *"Warn me if the garage is open after dark and it's cold — and turn on the heater."* Hit **Compile ↵** → **"QWEN IS COMPILING"** dots → the **compiled watch card** animates in (bound-input chips · When/Do rows · `local · offline` + `no tokens` badges). | `[VO]` "'Warn me if the garage is open after dark and it's cold — and turn on the heater.' Compile. I never picked a sensor. I never wrote a rule. Qwen read what this home can sense and do, and compiled my sentence into a working *watch* — the inputs to bind, the trigger, the action. That's program synthesis, not a form." |
-| **1:05–1:22** | `[SCREEN]` Add a second watch that needs vision (e.g. *"Tell me if a package is left on the porch"*). Card comes back tagged **Qwen-VL**. Open its **RECORD POLICY**: toggle **Metered**, tap a frame-rate preset, open the **Model** dropdown. `[GFX]` subtle "tuning live" callout. | `[VO]` "And I can change my mind. Let me add one that has to actually *see* — is a package on the porch. Qwen binds the camera and reaches for vision — and I can tune it live: how often it looks, and which model does the looking." |
-| **1:22–1:40** | `[SCREEN]` Top-bar world controls: set **Night**, drop **Garage temp** (preset Freezing), open the **Garage door**. Threshold crosses → heater actuator flips **ON**, **push toast** (🔥 …), Activity feed logs **Fired**. | `[VO]` "Now I'll turn the world. Push it past dark, drop the temperature, open the garage — and the watch fires on its own. Heater on. I get pinged. I never touched it." |
-| **1:40–2:05** | `[SCREEN]` **At the door** visitor picker → choose a *non-family* person. The vision watch reasons in the feed; `[GFX]` overlay surfaces the plain-language reasoning ("Not a household member — worth a ping"). *(Optional `[SHOOT]` real-entryway B-roll cutaway if you filmed it — see notes.)* | `[VO]` "But some things a threshold can never judge. Someone's at the door — is that family, or not? A dumb sensor trips on any motion. This one *looks*, and reasons: not a household member, worth a ping. That's Qwen-VL — an agent, not a tripwire." |
-| **2:05–2:24** | `[SCREEN]` Flip Network to **Offline** → local watches keep firing; cloud checks log **offline** and queue. Flip back **Online** → a **"Back online / SYNC"** event summarizes the catch-up. `[GFX]` quiet "nothing left the house" privacy line (the real on-card note). | `[VO]` "Now cut the network. The simple watches keep running right on the hub — nothing ever left the house. And the moment you're back online, it tells you exactly what it caught up on while you were dark." |
-| **2:24–2:40** | `[SCREEN]` Cut to `/dashboard` (signed in): **Connect a hub** with an 8-char code → hub goes **Online**, real **device + sensor tiles** populate, summary chips (hubs · devices · sensors · watches). | `[VO]` "And this isn't a sandbox. Sign in, pair a real hub with a code, and your actual devices show up here — live, running on Alibaba Cloud. Same watches. Real house." |
-| **2:40–2:52** | `[CAM]` You, direct to camera. `[GFX]` end card: **Hearth · open source · built on Qwen Cloud · <repo URL>.** | "No rules. No YAML. You describe your home — Qwen compiles the rest. Hearth is open source. Clone it, and stop *programming* your house." |
+| **0:00–0:11** | `[CAM]` You, direct to camera. Fast, punchy. | "Everyone wants a smart home. Almost nobody has one — because to automate *anything*, you first have to *program* it. Rules, thresholds, if-this-then-that. So the rest of us just… don't." |
+| **0:11–0:22** | `[CAM]` → `[GFX]` title card: **Hearth — the home you describe, not program.** | "Hearth kills the rules. You plug in a chip, tell your house what you want in plain words, and an AI wires it up — on real hardware, in your actual home." |
+| **0:22–0:42** | `[SHOOT]` Hands plug a bare ESP32 into USB. `[SCREEN]` serial monitor scrolls: `=== Hearth sensor node ===`, then `DESCRIBE … can sense: board.temp · can do: led`, then live `READING` lines. `[GFX]` highlight "can sense / can do". | `[VO]` "This is a two-dollar chip. I flash it — and it *introduces itself*. Here's who I am, here's what I can sense, here's what I can do. No driver, no config file. It just starts talking." |
+| **0:42–1:05** | `[SCREEN]` Hub terminal: `+ NEW NODE … can sense: board.temp · can do: led`, then the boxed **claim code**. Cut to `[SHOOT]` phone: dashboard → **Connect a hub** → type the code → hub flips **Online**, a **temperature tile** shows the board's real reading. | `[VO]` "My hub finds it on the network on its own — no address to type. I pair the hub to the cloud with one code, and the device shows up on my phone, live, with its real temperature. That's running on Alibaba Cloud." |
+| **1:05–1:30** | `[SCREEN]` Type a wish: *"If this gets too warm, turn on the light and text me."* Hit **Compile ↵** → **"QWEN IS COMPILING"** → the compiled **watch card** (bound input `board.temp`, When/Do, `local · offline`). | `[VO]` "Now I just say what I want. 'If this gets too warm, turn on the light and text me.' I hit compile — and Qwen reads what my hardware can actually sense and do, and turns that one sentence into a running watch. I never picked a sensor. I never wrote a rule." |
+| **1:30–2:05** | **THE MONEY SHOT.** `[SHOOT]` One continuous take: you cup the ESP32 in your hand; `[GFX]` the temperature number climbs; it crosses the threshold; the board's **LED lights up**; your **phone buzzes** with the push notification. Hold on all three: hand, LED, phone. | `[VO]` "So let's try it for real. I warm the sensor with my hand… the temperature climbs… it crosses the line — and the board lights up, and my phone buzzes. Real sensor, real trigger, a real device switching on." |
+| **2:05–2:25** | `[SHOOT]` Pull the ethernet / flip the router off (or airplane-mode the hub's uplink), warm the board again → the **LED still lights**. `[GFX]` "runs on the hub · works offline · nothing leaves home." | `[VO]` "And here's the part that matters: that watch runs right on the hub, in my house. It doesn't need the cloud to fire — cut the internet and it still works. Nothing about my home has to leave my home for the simple stuff." |
+| **2:25–2:40** | `[CAM]` You to camera, holding the board. `[GFX]` a camera-module node next to it (or a quick render) to signal "next". | "Today this node senses temperature and switches a light. The exact same self-describing contract takes a *camera* next — so Qwen can reason about what it actually sees. Same chip, same one sentence, richer senses." |
+| **2:40–2:52** | `[CAM]` → `[GFX]` end card: **Hearth · open source · built on Qwen Cloud · <repo URL>.** | "No rules. No YAML. You plug it in and tell your house what you want. Hearth is open source — clone it, and go talk to your house." |
 
-**Total: ~2:52.** Buffer to trim: the record-policy tuning beat (1:05–1:22) can lose ~5s, and the offline beat (2:05–2:24) can lose ~4s, if you run long.
+**Total: ~2:52.** Buffer to trim: the offline beat (2:05–2:25) can lose ~6s if you run long.
 
 ---
 
 ## Word count / pacing
-~330 spoken words ≈ 2:50 at a calm 115 wpm, leaving air for the overlays to breathe. If you run long,
-cut sentences before cutting beats — every beat below maps to a rubric clause.
+~340 spoken words ≈ 2:50 at ~120 wpm. If you run long, cut sentences before cutting beats.
 
 ## Beat → rubric map (why each shot earns its place)
 | Beat | Serves |
 |---|---|
-| Describe → Compile → watch card | **Innovation + Tech**: NL→config program synthesis; visible, sophisticated Qwen use |
-| Add vision watch + tune Record policy live | **Tech + Innovation**: synthesis is *interactive*; metered cost/model control; Qwen-VL binding |
-| World controls → watch fires | **Tech**: end-to-end perceive→decide→act loop, judge-runnable with zero hardware |
-| Visitor picker → Qwen-VL reasons | **Tech + Innovation**: open-ended reasoning; "agent, not a tripwire" |
-| Offline "while you were dark" + on-hub note | Rubric's graceful-degradation + privacy-aware clauses |
-| Live dashboard: pair a real hub on Alibaba Cloud | **Impact + Tech**: real deployment, real devices, not a mockup |
+| Flash → self-describing node | **Innovation + Tech**: zero-config, self-describing edge hardware — real, on camera |
+| Auto-discover → pair → dashboard on Alibaba Cloud | **Tech + Impact**: real edge→cloud pipeline, real device online |
+| Plain-English wish → real Qwen compiles a watch | **Innovation + Tech**: NL→config program synthesis with a live Qwen key |
+| Warm the board → LED lights → phone buzzes | **Tech**: end-to-end perceive→decide→act on *real hardware*, filmed live |
+| Offline fire | Rubric's graceful-degradation + local/privacy clauses |
+| "camera next" close | Honest roadmap; sets up Qwen-VL without overclaiming |
 | Open-source close | **Impact + Presentation**: accessibility, credibility |
 
-## Shot list to capture (production checklist)
-- `[CAM]` 3 host takes: hook (0:00), thesis (0:10), close (2:40). Same framing/wardrobe for continuity.
-- `[SCREEN]` clean captures of: landing→/demo, Describe→Compile, add-vision-watch + Record policy tuning, world controls →
-  fire event + push toast, visitor-picker vision reasoning, Offline→Online sync, and `/dashboard` hub pairing with real tiles.
-- `[SHOOT]` *(optional flex)* entryway: real camera → monitor live playback, one person approaching, good light. **Only use this
-  if you actually shot it** — do not narrate "real camera / live Qwen-VL" over the simulated demo. If unshot, cut it; the
-  simulated vision watch carries the beat honestly.
-- `[GFX]` to generate: title card, "tuning live" callout, VL reasoning-trace overlay, "nothing left the house" line, end card.
+## Shot list to capture
+- `[CAM]` host takes: hook (0:00), thesis (0:11), "camera next" (2:25), close (2:40). Same framing/wardrobe.
+- `[SHOOT]` **hero take** (2 min of coverage, multiple passes): the hand-warm → LED → phone-buzz in ONE frame if you can; also singles of each.
+- `[SHOOT]` flashing the board + USB; the offline pull-the-plug beat.
+- `[SCREEN]` serial monitor (DESCRIBE/READING), hub terminal (NEW NODE + claim code), phone dashboard (hub Online + temp tile), the Describe→Compile watch card.
+- `[GFX]` title card, "can sense / can do" callout, climbing-temperature overlay, "works offline / nothing leaves home", end card.
 
 ## Production notes
-- **Pre-seed the demo** so recording is clean: have the garage/heater watch authored, then drive the world controls on camera.
-- **Reset ↺** between takes (top bar) to clear watches/activity for a fresh compile shot.
-- Use **speed 60×** off-camera to advance time between beats; return to **1×** while the watch fires so the toast reads.
-- The brain pill reads **"Qwen (simulated)"** by default. If you want the pill to read live Qwen, set `EXPO_PUBLIC_USE_QWEN=1`
-  before capture — otherwise keep the language as "Qwen compiles / Qwen-VL reasons" (true of the design) and don't zoom on the pill.
+- **Get the LED to read on camera.** GPIO2's built-in LED is small — for a punchier shot, wire a bigger LED or a relay+lamp to a GPIO
+  and set `ACTUATOR_PIN` to it (`ACTUATOR_ACTIVE_HIGH 0` for active-low relays). Still 100% real.
+- **Make the temperature climb fast.** Cupping the chip works; a brief breath or a hand-warmer speeds it. Keep the threshold just above idle.
+- **Frame the phone and the board together** for the money shot so there's no cut between cause and effect — that single unbroken frame is what sells "real."
+- **ntfy** shows the 🔥 via its Tags; the push title is ASCII-sanitized (headers can't carry emoji), body keeps full text.
 
 ## Open calls (yours)
 1. **Product name** on the title/end cards — keep "Hearth"?
 2. **Voice** — VO in post, or on-camera sync sound throughout?
-3. **Real-hardware `[SHOOT]`** — film the entryway hero shot, or ship the tighter all-`[SCREEN]` cut? (Lean: all-screen for honesty + speed; add hardware later if you have footage.)
-4. **Landing copy** still says "deployment" in ~3 spots while the product says "watch." Worth a one-line copy pass so the site and the video agree — not blocking the recording.
+3. **Second sensor for the trigger?** Temperature-by-hand is reliable and needs zero wiring. A reed/door switch would be more "home,"
+   but it's not in the firmware yet — temperature is the honest, filmable trigger today.

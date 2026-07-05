@@ -1,26 +1,21 @@
-HEARTH — read-aloud script (~2:50 at a calm 115 wpm)
-Say "watch" (not "deployment") — that's the word on screen. Say "compile" — the button literally says Compile.
+HEARTH — read-aloud script, REAL-HARDWARE cut (~2:50 at ~120 wpm)
+Every beat below is real and filmable today (see docs/06-video-script.md for the shot list).
+Say "watch" (the on-screen noun) and "compile" (the button word).
 
 Everyone wants a smart home. Almost nobody has one — because to automate anything, you first have to program it. Rules, thresholds, if-this-then-that. So the rest of us just… don't.
 
-Hearth kills the rules. You describe your home in plain words, and an AI compiles it into something that actually runs.
+Hearth kills the rules. You plug in a chip, tell your house what you want in plain words, and an AI wires it up — on real hardware, in your actual home.
 
-No login, no hardware — this runs in your browser right now. A whole simulated home: rooms, sensors, actuators, all live. So watch what happens when I just say what I want.
+This is a two-dollar chip. I flash it — and it introduces itself. Here's who I am, here's what I can sense, here's what I can do. No driver, no config file. It just starts talking.
 
-"Warn me if the garage is open after dark and it's cold — and turn on the heater." Compile.
+My hub finds it on the network on its own — no address to type. I pair the hub to the cloud with one code, and the device shows up on my phone, live, with its real temperature. That's running on Alibaba Cloud.
 
-I never picked a sensor. I never wrote a rule. Qwen read what this home can sense and do, and compiled my sentence into a working watch — the inputs, the trigger, the action. That's program synthesis, not a form.
+Now I just say what I want. "If this gets too warm, turn on the light and text me." I hit compile — and Qwen reads what my hardware can actually sense and do, and turns that one sentence into a running watch. I never picked a sensor. I never wrote a rule.
 
-And I can change my mind. Let me add one that has to actually see — is a package on the porch. Qwen reaches for vision, and I tune it live: how often it looks, and which model does the looking.
+So let's try it for real. I warm the sensor with my hand… the temperature climbs… it crosses the line — and the board lights up, and my phone buzzes. Real sensor, real trigger, a real device switching on.
 
-Now I'll turn the world. Push it past dark, drop the temperature, open the garage —
+And here's the part that matters: that watch runs right on the hub, in my house. It doesn't need the cloud to fire — cut the internet and it still works. Nothing about my home has to leave my home for the simple stuff.
 
-— and the watch fires on its own. Heater on. I get pinged. I never touched it.
+Today this node senses temperature and switches a light. The exact same self-describing contract takes a camera next — so Qwen can reason about what it actually sees. Same chip, same one sentence, richer senses.
 
-But some things a threshold can't judge. Someone's at the door — family, or not? A dumb sensor trips on any motion. This one looks, and reasons: not a household member, worth a ping. That's Qwen-VL — an agent, not a tripwire.
-
-Now cut the network. The simple watches keep running right on the hub — nothing ever left the house. And when you're back online, it tells you what it caught up on while you were dark.
-
-And this isn't a sandbox. Sign in, pair a real hub with a code, and your actual devices show up here — live, on Alibaba Cloud. Same watches. Real house.
-
-No rules. No YAML. You describe your home — Qwen compiles the rest. Hearth is open source. Clone it, and stop programming your house.
+No rules. No YAML. You plug it in and tell your house what you want. Hearth is open source — clone it, and go talk to your house.

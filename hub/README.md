@@ -53,6 +53,40 @@ node (ESP32)                         hub (hub.mjs)                    Hearth Clo
 > (ingest couldn't see the token). Merging both into `hub.mjs` with an in-memory token removes
 > the race entirely.
 
+### Watches run here — fire → actuate → notify
+
+The hub doesn't just collect readings; it **runs the rule engine** and acts. `runtime.mjs`
+loads your compiled watches, evaluates them against live node readings every tick (and on every
+fresh reading), and on a rising edge it **fires**: it drives a real actuator on the node and
+sends you a real phone notification.
+
+```
+node (ESP32)                      hub (hub.mjs + runtime.mjs)
+ │  POST /ingest  READING ───────▶ ReadingStore → evaluate(watch.expr)   engine.mjs
+ │                                   │ rising edge + cooldown → FIRE
+ │  ◀── POST /actuate {led:on} ──────┤ actuate: drive the node's GPIO
+ │      (LED lights / relay flips)   └ notify: push to your phone ──────▶ ntfy / Telegram
+```
+
+- **`engine.mjs`** is a faithful port of the browser demo's evaluator
+  (`frontend/src/demo/engine/*`) — it interprets the exact `PredicateNode` grammar Qwen emits,
+  so a watch authored in the cloud runs unchanged on the hub, against **real wall-clock time**.
+- **Watches** are read from `~/.hearth/watches.json` (override `HUB_WATCHES_FILE`). Author one in
+  plain English in the Hearth app (real Qwen compiles the spec) and drop it in, or start from
+  [`watches.example.json`](watches.example.json). Only `kind: "local"` watches run on the hub;
+  vision (cloud) watches still run in the app.
+- **Notifications** (`notify.mjs`): set `NTFY_TOPIC` (install the free **ntfy** app, no account) or
+  `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`. With neither set, fires still actuate + log; you just
+  don't get a push. Nothing is faked — a channel reports delivered only when the provider accepts it.
+- **It works offline.** Evaluation and actuation happen on the hub; cutting the internet doesn't stop a local watch from firing.
+
+Try the whole loop with no hardware:
+
+```bash
+node hub/tools/selftest.mjs                       # asserts fire-once + actuate ON (exits non-zero on failure)
+node hub/hub.mjs & node hub/tools/fake-node.mjs   # a software node that heats up until a watch fires
+```
+
 ### mDNS is optional
 
 mDNS auto-discovery needs the `bonjour-service` package; the installer pulls it via `npm`.
@@ -101,6 +135,10 @@ hub                          cloud                         user (dashboard)
 - `HUB_SYNC_MS` — device sync cadence (default `15000`)
 - `HUB_FW` — reported firmware string
 - `HEARTH_NO_MDNS=1` — install/run without mDNS
+- `HUB_WATCHES_FILE` — compiled watches to run (default `~/.hearth/watches.json`)
+- `HUB_TICK_MS` — watch re-evaluation cadence for time-based predicates (default `1000`)
+- `NTFY_TOPIC` (+ optional `NTFY_URL`) — phone push via ntfy on a watch firing
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` — phone push via Telegram on a watch firing
 - `--reset` — forget stored identity and enroll fresh
 
 Identity persists to `~/.hearth/hub-state.json`, so restarting keeps the same hub.
