@@ -1,56 +1,56 @@
 /**
- * Realtime sensor stream, straight from the hub's LAN WebSocket (hub/hub.mjs → /live).
+ * Realtime sensor stream — cloud-brokered, auto-discovered.
  *
- * This is the off-grid path: when the dashboard is on the same network as the hub, the
- * browser talks to it directly, so sensor tiles update the instant a node reports — no
- * cloud round-trip and no polling, and it keeps working with no internet at all. It layers
- * on top of the existing load-on-mount fetch (home.ts): the initial values come from the
- * cloud, then live pushes patch them in place.
+ * When you open a web session it asks the backend "how do I reach my hub live?"
+ * (GET /live/ticket, authed by your session). The backend finds the account's hub and,
+ * if realtime is provisioned, returns the Alibaba API Gateway `wss` URL, the gateway
+ * AppKey, and a short-lived ticket. We then open a secure WebSocket to the gateway and
+ * register with that ticket — the gateway relays readings your hub pushes up to the cloud.
+ * No LAN, no per-device URL config: autodiscovery falls out of the session → account → hub.
  *
- * The hub URL comes from EXPO_PUBLIC_HUB_URL (e.g. ws://hearth-hub.local:8899 or
- * ws://192.168.1.27:8899). When it's unset the hook is inert and the dashboard falls back
- * to its manual-refresh behaviour, so remote/over-internet sessions are unaffected.
+ * The AppSecret never reaches the browser — only the scoped, 90s ticket does; the backend
+ * verifies it at register time (see backend/src/server.ts /live/register).
+ *
+ * Transport is Alibaba API Gateway's WebSocket "two-way communication" control protocol
+ * (RG/RO/H1/HO/NF/NO). Alibaba ships no browser SDK, so it's implemented here by hand.
+ *
+ * ⚠️ Two details can only be finalized against a live, provisioned gateway (see
+ *    docs/realtime-apigateway.md): the secure wss PORT, and the exact JSON envelope for
+ *    sending the REGISTER api call over the channel. Both are isolated below and marked.
  */
 
 import { useEffect, useRef, useState } from 'react';
 
+import { backendBase } from '@/auth/client';
 import type { Reading } from '@/lib/home';
 
-/**
- * Normalise EXPO_PUBLIC_HUB_URL into a /live WebSocket URL. Accepts a bare host:port, an
- * http(s):// base, or a full ws(s):// URL, with or without a trailing /live. Returns null
- * when unconfigured (realtime disabled).
- */
-export function hubLiveUrl(): string | null {
-  const raw = process.env.EXPO_PUBLIC_HUB_URL?.trim();
-  if (!raw) return null;
-  let u = raw;
-  if (u.startsWith('http://')) u = `ws://${u.slice(7)}`;
-  else if (u.startsWith('https://')) u = `wss://${u.slice(8)}`;
-  else if (!u.startsWith('ws://') && !u.startsWith('wss://')) u = `ws://${u}`;
-  u = u.replace(/\/+$/, '');
-  if (!/\/live$/.test(u)) u += '/live';
-  return u;
+export type LiveStatus = 'off' | 'unconfigured' | 'offline' | 'connecting' | 'live';
+
+interface Ticket {
+  enabled: boolean;
+  hubId?: string;
+  online?: boolean;
+  wsUrl?: string;
+  appKey?: string;
+  ticket?: string;
+  hub?: null;
 }
 
-export type LiveStatus = 'off' | 'connecting' | 'live' | 'reconnecting';
-
-interface ReadingMsg {
-  type: 'reading';
-  node: string;
-  at: number;
-  readings: Record<string, number | null>;
+async function fetchTicket(token: string | null | undefined): Promise<Ticket | null> {
+  try {
+    const res = await fetch(`${backendBase}/live/ticket`, {
+      headers: token ? { authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as Ticket;
+  } catch {
+    return null;
+  }
 }
-interface SnapshotMsg {
-  type: 'snapshot';
-  at: number;
-  nodes: { id: string; lastReading: Record<string, number | null> | null }[];
-}
-type HubMsg = ReadingMsg | SnapshotMsg | { type: string };
 
 // Turn a node's {key: value} map into dashboard readings keyed by capability id
-// (`${node}.${key}` — the exact id describe_home / read_input use), dropping non-numeric.
-function flatten(node: string, readings: Record<string, number | null> | null, at: number): Record<string, Reading> {
+// (`${node}.${key}` — the id describe_home / read_input use), dropping non-numeric.
+function flatten(node: string, readings: Record<string, unknown> | null | undefined, at: number): Record<string, Reading> {
   const out: Record<string, Reading> = {};
   if (!readings) return out;
   for (const [k, v] of Object.entries(readings)) {
@@ -62,87 +62,187 @@ function flatten(node: string, readings: Record<string, number | null> | null, a
   return out;
 }
 
+function uuidNoDashes(): string {
+  // crypto.randomUUID exists in modern browsers + RN Hermes; fall back to a random hex.
+  const g = globalThis as { crypto?: { randomUUID?: () => string } };
+  const raw = g.crypto?.randomUUID?.() ?? `${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}`;
+  return raw.replace(/-/g, '');
+}
+
 /**
- * Subscribe to the hub's live reading stream. Calls `onReadings` with a map of
- * { [capabilityId]: Reading } to merge into dashboard state, both for the initial
- * snapshot and each subsequent push. Auto-reconnects with capped backoff. Returns a
- * status you can surface as a "live" indicator.
+ * Build the "call an API over the WebSocket channel" envelope the gateway expects for the
+ * REGISTER api. Per Alibaba's Call-API guide the channel carries a JSON request descriptor;
+ * `x-ca-websocket_api_type: REGISTER` marks it as the register call, `x-ca-deviceid` names
+ * this connection, and our ticket rides as the `password` param the backend verifies.
+ *
+ * ⚠️ VERIFY against your gateway: the field set below ({method,host,path,headers,body,…})
+ * follows the documented envelope, but serialization specifics can only be confirmed live.
+ * REGISTER_PATH must equal the path you assign the REGISTER api in the console.
  */
-export function useHubLive(onReadings: (updates: Record<string, Reading>) => void): LiveStatus {
+const REGISTER_PATH = '/live/register';
+function registerEnvelope(host: string, deviceId: string, ticket: string): string {
+  return JSON.stringify({
+    method: 'POST',
+    host,
+    path: REGISTER_PATH,
+    querys: {},
+    headers: {
+      'x-ca-websocket_api_type': 'REGISTER',
+      'x-ca-deviceid': deviceId,
+      'content-type': 'application/json',
+    },
+    isBase64: 0,
+    body: JSON.stringify({ password: ticket }),
+  });
+}
+
+/**
+ * Subscribe to the account's hub readings through the cloud gateway. Calls `onReadings`
+ * with { [capabilityId]: Reading } to merge into dashboard state. Returns a status for the
+ * UI ('live' / 'connecting' / 'offline' / 'unconfigured' / 'off').
+ */
+export function useHubLive(
+  token: string | null | undefined,
+  onReadings: (updates: Record<string, Reading>) => void,
+): LiveStatus {
   const [status, setStatus] = useState<LiveStatus>('off');
-  // Keep the latest callback without re-opening the socket when the dashboard re-renders.
   const cbRef = useRef(onReadings);
   useEffect(() => {
     cbRef.current = onReadings;
   });
 
   useEffect(() => {
-    const url = hubLiveUrl();
-    // No hub configured (or no WebSocket, e.g. SSR) → stay 'off', which is the initial state.
-    if (!url || typeof WebSocket === 'undefined') return;
-
-    let ws: WebSocket | null = null;
     let stopped = false;
+    let ws: WebSocket | null = null;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
 
-    const connect = () => {
-      if (stopped) return;
-      setStatus(attempt === 0 ? 'connecting' : 'reconnecting');
-      ws = new WebSocket(url);
-
-      ws.onopen = () => {
-        attempt = 0;
-        setStatus('live');
-      };
-      ws.onmessage = (ev) => {
-        if (typeof ev.data !== 'string') return;
-        let msg: HubMsg;
-        try {
-          msg = JSON.parse(ev.data) as HubMsg;
-        } catch {
-          return;
-        }
-        if (msg.type === 'reading') {
-          const m = msg as ReadingMsg;
-          const updates = flatten(m.node, m.readings, m.at);
-          if (Object.keys(updates).length) cbRef.current(updates);
-        } else if (msg.type === 'snapshot') {
-          const m = msg as SnapshotMsg;
-          const all: Record<string, Reading> = {};
-          for (const n of m.nodes ?? []) Object.assign(all, flatten(n.id, n.lastReading, m.at));
-          if (Object.keys(all).length) cbRef.current(all);
-        }
-      };
-      ws.onclose = () => {
-        if (stopped) return;
-        attempt += 1;
-        setStatus('reconnecting');
-        const delay = Math.min(1000 * 2 ** attempt, 15000);
-        timer = setTimeout(connect, delay);
-      };
-      ws.onerror = () => {
-        // Let onclose drive the reconnect; just close so it fires.
-        try {
-          ws?.close();
-        } catch {
-          /* ignore */
-        }
-      };
-    };
-
-    connect();
-
-    return () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
+    const cleanupSocket = () => {
+      if (heartbeat) clearInterval(heartbeat);
+      heartbeat = undefined;
       try {
         ws?.close();
       } catch {
         /* ignore */
       }
+      ws = null;
     };
-  }, []);
+
+    // Re-fetch a ticket (it's short-lived) and (re)connect, or back off / mark offline.
+    const cycle = async () => {
+      if (stopped) return;
+      if (!token || typeof WebSocket === 'undefined') {
+        setStatus('off');
+        return;
+      }
+      const t = await fetchTicket(token);
+      if (stopped) return;
+
+      if (!t || !t.enabled) {
+        setStatus('unconfigured'); // realtime not provisioned in the cloud — dashboard uses load+refresh
+        return;
+      }
+      if (!t.hubId || !t.wsUrl || !t.appKey || !t.ticket) {
+        setStatus('offline'); // no hub paired yet
+        scheduleRetry(15000);
+        return;
+      }
+      if (!t.online) {
+        setStatus('offline'); // hub paired but not currently heartbeating
+        scheduleRetry(10000);
+        return;
+      }
+
+      connect(t.wsUrl, t.appKey, t.ticket);
+    };
+
+    const connect = (wsUrl: string, appKey: string, ticket: string) => {
+      setStatus('connecting');
+      const deviceId = `${uuidNoDashes()}@${appKey}`;
+      let host = '';
+      try {
+        host = new URL(wsUrl).host;
+      } catch {
+        /* leave host empty; envelope still sends */
+      }
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        // Step 1: register the connection itself.
+        ws?.send(`RG#${deviceId}`);
+      };
+
+      ws.onmessage = (ev) => {
+        const data = typeof ev.data === 'string' ? ev.data : '';
+        if (!data) return;
+
+        if (data.startsWith('RO#')) {
+          // Connection registered. Parse keepAlive (ms) → start H1 heartbeat, then send the
+          // REGISTER api call over the channel to authenticate with our ticket.
+          const parts = data.split('#');
+          const keepAlive = Number(parts[2]) || 25000;
+          ws?.send(registerEnvelope(host, deviceId, ticket));
+          if (heartbeat) clearInterval(heartbeat);
+          heartbeat = setInterval(() => ws?.send('H1'), Math.max(5000, keepAlive - 3000));
+          attempt = 0;
+          setStatus('live');
+        } else if (data.startsWith('RF#')) {
+          cleanupSocket();
+          scheduleRetry(backoff());
+        } else if (data.startsWith('NF#')) {
+          // A pushed message. Strip the 3-char prefix, parse, patch, and ACK with NO.
+          const payload = data.slice(3);
+          ws?.send('NO');
+          try {
+            const msg = JSON.parse(payload) as { type?: string; at?: number; nodes?: { id: string; readings: Record<string, unknown> }[] };
+            if (msg.type === 'readings' && Array.isArray(msg.nodes)) {
+              const all: Record<string, Reading> = {};
+              for (const n of msg.nodes) Object.assign(all, flatten(n.id, n.readings, msg.at ?? Date.now()));
+              if (Object.keys(all).length) cbRef.current(all);
+            }
+          } catch {
+            /* ignore malformed push */
+          }
+        } else if (data === 'OS' || data === 'CR') {
+          // Gateway asking us to reconnect (throttled, or connection nearing its request cap).
+          cleanupSocket();
+          scheduleRetry(1000);
+        }
+        // 'HO#…' heartbeat acks need no action.
+      };
+
+      ws.onclose = () => {
+        if (stopped) return;
+        if (heartbeat) clearInterval(heartbeat);
+        heartbeat = undefined;
+        scheduleRetry(backoff());
+      };
+      ws.onerror = () => {
+        try {
+          ws?.close();
+        } catch {
+          /* onclose will schedule the retry */
+        }
+      };
+    };
+
+    const backoff = () => Math.min(1000 * 2 ** ++attempt, 15000);
+    const scheduleRetry = (delay: number) => {
+      if (stopped) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => void cycle(), delay);
+    };
+
+    void cycle();
+
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      cleanupSocket();
+    };
+  }, [token]);
 
   return status;
 }

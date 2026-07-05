@@ -322,8 +322,10 @@ function safeEqualHex(a: string, b: string): boolean {
 const JWT_ISS = 'hearth';
 const JWT_AUD = 'hearth-app';
 const JWT_AUD_HUB = 'hearth-hub'; // audience for hub (edge-agent) tokens — a distinct identity
+const JWT_AUD_WS = 'hearth-ws'; // audience for realtime WebSocket register tickets
 const JWT_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
 const HUB_TOKEN_TTL_SEC = 180 * 24 * 60 * 60; // 180 days; revocation is via the hub-record check on heartbeat
+const WS_TICKET_TTL_SEC = 90; // realtime tickets are single-use-ish and short — just long enough to connect + register
 
 interface SessionPayload {
   sub: string; // account id
@@ -421,6 +423,32 @@ export function verifyHubToken(token: string | undefined): HubTokenPayload | nul
 /** Keyed HMAC-SHA256 (hex) over an arbitrary string — used to store enrollment-token hashes. */
 export function hmacHex(input: string): string {
   return createHmac('sha256', sessionSecret()).update(input).digest('hex');
+}
+
+export interface WsTicketPayload {
+  sub: string; // account id
+  hub: string; // the hub id this session is authorized to stream from
+  iat: number;
+  exp: number;
+}
+
+/**
+ * A short-lived (90s) ticket the browser presents to the API Gateway at register time
+ * (as the `password` request param). The gateway forwards it to /live/register, where we
+ * verify it here — so the AppSecret never touches the browser; only this scoped, expiring
+ * token does. Bound to a specific hub so a ticket can't be replayed against another's hub.
+ */
+export function issueWsTicket(accountId: string, hubId: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  return issueJwt({ sub: accountId, hub: hubId, aud: JWT_AUD_WS, iat: now, exp: now + WS_TICKET_TTL_SEC });
+}
+
+export function verifyWsTicket(token: string | undefined): WsTicketPayload | null {
+  const p = verifyJwt(token, JWT_AUD_WS);
+  if (!p) return null;
+  if (typeof p.sub !== 'string' || !p.sub) return null;
+  if (typeof p.hub !== 'string' || !p.hub) return null;
+  return { sub: p.sub, hub: p.hub, iat: typeof p.iat === 'number' ? p.iat : 0, exp: p.exp as number };
 }
 
 /* --------------------------------------------------------------- email (Zepto) */

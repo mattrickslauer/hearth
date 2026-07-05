@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "smoke": "tsx scripts/smoke.ts",
+    "live-check": "tsx scripts/live-check.ts",
     "qwen-check": "tsx scripts/qwen-check.ts",
     "mail-check": "tsx scripts/mail-check.ts",
     "typecheck": "tsc --noEmit",

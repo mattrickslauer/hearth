@@ -107,8 +107,11 @@ function ingest(doc) {
     entry.lastReading = doc.readings || null;
     entry.readingCount += 1;
     console.log(`[hub] ${id} reading #${entry.readingCount}: ${JSON.stringify(doc.readings)}`);
-    // Fan the reading out to LAN dashboards the instant it lands — the realtime path.
+    // Fan the reading out to LAN dashboards the instant it lands — the direct realtime path.
     if (live) live.broadcast({ type: 'reading', node: id, at: Date.now(), readings: doc.readings || {} });
+    // And nudge a cloud sync so remote (cloud-brokered) dashboards update promptly too,
+    // coalescing bursts instead of waiting out the 15s timer.
+    scheduleSync();
   } else {
     return false;
   }
@@ -144,6 +147,19 @@ async function api(path, body, token) {
   });
   const data = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, data };
+}
+
+// Coalesce reading bursts into at most one cloud sync per debounce window, so remote
+// dashboards get near-realtime updates without a POST per reading.
+const SYNC_DEBOUNCE_MS = Number(process.env.HUB_SYNC_DEBOUNCE_MS || 1000);
+let syncDebounce = null;
+function scheduleSync() {
+  if (syncDebounce) return;
+  syncDebounce = setTimeout(() => {
+    syncDebounce = null;
+    syncToCloud();
+  }, SYNC_DEBOUNCE_MS);
+  if (syncDebounce.unref) syncDebounce.unref();
 }
 
 let syncing = false;
@@ -315,6 +331,7 @@ async function main() {
   const shutdown = () => {
     console.log('\n[hub] shutting down…');
     clearInterval(syncTimer);
+    if (syncDebounce) clearTimeout(syncDebounce);
     if (live) live.close();
     if (bonjour) bonjour.unpublishAll(() => bonjour.destroy());
     server.close(() => process.exit(0));
