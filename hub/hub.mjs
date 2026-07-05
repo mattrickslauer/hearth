@@ -82,6 +82,10 @@ let accountId = state.accountId || null;
 
 // ── node registry (LAN side) ──────────────────────────────────────────────────
 const nodes = new Map();
+// Desired per-node sample cadence in ms (nodeId → ms), learned from the cloud on each
+// device sync. We hand each node its cadence in the HTTP response to its next ingest POST
+// — the node polls us by POSTing, so its own POST is the downlink carrier (no node server).
+const desiredCadence = new Map();
 // LAN realtime channel (browser dashboards on the same network). Set in main() once the
 // HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
 let live = null;
@@ -118,6 +122,16 @@ function ingest(doc) {
 
   nodes.set(id, entry);
   return true;
+}
+
+// Replace our view of desired cadences with the cloud's latest (nodeId → ms). Nodes the
+// account hasn't set a cadence for simply won't appear — we send them no override.
+function applyCadences(cadences) {
+  if (!cadences || typeof cadences !== 'object') return;
+  desiredCadence.clear();
+  for (const [nodeId, ms] of Object.entries(cadences)) {
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) desiredCadence.set(nodeId, Math.round(ms));
+  }
 }
 
 function readJson(req) {
@@ -172,6 +186,8 @@ async function syncToCloud() {
     const { ok, status, data } = await api('/hub/devices', { platform: platform(), nodes: [...nodes.values()] }, hubToken);
     if (ok) {
       console.log(`[hub→cloud] synced ${data.nodes ?? '?'} node(s), ${data.readings ?? 0} reading(s)`);
+      // Absorb the account's desired per-node cadences; each node picks its up on next ingest.
+      applyCadences(data.cadences);
     } else if (status === 401 || status === 403) {
       // Token invalid or hub unpaired → drop it and re-pair. Re-enroll surfaces a fresh code.
       console.log(`[hub→cloud] rejected ${status}: ${data.error || 'unpaired'} — re-pairing.`);
@@ -287,8 +303,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === INGEST_PATH) {
     const doc = await readJson(req);
     const ok = ingest(doc);
+    // Downlink: if the account has requested a cadence for this node, hand it back so the
+    // node retunes its sample interval. Absent → node keeps its own default (backward compat).
+    const sampleIntervalMs = ok && doc && desiredCadence.get(doc.id);
     res.writeHead(ok ? 200 : 400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok }));
+    res.end(JSON.stringify(sampleIntervalMs ? { ok, sampleIntervalMs } : { ok }));
     return;
   }
   res.writeHead(404, { 'content-type': 'application/json' });

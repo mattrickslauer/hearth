@@ -25,6 +25,12 @@ DHT dht(DHT_PIN, DHT_TYPE);
 
 static String   gNodeId;
 static uint32_t gLastSample = 0;
+// The live sample interval. Starts at the compile-time default but the hub can retune it
+// at runtime: every ingest POST comes back with an optional {"sampleIntervalMs": N} the
+// dashboard set, letting a user speed a node up (or slow it down) without reflashing.
+static uint32_t gSampleIntervalMs = SAMPLE_INTERVAL_MS;
+static const uint32_t SAMPLE_MIN_MS = 500;    // floor — matches the backend clamp
+static const uint32_t SAMPLE_MAX_MS = 60000;  // ceiling — matches the backend clamp
 static bool     gAnnounced  = false;
 static String   gHubUrl;                 // resolved hub ingest URL (mDNS, or fallback)
 static bool     gMdnsUp     = false;
@@ -102,7 +108,26 @@ static void connectWifi() {
     Serial.println(" FAILED — continuing serial-only");
 }
 
-// Best-effort POST to the discovered hub. Returns true on a 2xx/3xx.
+// Retune our sample interval from a hub ingest response like {"ok":true,"sampleIntervalMs":1000}.
+// Hand-parsed (no JSON lib) to keep the node's footprint tiny: find the key, read the number.
+static void applyCadence(const String& body) {
+  int k = body.indexOf("\"sampleIntervalMs\"");
+  if (k < 0) return;                       // no override → keep the current interval
+  int c = body.indexOf(':', k);
+  if (c < 0) return;
+  long ms = strtol(body.c_str() + c + 1, nullptr, 10);
+  if (ms <= 0) return;
+  uint32_t next = (uint32_t)ms;
+  if (next < SAMPLE_MIN_MS) next = SAMPLE_MIN_MS;
+  if (next > SAMPLE_MAX_MS) next = SAMPLE_MAX_MS;
+  if (next != gSampleIntervalMs) {
+    Serial.printf("[cadence] sample interval %u -> %u ms (set from dashboard)\n", gSampleIntervalMs, next);
+    gSampleIntervalMs = next;
+  }
+}
+
+// Best-effort POST to the discovered hub. Returns true on a 2xx/3xx. Also reads the hub's
+// response body, which may carry a dashboard-set sample cadence for this node.
 static bool postJson(const String& body) {
   if (WiFi.status() != WL_CONNECTED || gHubUrl.length() == 0) return false;
   HTTPClient http;
@@ -112,6 +137,7 @@ static bool postJson(const String& body) {
   http.addHeader("Content-Type", "application/json");
   int code = http.POST(body);
   Serial.printf("[post] %s -> %d\n", gHubUrl.c_str(), code);
+  if (code >= 200 && code < 400) applyCadence(http.getString());
   http.end();
   return code >= 200 && code < 400;
 }
@@ -176,7 +202,7 @@ void loop() {
     gAnnounced = postJson(describeJson());
   }
 
-  if (millis() - gLastSample >= SAMPLE_INTERVAL_MS) {
+  if (millis() - gLastSample >= gSampleIntervalMs) {
     gLastSample = millis();
     String reading = readingsJson();
     Serial.println("READING " + reading);   // serial is the always-on channel

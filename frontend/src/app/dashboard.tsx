@@ -22,10 +22,13 @@ import {
   authorWatch,
   deleteWatch,
   describeHome,
+  listCadences,
   listEvents,
   listWatches,
   readInput,
+  setCadence,
   updateWatch,
+  type Cadences,
   type HomeCapability,
   type HomeModel,
   type Reading,
@@ -49,6 +52,14 @@ function ago(ts: number): string {
   if (h < 24) return `${h}h ago`;
   return `${Math.round(h / 24)}d ago`;
 }
+
+// Sample-rate choices offered per node. Bounds mirror the backend clamp (500ms–60s).
+const CADENCE_PRESETS: { label: string; ms: number }[] = [
+  { label: '0.5s', ms: 500 },
+  { label: '1s', ms: 1000 },
+  { label: '5s', ms: 5000 },
+  { label: '30s', ms: 30000 },
+];
 
 function formatValue(r: Reading | null, cap: HomeCapability): string {
   if (!r) return '—';
@@ -81,6 +92,7 @@ export default function DashboardScreen() {
   const [watches, setWatches] = useState<Watch[] | null>(null);
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [readings, setReadings] = useState<Record<string, Reading | null>>({});
+  const [cadences, setCadences] = useState<Cadences>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -103,16 +115,18 @@ export default function DashboardScreen() {
     setLoading(true);
     setError(null);
     try {
-      const [h, w, e, hb] = await Promise.all([
+      const [h, w, e, hb, cd] = await Promise.all([
         describeHome(token),
         listWatches(token),
         listEvents(20, token),
         listHubs(token).catch(() => [] as HubView[]),
+        listCadences(token).catch(() => ({}) as Cadences),
       ]);
       setHome(h);
       setWatches(w);
       setEvents(e);
       setHubs(hb);
+      setCadences(cd);
       const sensors = h.capabilities.filter((c) => c.kind === 'sensor');
       const pairs = await Promise.all(
         sensors.map(async (c) => [c.id, await readInput(c.id, token).catch(() => null)] as const),
@@ -229,6 +243,18 @@ export default function DashboardScreen() {
     }
   };
 
+  // Ask a node to sample faster/slower. Optimistic: reflect the choice at once, then let the
+  // hub relay it to the node — live readings speed up within a few seconds. Revert on failure.
+  const changeCadence = async (nodeId: string, ms: number) => {
+    const prev = cadences[nodeId];
+    setCadences((c) => ({ ...c, [nodeId]: ms }));
+    try {
+      await setCadence(nodeId, ms, token);
+    } catch {
+      setCadences((c) => ({ ...c, [nodeId]: prev as number }));
+    }
+  };
+
   if (status === 'loading') {
     return (
       <View style={[styles.fill, { backgroundColor: theme.background }]}>
@@ -239,6 +265,13 @@ export default function DashboardScreen() {
   if (status === 'signedOut') return <Redirect href="/signin" />;
 
   const sensors = home?.capabilities.filter((c) => c.kind === 'sensor') ?? [];
+  // Group sensor tiles under their node so each node gets one sample-rate control (the
+  // firmware samples all a node's sensors on one timer, so cadence is per node, not per sensor).
+  const sensorNodes = (home?.nodes ?? [])
+    .map((n) => ({ node: n, sensors: n.capabilities.filter((c) => c.kind === 'sensor') }))
+    .filter((g) => g.sensors.length > 0);
+  const groupedIds = new Set(sensorNodes.flatMap((g) => g.sensors.map((s) => s.id)));
+  const looseSensors = sensors.filter((c) => !groupedIds.has(c.id));
   const devices = home?.nodes.length ?? 0;
   const pad = { paddingHorizontal: gutter };
 
@@ -435,21 +468,28 @@ export default function DashboardScreen() {
                   <Text style={[styles.liveText, { color: theme.textMuted }]}>hub offline</Text>
                 ) : null}
               </View>
-              <View style={styles.tileGrid}>
-                {sensors.map((c) => (
-                  <View
-                    key={c.id}
-                    style={[styles.tile, { backgroundColor: theme.card, borderColor: theme.border }]}>
-                    <Text style={styles.tileIcon}>{c.icon}</Text>
-                    <Text style={[styles.tileValue, { color: theme.text }]} numberOfLines={1}>
-                      {formatValue(readings[c.id] ?? null, c)}
+              {sensorNodes.map(({ node, sensors: ns }) => (
+                <View key={node.id} style={styles.nodeGroup}>
+                  <View style={styles.nodeHead}>
+                    <Text style={[styles.nodeName, { color: theme.textSecondary }]} numberOfLines={1}>
+                      {node.name}
                     </Text>
-                    <Text style={[styles.tileLabel, { color: theme.textMuted }]} numberOfLines={1}>
-                      {c.label}
-                    </Text>
+                    <CadenceControl theme={theme} active={cadences[node.id]} onPick={(ms) => changeCadence(node.id, ms)} />
                   </View>
-                ))}
-              </View>
+                  <View style={styles.tileGrid}>
+                    {ns.map((c) => (
+                      <SensorTile key={c.id} theme={theme} cap={c} reading={readings[c.id] ?? null} />
+                    ))}
+                  </View>
+                </View>
+              ))}
+              {looseSensors.length ? (
+                <View style={styles.tileGrid}>
+                  {looseSensors.map((c) => (
+                    <SensorTile key={c.id} theme={theme} cap={c} reading={readings[c.id] ?? null} />
+                  ))}
+                </View>
+              ) : null}
             </View>
           ) : null}
 
@@ -604,6 +644,61 @@ function Stat({ theme, value, label }: { theme: ReturnType<typeof useTheme>; val
   );
 }
 
+function SensorTile({
+  theme,
+  cap,
+  reading,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  cap: HomeCapability;
+  reading: Reading | null;
+}) {
+  return (
+    <View style={[styles.tile, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <Text style={styles.tileIcon}>{cap.icon}</Text>
+      <Text style={[styles.tileValue, { color: theme.text }]} numberOfLines={1}>
+        {formatValue(reading, cap)}
+      </Text>
+      <Text style={[styles.tileLabel, { color: theme.textMuted }]} numberOfLines={1}>
+        {cap.label}
+      </Text>
+    </View>
+  );
+}
+
+function CadenceControl({
+  theme,
+  active,
+  onPick,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  active?: number;
+  onPick: (ms: number) => void;
+}) {
+  return (
+    <View style={styles.cadence}>
+      <Text style={[styles.cadenceLabel, { color: theme.textMuted }]}>sample</Text>
+      {CADENCE_PRESETS.map((p) => {
+        const on = active === p.ms;
+        return (
+          <Pressable
+            key={p.ms}
+            onPress={() => onPick(p.ms)}
+            style={[
+              styles.cadenceBtn,
+              {
+                borderColor: on ? theme.emberDeep : theme.border,
+                backgroundColor: on ? theme.emberGlow : theme.backgroundElement,
+              },
+            ]}>
+            <Text style={[styles.cadenceBtnText, { color: on ? theme.ember : theme.textSecondary }]}>{p.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
+
 function Tag({ theme, on, text }: { theme: ReturnType<typeof useTheme>; on?: boolean; text: string }) {
   return (
     <View
@@ -684,6 +779,14 @@ const styles = StyleSheet.create({
   liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 5 },
   liveDot: { width: 7, height: 7, borderRadius: 4 },
   liveText: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
+
+  nodeGroup: { gap: Spacing.two },
+  nodeHead: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.two, rowGap: 6 },
+  nodeName: { flex: 1, minWidth: 120, fontFamily: Fonts?.mono, fontSize: 12.5, fontWeight: '700', letterSpacing: 0.2 },
+  cadence: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  cadenceLabel: { fontFamily: Fonts?.mono, fontSize: 10.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginRight: 2 },
+  cadenceBtn: { paddingVertical: 5, paddingHorizontal: 11, borderRadius: Radius.pill, borderWidth: 1, minWidth: 40, alignItems: 'center' },
+  cadenceBtnText: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700' },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.three },
   tile: {
