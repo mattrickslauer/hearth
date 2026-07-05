@@ -1,0 +1,17 @@
+{
+  "name": "hearth-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hearth realtime relay — always-on cloud data plane that fans hub readings out to browser WebSockets (zero deps, Node stdlib).",
+  "bin": {
+    "hearth-relay": "relay.mjs"
+  },
+  "scripts": {
+    "start": "node relay.mjs",
+    "test": "node test-relay.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

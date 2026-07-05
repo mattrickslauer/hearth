@@ -25,14 +25,12 @@ import {
   verifySession,
   verifyHubToken,
   issueWsTicket,
-  verifyWsTicket,
   assertAuthConfig,
   type AuthDeps,
 } from './auth';
 import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore, hubView } from './hubs';
 import { syncHubDevices } from './hub-devices';
-import { gatewayConfig, gatewayEnabled, notifyDevice } from './gateway';
-import { getConnectionStore, removeConnection } from './connections';
+import { relayConfig, relayEnabled, publishToRelay } from './relay';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
@@ -78,38 +76,21 @@ function clientIp(req: IncomingMessage): string | undefined {
   return req.socket?.remoteAddress ?? undefined;
 }
 
-/** Single-value header accessor (Node lowercases keys; arrays collapse to the first). */
-function header(req: IncomingMessage, name: string): string | undefined {
-  const v = req.headers[name.toLowerCase()];
-  return Array.isArray(v) ? v[0] : v;
-}
-
 /**
- * Push a hub's just-synced readings to every browser the account has connected through the
- * API Gateway. Best-effort and self-healing: a deviceId the gateway reports as gone (notify
- * fails) is dropped from the registry. Awaited by the caller BEFORE responding, because on
- * Function Compute post-response async work may not run (the instance can freeze).
+ * Push a hub's just-synced readings to every browser the account has connected to the relay.
+ * Best-effort. Awaited by the caller BEFORE responding, because on Function Compute
+ * post-response async work may not run (the instance can freeze after the response).
  */
 async function pushReadingsToAccount(accountId: string, body: Record<string, unknown>): Promise<void> {
-  if (!gatewayEnabled()) return;
+  if (!relayEnabled()) return;
   const nodes = Array.isArray(body.nodes) ? body.nodes : [];
   const payload = nodes
     .map((n) => (n && typeof n === 'object' ? (n as Record<string, unknown>) : {}))
     .filter((n) => typeof n.id === 'string')
     .map((n) => ({ id: n.id as string, readings: (n.lastReading as Record<string, unknown>) ?? {} }));
   if (!payload.length) return;
-
-  const store = await getConnectionStore();
-  const devices = await store.listDevices(accountId);
-  if (!devices.length) return;
-
   const message = JSON.stringify({ type: 'readings', at: Date.now(), nodes: payload });
-  await Promise.all(
-    devices.map(async (deviceId) => {
-      const ok = await notifyDevice(deviceId, message);
-      if (!ok) await removeConnection(accountId, deviceId); // gateway says it's gone → forget it
-    }),
-  );
+  await publishToRelay(accountId, message);
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -224,15 +205,15 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       return send(res, 200, result);
     }
 
-    /* --- realtime (cloud-brokered WebSocket via API Gateway) --- */
+    /* --- realtime (cloud-brokered WebSocket via the relay) --- */
 
     // Browser asks "how do I open a live socket to my hub?" — autodiscovery + a scoped,
     // short-lived ticket. No client config: the session JWT tells us the account, we find
-    // its hub, and hand back the gateway wss URL + AppKey + ticket. AppSecret stays server-side.
+    // its hub, and hand back the relay wss URL + a ticket the relay verifies on connect.
     if (path === '/live/ticket' && method === 'GET') {
       const session = requireSession(req, res);
       if (!session) return;
-      const cfg = gatewayConfig();
+      const cfg = relayConfig();
       if (!cfg) return send(res, 200, { enabled: false });
       const hubs = await getHubStore().listByAccount(session.sub);
       const now = Date.now();
@@ -245,34 +226,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
         hubId: hub.id,
         online: hub.online,
         wsUrl: cfg.wsUrl,
-        appKey: cfg.appKey,
         ticket: issueWsTicket(session.sub, hub.id),
       });
-    }
-
-    // Gateway → backend on a browser REGISTER. The gateway adds x-ca-deviceid; the browser
-    // passes our ticket as the register `password`. Verify it, record the connection, and
-    // return 200 (any non-200 makes the gateway reject the client's registration).
-    if (path === '/live/register' && method === 'POST') {
-      const deviceId = header(req, 'x-ca-deviceid');
-      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
-      const ticketRaw = body.password ?? body.ticket ?? url.searchParams.get('password') ?? url.searchParams.get('ticket');
-      const ticket = verifyWsTicket(typeof ticketRaw === 'string' ? ticketRaw : undefined);
-      if (!deviceId || !ticket) return send(res, 403, { error: 'invalid ticket or device' });
-      const store = await getConnectionStore();
-      await store.register(deviceId, ticket.sub, ticket.hub);
-      return send(res, 200, { ok: true });
-    }
-
-    // Gateway → backend on disconnect. The browser re-sends its (cached) ticket so we know
-    // which account partition to delete from; absent that we let the TTL backstop reap it.
-    if (path === '/live/unregister' && method === 'POST') {
-      const deviceId = header(req, 'x-ca-deviceid');
-      const body = await readBody(req).catch(() => ({}) as Record<string, unknown>);
-      const ticketRaw = body.password ?? body.ticket ?? url.searchParams.get('password') ?? url.searchParams.get('ticket');
-      const ticket = verifyWsTicket(typeof ticketRaw === 'string' ? ticketRaw : undefined);
-      if (deviceId && ticket) await removeConnection(ticket.sub, deviceId);
-      return send(res, 200, { ok: true });
     }
 
     // User-facing: require a signed-in session.
