@@ -33,6 +33,7 @@ import {
   type Watch,
 } from '@/lib/home';
 import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
+import { useHubLive } from '@/lib/live';
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 // Give the scroll frame a bounded height on web so the ScrollView actually scrolls
@@ -127,6 +128,15 @@ export default function DashboardScreen() {
   useEffect(() => {
     if (status === 'signedIn') void load();
   }, [status, load]);
+
+  // Realtime: when the dashboard is on the hub's LAN (EXPO_PUBLIC_HUB_URL set), stream
+  // readings straight from the hub and patch tiles in place — no polling, no cloud hop.
+  // Falls back silently to the load-on-mount + manual refresh path when unconfigured.
+  const liveStatus = useHubLive(
+    useCallback((updates: Record<string, Reading>) => {
+      setReadings((prev) => ({ ...prev, ...updates }));
+    }, []),
+  );
 
   const submitWish = async () => {
     if (!wish.trim() || authoring) return;
@@ -410,7 +420,17 @@ export default function DashboardScreen() {
           {/* sensors */}
           {sensors.length ? (
             <View style={styles.section}>
-              <Text style={[styles.sectionTitle, { color: theme.text }]}>Sensors</Text>
+              <View style={styles.sensorsHead}>
+                <Text style={[styles.sectionTitle, { color: theme.text }]}>Sensors</Text>
+                {liveStatus === 'live' ? (
+                  <View style={styles.liveBadge}>
+                    <View style={[styles.liveDot, { backgroundColor: theme.success }]} />
+                    <Text style={[styles.liveText, { color: theme.success }]}>live</Text>
+                  </View>
+                ) : liveStatus === 'connecting' || liveStatus === 'reconnecting' ? (
+                  <Text style={[styles.liveText, { color: theme.textMuted }]}>connecting…</Text>
+                ) : null}
+              </View>
               <View style={styles.tileGrid}>
                 {sensors.map((c) => (
                   <View
@@ -656,6 +676,10 @@ const styles = StyleSheet.create({
 
   section: { gap: Spacing.three },
   sectionTitle: { fontFamily: Fonts?.sans, fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  sensorsHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  liveDot: { width: 7, height: 7, borderRadius: 4 },
+  liveText: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.three },
   tile: {
