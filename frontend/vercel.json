@@ -3,7 +3,7 @@
   "outputDirectory": "dist/client",
   "functions": {
     "api/index.ts": {
-      "runtime": "@vercel/node@5.1.8",
+      "runtime": "@vercel/node@5.8.22",
       "includeFiles": "dist/server/**"
     }
   },

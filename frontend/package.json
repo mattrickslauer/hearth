@@ -44,5 +44,8 @@
     "web": "expo start --web",
     "lint": "expo lint"
   },
+  "engines": {
+    "node": "24.x"
+  },
   "private": true
 }
