@@ -62,7 +62,9 @@ status() {
   # Live registry, if the ingest port answers.
   local reg; reg="$(curl -fsS --max-time 2 "http://localhost:$PORT/nodes" 2>/dev/null || echo)"
   if [ -n "$reg" ]; then
-    local n; n="$(printf '%s' "$reg" | grep -c '"id"' || true)"
+    # Parse the JSON array length with node (always present on a hub) rather than
+    # grepping "id" — each node carries an "id" both at top level and in describe.
+    local n; n="$(printf '%s' "$reg" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).length)}catch{console.log("?")}})' 2>/dev/null || echo '?')"
     echo "  nodes ingested: $n   $(dim "(curl http://localhost:$PORT/nodes for detail)")"
   fi
   if [ -s "$CLAIM" ]; then
