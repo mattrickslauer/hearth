@@ -1,19 +1,26 @@
-Home automation has a problem. To automate anything, you have to program it — rules, thresholds, if-this-then-that. So ninety-nine percent of us never automate a single thing.
+HEARTH — read-aloud script (~2:50 at a calm 115 wpm)
+Say "watch" (not "deployment") — that's the word on screen. Say "compile" — the button literally says Compile.
 
-So we built Hearth. You don't write rules. You just say what you want — and an AI wires it up.
+Everyone wants a smart home. Almost nobody has one — because to automate anything, you first have to program it. Rules, thresholds, if-this-then-that. So the rest of us just… don't.
 
-This is the platform, running in your browser — the same software that drives real devices. So anyone can try it, it ships with a simulated home: zones, sensors, actuators, all drag-and-drop.
+Hearth kills the rules. You describe your home in plain words, and an AI compiles it into something that actually runs.
 
-Watch. I type what I want. Qwen reads what this home can sense and do, and synthesizes the whole deployment — which sensors to bind, the logic, the action. I never wrote a rule. That's program synthesis, not a form.
+No login, no hardware — this runs in your browser right now. A whole simulated home: rooms, sensors, actuators, all live. So watch what happens when I just say what I want.
 
-Every reading is typed and stored — you can see exactly where your data lives. And I can turn the world: push it past dark, drop the temperature —
+"Warn me if the garage is open after dark and it's cold — and turn on the heater." Compile.
 
-— and the deployment fires on its own. Heater on. Notified. It just works.
+I never picked a sensor. I never wrote a rule. Qwen read what this home can sense and do, and compiled my sentence into a working watch — the inputs, the trigger, the action. That's program synthesis, not a form.
 
-But the real magic is reasoning about the messy real world. This is a real camera on my entryway, on real hardware. Live, Qwen-VL watches the scene.
+And I can change my mind. Let me add one that has to actually see — is a package on the porch. Qwen reaches for vision, and I tune it live: how often it looks, and which model does the looking.
 
-It doesn't fire a dumb motion alarm. It reasons: do I know this person? The frame was unclear, so it looked closer — then it decides if this is even worth interrupting me for. That's an agent, not a sensor.
+Now I'll turn the world. Push it past dark, drop the temperature, open the garage —
 
-Cut the network — the simple watches keep running locally, and it tells you what it missed. And the raw video never leaves home. Only a minimized, redacted frame is ever sent.
+— and the watch fires on its own. Heater on. I get pinged. I never touched it.
 
-No rules. No YAML. You describe your home — it figures out the rest. Hearth is open source. Clone it, and go talk to your house.
+But some things a threshold can't judge. Someone's at the door — family, or not? A dumb sensor trips on any motion. This one looks, and reasons: not a household member, worth a ping. That's Qwen-VL — an agent, not a tripwire.
+
+Now cut the network. The simple watches keep running right on the hub — nothing ever left the house. And when you're back online, it tells you what it caught up on while you were dark.
+
+And this isn't a sandbox. Sign in, pair a real hub with a code, and your actual devices show up here — live, on Alibaba Cloud. Same watches. Real house.
+
+No rules. No YAML. You describe your home — Qwen compiles the rest. Hearth is open source. Clone it, and stop programming your house.
