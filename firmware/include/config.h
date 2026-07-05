@@ -21,5 +21,7 @@
 #define DHT_PIN 4
 #define DHT_TYPE DHT11
 
-// How often to sample and report, in milliseconds.
+// Default sample-and-report interval, in milliseconds. This is only the STARTING cadence:
+// once the node reaches a hub, the dashboard can retune it at runtime (the hub hands the
+// node a new interval in each ingest response — see applyCadence in main.cpp).
 #define SAMPLE_INTERVAL_MS 5000
