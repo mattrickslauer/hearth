@@ -30,6 +30,11 @@ static String   gHubUrl;                 // resolved hub ingest URL (mDNS, or fa
 static bool     gMdnsUp     = false;
 static uint32_t gLastDiscover = 0;
 
+#if RELAY_PIN >= 0
+static bool     gRelayOn    = false;     // reported (actual) actuator state
+static uint32_t gRelayOnSince = 0;       // millis() when it last went ON (for the safety veto)
+#endif
+
 // Stable per-chip identity, derived from the factory-burned MAC.
 static String nodeId() {
   uint64_t mac = ESP.getEfuseMac();
@@ -47,7 +52,40 @@ static float chipTempC() {
 
 static bool wifiConfigured() { return strlen(WIFI_SSID) > 0; }
 
-// The self-description: identity + the menu of what this node can sense.
+#if RELAY_PIN >= 0
+// Drive the relay to `on`, honoring the wiring polarity. Idempotent — writing the
+// pin to the level it already holds is harmless, which is exactly what a device
+// shadow wants: the cloud sends the desired state every poll and we converge to it.
+static void relayApply(bool on) {
+  int level = (on == (RELAY_ACTIVE_HIGH != 0)) ? HIGH : LOW;
+  digitalWrite(RELAY_PIN, level);
+  if (on && !gRelayOn) gRelayOnSince = millis();
+  if (on != gRelayOn) Serial.printf("[relay] motor %s\n", on ? "ON" : "OFF");
+  gRelayOn = on;
+}
+
+// Extract the desired boolean for actuator `key` from a hub /ingest response
+// like {"ok":true,"commands":[{"key":"motor","value":"on"}]}. No JSON library on
+// the node — a tiny scan is enough for this fixed, small shape. Returns -1 if the
+// key isn't present (leave the relay as-is), else 0/1 for the desired state.
+static int desiredFor(const String& payload, const char* key) {
+  String needle = String("\"key\":\"") + key + "\"";
+  int k = payload.indexOf(needle);
+  if (k < 0) return -1;
+  int v = payload.indexOf("\"value\"", k);
+  if (v < 0) return -1;
+  int colon = payload.indexOf(':', v);
+  if (colon < 0) return -1;
+  // Read the token after the colon: "on"/"off"/true/false/1/0.
+  String rest = payload.substring(colon + 1);
+  rest.trim();
+  rest.toLowerCase();
+  if (rest.startsWith("\"on\"") || rest.startsWith("true") || rest.startsWith("1")) return 1;
+  return 0;
+}
+#endif
+
+// The self-description: identity + the menu of what this node can sense AND do.
 static String describeJson() {
   String s = "{";
   s += "\"type\":\"hearth.node.describe\",";
@@ -60,7 +98,15 @@ static String describeJson() {
   s += ",{\"key\":\"dht.temp\",\"kind\":\"temperature\",\"unit\":\"C\",\"pin\":" + String(DHT_PIN) + "}";
   s += ",{\"key\":\"dht.humidity\",\"kind\":\"humidity\",\"unit\":\"pct\",\"pin\":" + String(DHT_PIN) + "}";
 #endif
-  s += "]}";
+  s += "]";
+#if RELAY_PIN >= 0
+  // The actuator menu — what the cloud can COMMAND (the mirror of sensors).
+  s += ",\"actuators\":[";
+  s += "{\"key\":\"motor\",\"kind\":\"relay\",\"access\":\"actuate\",\"pin\":" + String(RELAY_PIN);
+  s += ",\"state\":\"" + String(gRelayOn ? "on" : "off") + "\"}";
+  s += "]";
+#endif
+  s += "}";
   return s;
 }
 
@@ -78,6 +124,11 @@ static String readingsJson() {
   float h = dht.readHumidity();
   s += ",\"dht.temp\":"     + (isnan(t) ? String("null") : String(t, 1));
   s += ",\"dht.humidity\":" + (isnan(h) ? String("null") : String(h, 1));
+#endif
+#if RELAY_PIN >= 0
+  // Echo the actuator's ACTUAL state as a 0/1 reading — the "reported" half of the
+  // device shadow, so the cloud can confirm the command landed (and graph it).
+  s += ",\"motor.state\":" + String(gRelayOn ? 1 : 0);
 #endif
   s += "}}";
   return s;
@@ -102,7 +153,10 @@ static void connectWifi() {
     Serial.println(" FAILED — continuing serial-only");
 }
 
-// Best-effort POST to the discovered hub. Returns true on a 2xx/3xx.
+// Best-effort POST to the discovered hub. On a 2xx/3xx the response BODY is the
+// downlink: the hub answers each POST with any commands the cloud wants applied to
+// this node (a device-shadow "desired" state). We apply them here so the reading
+// POST doubles as a command poll — no inbound connection to the node is ever needed.
 static bool postJson(const String& body) {
   if (WiFi.status() != WL_CONNECTED || gHubUrl.length() == 0) return false;
   HTTPClient http;
@@ -111,9 +165,20 @@ static bool postJson(const String& body) {
   http.begin(gHubUrl);
   http.addHeader("Content-Type", "application/json");
   int code = http.POST(body);
+  bool ok = code >= 200 && code < 400;
+#if RELAY_PIN >= 0
+  if (ok) {
+    String resp = http.getString();
+    int want = desiredFor(resp, "motor");
+    if (want >= 0 && (want == 1) != gRelayOn) {
+      Serial.printf("[cmd] cloud → motor %s\n", want ? "on" : "off");
+      relayApply(want == 1);
+    }
+  }
+#endif
   Serial.printf("[post] %s -> %d\n", gHubUrl.c_str(), code);
   http.end();
-  return code >= 200 && code < 400;
+  return ok;
 }
 
 // ─── hub discovery (mDNS / DNS-SD) ─────────────────────────────────────────
@@ -147,6 +212,12 @@ void setup() {
 #if DHT_PIN >= 0
   dht.begin();
 #endif
+#if RELAY_PIN >= 0
+  pinMode(RELAY_PIN, OUTPUT);
+  relayApply(false);   // fail safe: motor OFF on boot, before anything can command it
+  Serial.printf("[relay] motor actuator on GPIO%d (active-%s)\n",
+                RELAY_PIN, RELAY_ACTIVE_HIGH ? "high" : "low");
+#endif
   // Always announce over serial, even offline.
   Serial.println("DESCRIBE " + describeJson());
   connectWifi();
@@ -175,6 +246,16 @@ void loop() {
   if (!gAnnounced && gHubUrl.length() > 0 && WiFi.status() == WL_CONNECTED) {
     gAnnounced = postJson(describeJson());
   }
+
+#if RELAY_PIN >= 0 && RELAY_MAX_ON_MS > 0
+  // Node-side safety veto: independent of the cloud. If the relay has been ON
+  // longer than the limit, force it off — a stuck/ lost command can't run the
+  // motor forever. The cloud must re-issue "on" to restart it.
+  if (gRelayOn && millis() - gRelayOnSince >= (uint32_t)RELAY_MAX_ON_MS) {
+    Serial.println("[relay] safety veto — max-on time exceeded, forcing OFF");
+    relayApply(false);
+  }
+#endif
 
   if (millis() - gLastSample >= SAMPLE_INTERVAL_MS) {
     gLastSample = millis();

@@ -10,7 +10,7 @@
  *                           lastReading: {<key>: number|null}, lastSeen } ] }
  */
 
-import type { HomeStore, HubDeviceSnapshot, HubNodeReport, HubSensorReport } from './store';
+import type { HomeStore, HubActuatorReport, HubDeviceSnapshot, HubNodeReport, HubSensorReport } from './store';
 
 interface HubMeta {
   hubId: string;
@@ -18,11 +18,20 @@ interface HubMeta {
   fw?: string;
 }
 
+/** One desired command the cloud wants this hub to relay down to a node. */
+export interface DownlinkCommand {
+  nodeId: string;
+  key: string;
+  value: 'on' | 'off';
+}
+
 export interface SyncResult {
   ok: true;
   hubId: string;
   nodes: number;
   readings: number;
+  /** Device-shadow desired states for this hub's nodes — the cloud→node downlink. */
+  commands: DownlinkCommand[];
 }
 
 const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
@@ -45,6 +54,10 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
       .map(asObj)
       .filter((s) => typeof s.key === 'string')
       .map((s) => ({ key: s.key as string, kind: asStr(s.kind), unit: asStr(s.unit) }));
+    const actuators: HubActuatorReport[] = asArray(describe.actuators)
+      .map(asObj)
+      .filter((a) => typeof a.key === 'string')
+      .map((a) => ({ key: a.key as string, kind: asStr(a.kind), state: asStr(a.state) }));
 
     const readings = asObj(entry.lastReading);
     const cleaned: Record<string, number | null> = {};
@@ -66,6 +79,7 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
       online: true, // the hub just heard from it
       lastSeen: now,
       sensors,
+      actuators,
       readings: cleaned,
     });
   }
@@ -80,5 +94,13 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
   };
   await store.putHubDevices(snap);
 
-  return { ok: true, hubId: meta.hubId, nodes: nodes.length, readings: readingsWritten };
+  // The downlink: hand back the desired actuator states for this hub's nodes so the
+  // hub can relay them to the node on its next /ingest response (the cloud→node path).
+  const commands: DownlinkCommand[] = (await store.listCommands(meta.hubId)).map((c) => ({
+    nodeId: c.nodeId,
+    key: c.key,
+    value: c.on ? 'on' : 'off',
+  }));
+
+  return { ok: true, hubId: meta.hubId, nodes: nodes.length, readings: readingsWritten, commands };
 }

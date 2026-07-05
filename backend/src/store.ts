@@ -46,6 +46,12 @@ export interface HubSensorReport {
   kind?: string; // 'temperature' | 'humidity' | ...
   unit?: string;
 }
+/** One actuator a real hub-reported node exposes — something the cloud can command. */
+export interface HubActuatorReport {
+  key: string; // e.g. 'motor'
+  kind?: string; // 'relay' | 'servo' | ...
+  state?: string; // last self-reported state ('on' | 'off' | ...)
+}
 /** A real ESP32 node as reported by a paired on-prem hub. */
 export interface HubNodeReport {
   id: string;
@@ -54,7 +60,23 @@ export interface HubNodeReport {
   online: boolean;
   lastSeen: number;
   sensors: HubSensorReport[];
+  actuators?: HubActuatorReport[];
   readings: Record<string, number | null>;
+}
+
+/**
+ * A desired actuator command — the "desired" half of a device shadow. The cloud
+ * stores it (via the `actuate` tool); a paired hub pulls it on its next sync and
+ * relays it down to the node, which converges its relay to `on` and echoes back
+ * the reported state. Keyed by `${nodeId}.${key}`.
+ */
+export interface HubCommand {
+  hubId: string; // which paired hub owns the target node
+  nodeId: string; // the ESP32 node id
+  key: string; // actuator key, e.g. 'motor'
+  on: boolean; // desired state (relays are boolean)
+  reason?: string; // why — carried into the activity feed
+  ts: number; // when the desired state was set
 }
 /** A paired hub's live device snapshot, pushed up by the hub agent. */
 export interface HubDeviceSnapshot {
@@ -69,6 +91,10 @@ export interface HubDeviceSnapshot {
 /** Emoji marker for a sensor kind — mirrors the demo Capability.icon convention. */
 const iconFor = (kind?: string): string =>
   kind === 'temperature' ? '🌡️' : kind === 'humidity' ? '💧' : kind === 'distance' ? '📏' : kind === 'motion' ? '🚶' : '📟';
+
+/** Emoji marker for an actuator kind. */
+const actuatorIconFor = (kind?: string): string =>
+  kind === 'relay' ? '🔌' : kind === 'servo' ? '⚙️' : kind === 'motor' ? '🌀' : '🎛️';
 
 export interface RunEventRow {
   id: string;
@@ -98,6 +124,10 @@ export interface HomeStore {
   putHubDevices(snap: HubDeviceSnapshot): Promise<void>;
   /** All paired hubs' latest device snapshots. */
   listHubDevices(): Promise<HubDeviceSnapshot[]>;
+  /** Set the desired state for an actuator (the "desired" half of the device shadow). */
+  putCommand(cmd: HubCommand): Promise<void>;
+  /** Current desired commands, optionally just those for one hub (the sync downlink). */
+  listCommands(hubId?: string): Promise<HubCommand[]>;
 }
 
 /** Compute an aggregate over a window ending at `now` (numbers only for mean/min/max). */
@@ -123,6 +153,7 @@ interface StoreSnapshot {
   events: RunEventRow[];
   readings: [string, Reading[]][];
   hubDevices: HubDeviceSnapshot[];
+  commands: HubCommand[];
 }
 
 const emptyModel = (): HomeModel => ({ zones: [], nodes: [], capabilities: [] });
@@ -134,6 +165,7 @@ export class MemoryStore implements HomeStore {
   protected records = new Map<string, RecordPolicy>();
   protected events: RunEventRow[] = [];
   protected hubDevices = new Map<string, HubDeviceSnapshot>();
+  protected commands = new Map<string, HubCommand>(); // keyed `${nodeId}.${key}`
 
   /**
    * A new home is EMPTY — no zones, devices, watches, or readings. Pass seed=true
@@ -159,6 +191,7 @@ export class MemoryStore implements HomeStore {
       events: this.events,
       readings: [...this.readings.entries()],
       hubDevices: [...this.hubDevices.values()],
+      commands: [...this.commands.values()],
     };
   }
   protected restore(s: Partial<StoreSnapshot>): void {
@@ -168,13 +201,14 @@ export class MemoryStore implements HomeStore {
     this.events = s.events ?? [];
     this.readings = new Map(s.readings ?? []);
     this.hubDevices = new Map((s.hubDevices ?? []).map((h) => [h.hubId, h]));
+    this.commands = new Map((s.commands ?? []).map((c) => [`${c.nodeId}.${c.key}`, c]));
   }
 
   /** Capabilities derived from every paired hub's real nodes (merged into the model). */
   private hubCapabilities(): Capability[] {
     const caps: Capability[] = [];
     for (const snap of this.hubDevices.values())
-      for (const n of snap.nodes)
+      for (const n of snap.nodes) {
         for (const s of n.sensors)
           caps.push({
             id: `${n.id}.${s.key}`,
@@ -184,6 +218,15 @@ export class MemoryStore implements HomeStore {
             unit: s.unit,
             describes: `live ${s.kind ?? 'sensor'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''}`,
           });
+        for (const a of n.actuators ?? [])
+          caps.push({
+            id: `${n.id}.${a.key}`,
+            label: `${n.id} · ${a.key}`,
+            kind: 'actuator',
+            icon: actuatorIconFor(a.kind),
+            describes: `commandable ${a.kind ?? 'actuator'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''} — drive it with the actuate tool`,
+          });
+      }
     return caps;
   }
   /** Home-Model nodes derived from paired hubs' real ESP32 nodes. */
@@ -197,14 +240,23 @@ export class MemoryStore implements HomeStore {
           // Real hub nodes aren't bound to the demo zones; label the zone by hub.
           zone: snap.hubName ?? snap.hubId,
           hardware: n.board ?? 'esp32',
-          capabilities: n.sensors.map((s) => ({
-            id: `${n.id}.${s.key}`,
-            label: `${n.id} · ${s.key}`,
-            kind: 'sensor' as const,
-            icon: iconFor(s.kind),
-            unit: s.unit,
-            describes: `live ${s.kind ?? 'sensor'} on ${n.id}`,
-          })),
+          capabilities: [
+            ...n.sensors.map((s) => ({
+              id: `${n.id}.${s.key}`,
+              label: `${n.id} · ${s.key}`,
+              kind: 'sensor' as const,
+              icon: iconFor(s.kind),
+              unit: s.unit,
+              describes: `live ${s.kind ?? 'sensor'} on ${n.id}`,
+            })),
+            ...(n.actuators ?? []).map((a) => ({
+              id: `${n.id}.${a.key}`,
+              label: `${n.id} · ${a.key}`,
+              kind: 'actuator' as const,
+              icon: actuatorIconFor(a.kind),
+              describes: `commandable ${a.kind ?? 'actuator'} on ${n.id}`,
+            })),
+          ],
         } as HomeNode);
     return out;
   }
@@ -276,6 +328,14 @@ export class MemoryStore implements HomeStore {
   }
   async listHubDevices(): Promise<HubDeviceSnapshot[]> {
     return [...this.hubDevices.values()];
+  }
+  async putCommand(cmd: HubCommand): Promise<void> {
+    this.commands.set(`${cmd.nodeId}.${cmd.key}`, cmd);
+    this.persist();
+  }
+  async listCommands(hubId?: string): Promise<HubCommand[]> {
+    const all = [...this.commands.values()];
+    return hubId ? all.filter((c) => c.hubId === hubId) : all;
   }
 }
 

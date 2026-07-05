@@ -43,6 +43,12 @@ const SYNC_MS = Number(process.env.HUB_SYNC_MS || 15000);
 // feed it to the rule engine / sync it to Hearth Cloud.
 const nodes = new Map();
 
+// Desired actuator commands the cloud wants relayed DOWN to nodes (the cloud→node
+// direction). Keyed by nodeId → { key → value }. Refreshed from every cloud sync;
+// handed to a node in the response to its next /ingest POST. This is the hub's half
+// of the device shadow: it caches "desired" and forwards it to the device.
+const commands = new Map();
+
 function now() {
   return new Date().toISOString();
 }
@@ -74,13 +80,36 @@ async function syncToCloud() {
       body: JSON.stringify({ platform: process.platform, nodes: [...nodes.values()] }),
     });
     const data = await res.json().catch(() => ({}));
-    if (res.ok) console.log(`[hub→cloud] synced ${data.nodes ?? '?'} node(s), ${data.readings ?? 0} reading(s)`);
-    else console.log(`[hub→cloud] rejected ${res.status}: ${data.error || 'unknown'}`);
+    if (res.ok) {
+      applyCommands(data.commands);
+      const nCmd = Array.isArray(data.commands) ? data.commands.length : 0;
+      console.log(`[hub→cloud] synced ${data.nodes ?? '?'} node(s), ${data.readings ?? 0} reading(s)${nCmd ? `, ${nCmd} command(s) pending` : ''}`);
+    } else console.log(`[hub→cloud] rejected ${res.status}: ${data.error || 'unknown'}`);
   } catch (e) {
     console.log(`[hub→cloud] failed: ${e.message}`);
   } finally {
     syncing = false;
   }
+}
+
+// Fold the cloud's desired-command list into our per-node cache. Replaces the
+// cache wholesale each sync so a cleared command in the cloud clears here too.
+function applyCommands(list) {
+  commands.clear();
+  for (const c of Array.isArray(list) ? list : []) {
+    if (!c || !c.nodeId || !c.key) continue;
+    const forNode = commands.get(c.nodeId) || {};
+    forNode[c.key] = c.value;
+    commands.set(c.nodeId, forNode);
+  }
+}
+
+// The commands to hand a node in its /ingest response — the shape its firmware
+// parses: {"commands":[{"key":"motor","value":"on"}]}.
+function commandsFor(nodeId) {
+  const forNode = commands.get(nodeId);
+  if (!forNode) return [];
+  return Object.entries(forNode).map(([key, value]) => ({ key, value }));
 }
 
 function readJson(req) {
@@ -132,12 +161,16 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify([...nodes.values()], null, 2));
     return;
   }
-  // Node ingest — accepts DESCRIBE and READING documents.
+  // Node ingest — accepts DESCRIBE and READING documents. The RESPONSE is the
+  // downlink: any commands the cloud wants applied to this node ride back here, so
+  // the node's own POST doubles as its command poll (no inbound connection needed).
   if (req.method === 'POST' && req.url === INGEST_PATH) {
     const doc = await readJson(req);
     const ok = ingest(doc);
+    const cmds = ok && doc && doc.id ? commandsFor(doc.id) : [];
+    if (cmds.length) console.log(`[hub→node] ${doc.id} ← ${JSON.stringify(cmds)}`);
     res.writeHead(ok ? 200 : 400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok }));
+    res.end(JSON.stringify({ ok, commands: cmds }));
     return;
   }
   res.writeHead(404, { 'content-type': 'application/json' });
