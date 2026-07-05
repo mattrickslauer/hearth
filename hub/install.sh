@@ -46,6 +46,7 @@ NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 
 say "Installing the Hearth hub into $DIR"
 mkdir -p "$DIR"
 curl -fsSL "$REPO_RAW/$REF/hub/hub.mjs"    -o "$DIR/hub.mjs"    || die "Download failed: hub.mjs"
+curl -fsSL "$REPO_RAW/$REF/hub/ws.mjs"     -o "$DIR/ws.mjs"     || die "Download failed: ws.mjs"
 curl -fsSL "$REPO_RAW/$REF/hub/hearthctl"  -o "$DIR/hearthctl"  || die "Download failed: hearthctl"
 chmod +x "$DIR/hub.mjs" "$DIR/hearthctl"
 
