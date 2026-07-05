@@ -1,62 +1,120 @@
 #!/usr/bin/env bash
 #
-# Hearth hub installer.
+# Hearth hub installer — one command, no Docker.
 #
 #   curl -fsSL https://raw.githubusercontent.com/mattrickslauer/hearth/main/hub/install.sh | bash
 #
-# Downloads the (zero-dependency, Node 18+) hub agent to ~/.hearth and starts it.
-# The agent prints a claim code — enter it in your Hearth dashboard → "Connect a hub".
+# Installs the single-process hub agent into ~/.hearth, starts it as a background
+# service, and prints your pairing CODE. Enter that code in your Hearth dashboard →
+# "Connect a hub". The hub then advertises itself on your LAN (mDNS), ingests your
+# ESP32 nodes, and syncs them to your account.
+#
+# Manage it afterwards:   ~/.hearth/hearthctl {start|stop|restart|status|logs|code}
 #
 # Env overrides:
-#   HEARTH_HOME=/path        where the agent + its identity live (default ~/.hearth)
+#   HEARTH_HOME=/path        where the hub + identity + logs live (default ~/.hearth)
 #   BACKEND_URL=http://…     point at a different backend (default: Hearth Cloud)
 #   HUB_NAME="Kitchen Pi"    display name shown on the dashboard (default: hostname)
-#   HEARTH_INSTALL_ONLY=1    install but don't start the agent
-#   HEARTH_REF=main          git ref to pull the agent from (default main)
+#   HEARTH_REF=main          git ref to pull from (default main)
+#   HEARTH_INSTALL_ONLY=1    install but don't start
+#   HEARTH_NO_MDNS=1         skip the mDNS dependency (nodes use HUB_ENDPOINT instead)
 
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/mattrickslauer/hearth"
 REF="${HEARTH_REF:-main}"
-INSTALL_DIR="${HEARTH_HOME:-$HOME/.hearth}"
-AGENT_URL="$REPO_RAW/$REF/hub/hearth-hub.mjs"
-AGENT_PATH="$INSTALL_DIR/hearth-hub.mjs"
+DIR="${HEARTH_HOME:-$HOME/.hearth}"
+DASHBOARD_URL="${HEARTH_DASHBOARD_URL:-https://hearth.vercel.app}"
 
-say() { printf '\033[38;5;209m▸\033[0m %s\n' "$1"; }
-die() { printf '\033[38;5;196m✗\033[0m %s\n' "$1" >&2; exit 1; }
+say()  { printf '\033[38;5;209m▸\033[0m %s\n' "$1"; }
+ok()   { printf '\033[38;5;42m✓\033[0m %s\n' "$1"; }
+warn() { printf '\033[38;5;214m!\033[0m %s\n' "$1"; }
+die()  { printf '\033[38;5;196m✗\033[0m %s\n' "$1" >&2; exit 1; }
 
 # --- prerequisites ---------------------------------------------------------
 command -v curl >/dev/null 2>&1 || die "curl is required but not installed."
-
 if ! command -v node >/dev/null 2>&1; then
   die "Node.js 18+ is required but 'node' was not found.
-    Install it from https://nodejs.org (LTS), or via a version manager:
-      macOS:  brew install node
-      Linux:  https://github.com/nvm-sh/nvm  →  nvm install --lts
+    macOS:  brew install node
+    Linux:  https://github.com/nvm-sh/nvm  →  nvm install --lts
     Then re-run this installer."
 fi
-
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-if [ "$NODE_MAJOR" -lt 18 ]; then
-  die "Node.js 18+ is required (found $(node -v)). Please upgrade Node and re-run."
+[ "$NODE_MAJOR" -ge 18 ] || die "Node.js 18+ is required (found $(node -v)). Upgrade Node and re-run."
+
+# --- install files ---------------------------------------------------------
+say "Installing the Hearth hub into $DIR"
+mkdir -p "$DIR"
+curl -fsSL "$REPO_RAW/$REF/hub/hub.mjs"    -o "$DIR/hub.mjs"    || die "Download failed: hub.mjs"
+curl -fsSL "$REPO_RAW/$REF/hub/hearthctl"  -o "$DIR/hearthctl"  || die "Download failed: hearthctl"
+chmod +x "$DIR/hub.mjs" "$DIR/hearthctl"
+
+# Minimal package.json so `npm install` can pull the (optional) mDNS dependency.
+cat >"$DIR/package.json" <<'JSON'
+{
+  "name": "hearth-hub",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "dependencies": { "bonjour-service": "^1.2.1" },
+  "engines": { "node": ">=18" }
+}
+JSON
+
+# --- optional mDNS dependency (zero-config node discovery) ------------------
+if [ "${HEARTH_NO_MDNS:-}" = "1" ]; then
+  warn "Skipping mDNS (HEARTH_NO_MDNS=1). Point nodes at this hub via HUB_ENDPOINT."
+elif command -v npm >/dev/null 2>&1; then
+  say "Installing mDNS support (bonjour-service)…"
+  ( cd "$DIR" && npm install --omit=dev --no-audit --no-fund --loglevel=error ) \
+    && ok "mDNS ready — ESP32 nodes will discover this hub automatically." \
+    || warn "mDNS install failed — the hub still works; nodes just need HUB_ENDPOINT set."
+else
+  warn "npm not found — installing without mDNS. Nodes will need HUB_ENDPOINT set."
 fi
 
-# --- install ---------------------------------------------------------------
-say "Installing the Hearth hub into $INSTALL_DIR"
-mkdir -p "$INSTALL_DIR"
-curl -fsSL "$AGENT_URL" -o "$AGENT_PATH" || die "Download failed: $AGENT_URL"
-chmod +x "$AGENT_PATH"
-say "Installed $(node -e 'const m=require("os");process.stdout.write("hub agent for "+m.hostname())' 2>/dev/null || echo 'hub agent')."
+# --- export the env the service should run with ----------------------------
+# hearthctl launches hub.mjs; pass through the operator's chosen backend/name/home.
+export HEARTH_HOME="$DIR"
+[ -n "${BACKEND_URL:-}" ] && export BACKEND_URL
+[ -n "${HUB_NAME:-}" ]    && export HUB_NAME
 
-# --- run -------------------------------------------------------------------
 if [ "${HEARTH_INSTALL_ONLY:-}" = "1" ]; then
-  say "Done. Start it any time with:"
-  printf '\n    node %s\n\n' "$AGENT_PATH"
-  say "To keep it running as a service, wrap that command in systemd / launchd / pm2."
+  ok "Installed. Start it any time with:"
+  printf '\n    %s start\n\n' "$DIR/hearthctl"
   exit 0
 fi
 
-say "Starting the hub. It will print a claim code — enter it in your Hearth dashboard."
-say "(Press Ctrl-C to stop. Re-run 'node $AGENT_PATH' to restart; it keeps its identity.)"
+# --- start the background service ------------------------------------------
+say "Starting the hub in the background…"
+"$DIR/hearthctl" start
+
+# --- surface the pairing code ----------------------------------------------
+say "Waiting for your pairing code…"
+CODE=""
+for _ in $(seq 1 40); do        # up to ~20s
+  if [ -s "$DIR/claim-code.txt" ]; then CODE="$(cat "$DIR/claim-code.txt")"; break; fi
+  sleep 0.5
+done
+
 echo
-exec node "$AGENT_PATH"
+if [ -n "$CODE" ]; then
+  printf '  \033[38;5;209m┌─────────────────────────────────────────────┐\033[0m\n'
+  printf '  \033[38;5;209m│\033[0m  Enter this code in your Hearth dashboard:    \033[38;5;209m│\033[0m\n'
+  printf '  \033[38;5;209m│\033[0m                                               \033[38;5;209m│\033[0m\n'
+  printf '  \033[38;5;209m│\033[0m            >>>   \033[1m%s\033[0m   <<<            \033[38;5;209m│\033[0m\n' "$CODE"
+  printf '  \033[38;5;209m│\033[0m                                               \033[38;5;209m│\033[0m\n'
+  printf '  \033[38;5;209m└─────────────────────────────────────────────┘\033[0m\n\n'
+  ok "Open $DASHBOARD_URL → \"Connect a hub\" and enter $CODE"
+else
+  warn "Didn't catch the code in time — the hub is running. Get it with:"
+  printf '\n    %s code\n\n' "$DIR/hearthctl"
+fi
+
+echo
+say "The hub is running in the background. Manage it with:"
+printf '    %s status     # running? paired? nodes ingested?\n' "$DIR/hearthctl"
+printf '    %s logs       # follow the log\n' "$DIR/hearthctl"
+printf '    %s restart    # after a reboot, or to re-read config\n' "$DIR/hearthctl"
+echo
+say "Tip: to start on boot, add '$DIR/hearthctl start' to your crontab (@reboot) or a login script."

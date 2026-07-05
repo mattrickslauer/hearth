@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+#
+# hearthctl — control the Hearth hub background service (no Docker, no root).
+#
+#   hearthctl start     start the hub in the background
+#   hearthctl stop      stop it
+#   hearthctl restart   stop + start
+#   hearthctl status    is it running? paired? how many nodes?
+#   hearthctl logs      follow the log
+#   hearthctl code      print the current pairing claim code (if unpaired)
+#
+# The hub runs from $HEARTH_HOME (default ~/.hearth). Everything — the script, its
+# identity, logs, and PID — lives there, so this is fully self-contained.
+
+set -euo pipefail
+
+HEARTH_HOME="${HEARTH_HOME:-$HOME/.hearth}"
+HUB="$HEARTH_HOME/hub.mjs"
+LOG="$HEARTH_HOME/hub.log"
+PIDFILE="$HEARTH_HOME/hub.pid"
+CLAIM="$HEARTH_HOME/claim-code.txt"
+PORT="${HUB_PORT:-8899}"
+
+c()  { printf '\033[38;5;209m%s\033[0m' "$1"; }
+ok() { printf '\033[38;5;42m%s\033[0m' "$1"; }
+dim(){ printf '\033[2m%s\033[0m' "$1"; }
+
+is_running() {
+  [ -f "$PIDFILE" ] || return 1
+  local pid; pid="$(cat "$PIDFILE" 2>/dev/null || echo)"
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+start() {
+  command -v node >/dev/null 2>&1 || { echo "node not found — install Node 18+ first." >&2; exit 1; }
+  [ -f "$HUB" ] || { echo "hub not installed at $HUB — run the installer first." >&2; exit 1; }
+  if is_running; then echo "$(ok '●') hub already running (pid $(cat "$PIDFILE"))."; exit 0; fi
+  rm -f "$CLAIM"
+  # Detach fully so it survives this shell / SSH session closing.
+  nohup node "$HUB" >>"$LOG" 2>&1 &
+  echo "$!" >"$PIDFILE"
+  disown 2>/dev/null || true
+  echo "$(ok '●') hub started (pid $!). Logs: $LOG"
+}
+
+stop() {
+  if ! is_running; then echo "hub not running."; rm -f "$PIDFILE"; return 0; fi
+  local pid; pid="$(cat "$PIDFILE")"
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do is_running || break; sleep 0.3; done
+  is_running && kill -9 "$pid" 2>/dev/null || true
+  rm -f "$PIDFILE"
+  echo "hub stopped."
+}
+
+status() {
+  if is_running; then
+    echo "$(ok '●') running (pid $(cat "$PIDFILE"))"
+  else
+    echo "○ stopped"
+  fi
+  # Live registry, if the ingest port answers.
+  local reg; reg="$(curl -fsS --max-time 2 "http://localhost:$PORT/nodes" 2>/dev/null || echo)"
+  if [ -n "$reg" ]; then
+    # Parse the JSON array length with node (always present on a hub) rather than
+    # grepping "id" — each node carries an "id" both at top level and in describe.
+    local n; n="$(printf '%s' "$reg" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).length)}catch{console.log("?")}})' 2>/dev/null || echo '?')"
+    echo "  nodes ingested: $n   $(dim "(curl http://localhost:$PORT/nodes for detail)")"
+  fi
+  if [ -s "$CLAIM" ]; then
+    echo "  $(c 'unpaired') — enter this code in the dashboard: $(c "$(cat "$CLAIM")")"
+  else
+    echo "  paired $(dim '(no pending claim code)')"
+  fi
+}
+
+logs() { touch "$LOG"; tail -n 40 -f "$LOG"; }
+
+code() {
+  if [ -s "$CLAIM" ]; then cat "$CLAIM"; else echo "(no pending claim code — the hub is paired, or hasn't enrolled yet)"; fi
+}
+
+case "${1:-status}" in
+  start)   start ;;
+  stop)    stop ;;
+  restart) stop; start ;;
+  status)  status ;;
+  logs)    logs ;;
+  code)    code ;;
+  *) echo "usage: hearthctl {start|stop|restart|status|logs|code}" >&2; exit 2 ;;
+esac
