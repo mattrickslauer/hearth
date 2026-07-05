@@ -129,10 +129,12 @@ export default function DashboardScreen() {
     if (status === 'signedIn') void load();
   }, [status, load]);
 
-  // Realtime: when the dashboard is on the hub's LAN (EXPO_PUBLIC_HUB_URL set), stream
-  // readings straight from the hub and patch tiles in place — no polling, no cloud hop.
-  // Falls back silently to the load-on-mount + manual refresh path when unconfigured.
+  // Realtime: auto-discovers the account's hub and opens a secure, cloud-brokered
+  // WebSocket (via Alibaba API Gateway) that streams readings and patches tiles in place.
+  // Degrades silently to the load-on-mount + manual refresh path when realtime isn't
+  // provisioned or the hub is offline.
   const liveStatus = useHubLive(
+    token,
     useCallback((updates: Record<string, Reading>) => {
       setReadings((prev) => ({ ...prev, ...updates }));
     }, []),
@@ -427,8 +429,10 @@ export default function DashboardScreen() {
                     <View style={[styles.liveDot, { backgroundColor: theme.success }]} />
                     <Text style={[styles.liveText, { color: theme.success }]}>live</Text>
                   </View>
-                ) : liveStatus === 'connecting' || liveStatus === 'reconnecting' ? (
+                ) : liveStatus === 'connecting' ? (
                   <Text style={[styles.liveText, { color: theme.textMuted }]}>connecting…</Text>
+                ) : liveStatus === 'offline' ? (
+                  <Text style={[styles.liveText, { color: theme.textMuted }]}>hub offline</Text>
                 ) : null}
               </View>
               <View style={styles.tileGrid}>

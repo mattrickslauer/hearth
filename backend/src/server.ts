@@ -24,11 +24,13 @@ import {
   verifyOtp,
   verifySession,
   verifyHubToken,
+  issueWsTicket,
   assertAuthConfig,
   type AuthDeps,
 } from './auth';
-import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore } from './hubs';
+import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore, hubView } from './hubs';
 import { syncHubDevices } from './hub-devices';
+import { relayConfig, relayEnabled, publishToRelay } from './relay';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
@@ -72,6 +74,23 @@ function clientIp(req: IncomingMessage): string | undefined {
   const xff = req.headers['x-forwarded-for'];
   if (typeof xff === 'string' && xff) return xff.split(',')[0].trim();
   return req.socket?.remoteAddress ?? undefined;
+}
+
+/**
+ * Push a hub's just-synced readings to every browser the account has connected to the relay.
+ * Best-effort. Awaited by the caller BEFORE responding, because on Function Compute
+ * post-response async work may not run (the instance can freeze after the response).
+ */
+async function pushReadingsToAccount(accountId: string, body: Record<string, unknown>): Promise<void> {
+  if (!relayEnabled()) return;
+  const nodes = Array.isArray(body.nodes) ? body.nodes : [];
+  const payload = nodes
+    .map((n) => (n && typeof n === 'object' ? (n as Record<string, unknown>) : {}))
+    .filter((n) => typeof n.id === 'string')
+    .map((n) => ({ id: n.id as string, readings: (n.lastReading as Record<string, unknown>) ?? {} }));
+  if (!payload.length) return;
+  const message = JSON.stringify({ type: 'readings', at: Date.now(), nodes: payload });
+  await publishToRelay(accountId, message);
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -180,7 +199,35 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const result = await syncHubDevices(store, { hubId: hub.id, hubName: hub.name, fw: hub.fw }, body);
       hub.lastSeenAt = Date.now(); // a device sync also proves liveness
       await getHubStore().save(hub);
+      // Fan the fresh readings out to this account's live browsers over the gateway.
+      // Awaited (not fire-and-forget) so it actually runs before FC may freeze the instance.
+      await pushReadingsToAccount(claims.acc, body);
       return send(res, 200, result);
+    }
+
+    /* --- realtime (cloud-brokered WebSocket via the relay) --- */
+
+    // Browser asks "how do I open a live socket to my hub?" — autodiscovery + a scoped,
+    // short-lived ticket. No client config: the session JWT tells us the account, we find
+    // its hub, and hand back the relay wss URL + a ticket the relay verifies on connect.
+    if (path === '/live/ticket' && method === 'GET') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const cfg = relayConfig();
+      if (!cfg) return send(res, 200, { enabled: false });
+      const hubs = await getHubStore().listByAccount(session.sub);
+      const now = Date.now();
+      // Prefer an online hub; otherwise report the most recent so the UI can say "offline".
+      const views = hubs.map((h) => hubView(h, now)).sort((a, b) => Number(b.online) - Number(a.online) || b.createdAt - a.createdAt);
+      const hub = views[0];
+      if (!hub) return send(res, 200, { enabled: true, hub: null });
+      return send(res, 200, {
+        enabled: true,
+        hubId: hub.id,
+        online: hub.online,
+        wsUrl: cfg.wsUrl,
+        ticket: issueWsTicket(session.sub, hub.id),
+      });
     }
 
     // User-facing: require a signed-in session.

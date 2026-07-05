@@ -80,6 +80,13 @@ resources:
         # rather than inherit HEARTH_STORE. Flip to `tablestore` once those tables exist.
         HEARTH_ACCOUNT_STORE: memory
         HEARTH_OTP_STORE: memory
+        # Realtime relay (cloud-brokered live readings → dashboard). The URLs aren't secret;
+        # the two secrets come from the deploy env and MUST match the relay container's env on
+        # agfarms (~/hearth-relay/relay.env). Unset → realtime off. See docs/realtime-relay.md.
+        RELAY_WS_URL: wss://hub-ws.agfarms.dev/live
+        RELAY_PUBLISH_URL: https://hub-ws.agfarms.dev/publish
+        RELAY_PUBLISH_SECRET: ${env('RELAY_PUBLISH_SECRET')}
+        RELAY_TICKET_SECRET: ${env('RELAY_TICKET_SECRET')}
         # Add once wired: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
       triggers:
         - triggerName: http
