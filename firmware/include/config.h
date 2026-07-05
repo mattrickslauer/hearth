@@ -21,5 +21,14 @@
 #define DHT_PIN 4
 #define DHT_TYPE DHT11
 
+// HC-SR04 ultrasonic distance sensor.
+//   DIST_TRIG_PIN = GPIO wired to the sensor's TRIG (an output pulse).
+//   DIST_ECHO_PIN = GPIO wired to the sensor's ECHO.
+//   Set DIST_TRIG_PIN to -1 to disable the sensor entirely.
+//   NOTE: a 5V-powered HC-SR04 returns 5V on ECHO — divide it to 3.3V. Powering
+//   the sensor from 3V3 keeps ECHO at a GPIO-safe level (shorter max range).
+#define DIST_TRIG_PIN 18
+#define DIST_ECHO_PIN 19
+
 // How often to sample and report, in milliseconds.
 #define SAMPLE_INTERVAL_MS 5000

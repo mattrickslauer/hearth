@@ -23,6 +23,23 @@
 DHT dht(DHT_PIN, DHT_TYPE);
 #endif
 
+#if DIST_TRIG_PIN >= 0
+// HC-SR04: pulse TRIG high 10µs, time the ECHO high pulse, convert to cm using
+// the speed of sound (~343 m/s → 58µs per round-trip cm). Returns NAN on timeout
+// (nothing in range / not wired), which the reading reports as null.
+static float distanceCm() {
+  digitalWrite(DIST_TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(DIST_TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(DIST_TRIG_PIN, LOW);
+  // ~25ms timeout ≈ 4m of round-trip; beyond that we call it out-of-range.
+  unsigned long us = pulseIn(DIST_ECHO_PIN, HIGH, 25000UL);
+  if (us == 0) return NAN;
+  return us / 58.0f;
+}
+#endif
+
 static String   gNodeId;
 static uint32_t gLastSample = 0;
 static bool     gAnnounced  = false;
@@ -60,6 +77,9 @@ static String describeJson() {
   s += ",{\"key\":\"dht.temp\",\"kind\":\"temperature\",\"unit\":\"C\",\"pin\":" + String(DHT_PIN) + "}";
   s += ",{\"key\":\"dht.humidity\",\"kind\":\"humidity\",\"unit\":\"pct\",\"pin\":" + String(DHT_PIN) + "}";
 #endif
+#if DIST_TRIG_PIN >= 0
+  s += ",{\"key\":\"dist.range\",\"kind\":\"distance\",\"unit\":\"cm\",\"pin\":" + String(DIST_ECHO_PIN) + "}";
+#endif
   s += "]}";
   return s;
 }
@@ -78,6 +98,10 @@ static String readingsJson() {
   float h = dht.readHumidity();
   s += ",\"dht.temp\":"     + (isnan(t) ? String("null") : String(t, 1));
   s += ",\"dht.humidity\":" + (isnan(h) ? String("null") : String(h, 1));
+#endif
+#if DIST_TRIG_PIN >= 0
+  float d = distanceCm();
+  s += ",\"dist.range\":" + (isnan(d) ? String("null") : String(d, 1));
 #endif
   s += "}}";
   return s;
@@ -146,6 +170,11 @@ void setup() {
   Serial.println("id " + gNodeId);
 #if DHT_PIN >= 0
   dht.begin();
+#endif
+#if DIST_TRIG_PIN >= 0
+  pinMode(DIST_TRIG_PIN, OUTPUT);
+  pinMode(DIST_ECHO_PIN, INPUT);
+  digitalWrite(DIST_TRIG_PIN, LOW);
 #endif
   // Always announce over serial, even offline.
   Serial.println("DESCRIBE " + describeJson());
