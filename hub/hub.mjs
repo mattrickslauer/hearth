@@ -36,6 +36,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { homedir, hostname, platform } from 'node:os';
 import { dirname, join } from 'node:path';
+import { attachWebSocket } from './ws.mjs';
 
 // ── config ──────────────────────────────────────────────────────────────────
 const DEFAULT_BACKEND = 'https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run';
@@ -81,6 +82,9 @@ let accountId = state.accountId || null;
 
 // ── node registry (LAN side) ──────────────────────────────────────────────────
 const nodes = new Map();
+// LAN realtime channel (browser dashboards on the same network). Set in main() once the
+// HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
+let live = null;
 
 // Fold a node's document into the registry. DESCRIBE registers identity + capabilities;
 // READING updates the latest values. Either way we learn the node exists — no node is
@@ -97,10 +101,14 @@ function ingest(doc) {
     const sensors = (doc.sensors || []).map((s) => s.key).join(', ');
     console.log(`[hub] ${known ? 're-announce' : '+ NEW NODE'} ${id} (${doc.board || '?'}) can sense: ${sensors}`);
     if (!known) queueMicrotask(syncToCloud); // push a newly-discovered node up promptly
+    // Tell live dashboards a (possibly new) node exists so its sensor tiles appear at once.
+    if (live) live.broadcast({ type: 'describe', node: id, at: Date.now(), describe: doc });
   } else if (doc.type === 'hearth.node.reading') {
     entry.lastReading = doc.readings || null;
     entry.readingCount += 1;
     console.log(`[hub] ${id} reading #${entry.readingCount}: ${JSON.stringify(doc.readings)}`);
+    // Fan the reading out to LAN dashboards the instant it lands — the realtime path.
+    if (live) live.broadcast({ type: 'reading', node: id, at: Date.now(), readings: doc.readings || {} });
   } else {
     return false;
   }
@@ -290,7 +298,13 @@ async function main() {
   console.log(`[hearth-hub] backend ${BACKEND_URL}  name "${HUB_NAME}"  state ${STATE_DIR}`);
 
   await new Promise((resolve) => server.listen(PORT, '0.0.0.0', resolve));
-  console.log(`[hub] ingest listening on :${PORT} (POST ${INGEST_PATH}, GET /nodes)`);
+  // Realtime LAN channel: a browser on the same network subscribes at ws://<hub>:PORT/live
+  // and gets a snapshot of the current registry, then a live push on every reading.
+  live = attachWebSocket(server, {
+    path: '/live',
+    onConnect: (send) => send({ type: 'snapshot', at: Date.now(), nodes: [...nodes.values()] }),
+  });
+  console.log(`[hub] ingest listening on :${PORT} (POST ${INGEST_PATH}, GET /nodes, WS /live)`);
   const bonjour = await startMdns();
 
   if (hubToken) console.log(`  Already paired (hub ${state.hubId}, account ${accountId}). Heartbeating + syncing.\n`);
@@ -301,6 +315,7 @@ async function main() {
   const shutdown = () => {
     console.log('\n[hub] shutting down…');
     clearInterval(syncTimer);
+    if (live) live.close();
     if (bonjour) bonjour.unpublishAll(() => bonjour.destroy());
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500);
