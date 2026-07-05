@@ -208,37 +208,39 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       // Fan the fresh readings out to this account's live browsers over the gateway.
       // Awaited (not fire-and-forget) so it actually runs before FC may freeze the instance.
       await pushReadingsToAccount(claims.acc, body);
-      // Downlink: hand the hub the account's desired per-node sample cadences. The hub
+      // Downlink: hand the hub the account's desired per-sensor sample cadences. The hub
       // relays each to its node on the node's next ingest POST — the only downlink path.
       return send(res, 200, { ...result, cadences: await store.getCadences() });
     }
 
-    /* --- per-node sample cadence (frontend → backend → hub → node downlink) --- */
+    /* --- per-sensor sample cadence (frontend → backend → hub → node downlink) --- */
 
-    // Read the account's desired per-node cadences (nodeId → ms).
-    if (path === '/nodes/cadence' && method === 'GET') {
+    // Read the account's desired per-sensor cadences (input id "<node>.<key>" → ms).
+    if (path === '/inputs/cadence' && method === 'GET') {
       const session = requireSession(req, res);
       if (!session) return;
       const store = await getStoreFor(session.sub);
       return send(res, 200, { cadences: await store.getCadences() });
     }
 
-    // Set a node's desired sample cadence. Takes effect within ~1 hub sync + 1 node cycle.
-    if (path === '/nodes/cadence' && method === 'POST') {
+    // Set one sensor's desired sample cadence. Takes effect within ~1 hub sync + 1 node cycle.
+    if (path === '/inputs/cadence' && method === 'POST') {
       const session = requireSession(req, res);
       if (!session) return;
       const body = await readBody(req);
-      const nodeId = typeof body.nodeId === 'string' ? body.nodeId : '';
-      if (!nodeId) return send(res, 400, { error: 'nodeId required' });
+      const input = typeof body.input === 'string' ? body.input : '';
+      if (!input) return send(res, 400, { error: 'input required' });
       const store = await getStoreFor(session.sub);
-      // Only accept cadence for a node this account actually owns (via a paired hub).
-      const owns = (await store.listHubDevices()).some((s) => s.nodes.some((n) => n.id === nodeId));
-      if (!owns) return send(res, 404, { error: 'unknown node' });
+      // Only accept cadence for a sensor this account actually owns (via a paired hub).
+      const owns = (await store.listHubDevices()).some((s) =>
+        s.nodes.some((n) => n.sensors.some((se) => `${n.id}.${se.key}` === input)),
+      );
+      if (!owns) return send(res, 404, { error: 'unknown input' });
       const raw = Number(body.intervalMs);
       if (!Number.isFinite(raw)) return send(res, 400, { error: 'intervalMs must be a number' });
       const intervalMs = Math.round(clampCadence(raw));
-      await store.setCadence(nodeId, intervalMs);
-      return send(res, 200, { ok: true, nodeId, intervalMs });
+      await store.setCadence(input, intervalMs);
+      return send(res, 200, { ok: true, input, intervalMs });
     }
 
     /* --- realtime (cloud-brokered WebSocket via the relay) --- */

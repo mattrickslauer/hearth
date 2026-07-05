@@ -82,10 +82,22 @@ let accountId = state.accountId || null;
 
 // ── node registry (LAN side) ──────────────────────────────────────────────────
 const nodes = new Map();
-// Desired per-node sample cadence in ms (nodeId → ms), learned from the cloud on each
-// device sync. We hand each node its cadence in the HTTP response to its next ingest POST
-// — the node polls us by POSTing, so its own POST is the downlink carrier (no node server).
+// Desired per-sensor sample cadence in ms (input id "<node>.<key>" → ms), learned from the
+// cloud on each device sync. We hand each node its own sensors' cadences in the HTTP response
+// to its next ingest POST — the node polls us by POSTing, so its POST is the downlink carrier
+// (no node server). Keyed by full input id upstream; handed to the node keyed by bare sensor key.
 const desiredCadence = new Map();
+
+// The cadences for one node, keyed by bare sensor key (strip the "<node>." prefix) — this is
+// exactly what the node needs to retune its own per-sensor timers. Empty = no overrides.
+function cadencesForNode(nodeId) {
+  const prefix = `${nodeId}.`;
+  const out = {};
+  for (const [input, ms] of desiredCadence) {
+    if (input.startsWith(prefix)) out[input.slice(prefix.length)] = ms;
+  }
+  return out;
+}
 // LAN realtime channel (browser dashboards on the same network). Set in main() once the
 // HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
 let live = null;
@@ -108,7 +120,9 @@ function ingest(doc) {
     // Tell live dashboards a (possibly new) node exists so its sensor tiles appear at once.
     if (live) live.broadcast({ type: 'describe', node: id, at: Date.now(), describe: doc });
   } else if (doc.type === 'hearth.node.reading') {
-    entry.lastReading = doc.readings || null;
+    // Merge, don't replace: with per-sensor cadence a reading doc may carry only the sensors
+    // that were due, so keep the last value of the others in our snapshot.
+    entry.lastReading = { ...(entry.lastReading || {}), ...(doc.readings || {}) };
     entry.readingCount += 1;
     console.log(`[hub] ${id} reading #${entry.readingCount}: ${JSON.stringify(doc.readings)}`);
     // Fan the reading out to LAN dashboards the instant it lands — the direct realtime path.
@@ -303,11 +317,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === INGEST_PATH) {
     const doc = await readJson(req);
     const ok = ingest(doc);
-    // Downlink: if the account has requested a cadence for this node, hand it back so the
-    // node retunes its sample interval. Absent → node keeps its own default (backward compat).
-    const sampleIntervalMs = ok && doc && desiredCadence.get(doc.id);
+    // Downlink: hand this node the per-sensor cadences the account set for its inputs (keyed
+    // by bare sensor key). Always present (possibly {}) so the node can tell "cleared" from
+    // "unspoken" and revert cleared sensors to their default.
     res.writeHead(ok ? 200 : 400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(sampleIntervalMs ? { ok, sampleIntervalMs } : { ok }));
+    res.end(JSON.stringify(ok && doc && doc.id ? { ok, cadences: cadencesForNode(doc.id) } : { ok }));
     return;
   }
   res.writeHead(404, { 'content-type': 'application/json' });

@@ -111,13 +111,13 @@ export const deleteWatch = (id: string, token?: string | null) =>
 export const suggestRuns = (token?: string | null) =>
   call<{ suggestions: string[]; brain: string }>('suggest_runs', {}, token);
 
-/* --- per-node sample cadence (REST, not an MCP tool) --------------------------- */
+/* --- per-sensor sample cadence (REST, not an MCP tool) ------------------------- */
 
-/** How fast each node is asked to sample, keyed by nodeId → interval in ms. */
+/** How fast each sensor is asked to sample, keyed by input id "<node>.<key>" → interval in ms. */
 export type Cadences = Record<string, number>;
 
 async function cadenceReq<T>(init: RequestInit, token?: string | null): Promise<T> {
-  const res = await fetch(`${backendBase}/nodes/cadence`, {
+  const res = await fetch(`${backendBase}/inputs/cadence`, {
     ...init,
     headers: {
       'content-type': 'application/json',
@@ -130,13 +130,13 @@ async function cadenceReq<T>(init: RequestInit, token?: string | null): Promise<
   return data as T;
 }
 
-/** Read the account's desired per-node sample cadences. */
+/** Read the account's desired per-sensor sample cadences. */
 export const listCadences = (token?: string | null) =>
   cadenceReq<{ cadences: Cadences }>({ method: 'GET' }, token).then((r) => r.cadences);
 
-/** Ask a node to sample every `intervalMs` (clamped server-side). Takes effect within a few seconds. */
-export const setCadence = (nodeId: string, intervalMs: number, token?: string | null) =>
-  cadenceReq<{ ok: boolean; nodeId: string; intervalMs: number }>(
-    { method: 'POST', body: JSON.stringify({ nodeId, intervalMs }) },
+/** Ask a sensor to sample every `intervalMs` (clamped server-side). Takes effect within a few seconds. */
+export const setCadence = (input: string, intervalMs: number, token?: string | null) =>
+  cadenceReq<{ ok: boolean; input: string; intervalMs: number }>(
+    { method: 'POST', body: JSON.stringify({ input, intervalMs }) },
     token,
   );

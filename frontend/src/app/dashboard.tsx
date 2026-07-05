@@ -2,6 +2,7 @@ import { Redirect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Linking,
   Platform,
   Pressable,
@@ -53,13 +54,17 @@ function ago(ts: number): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
-// Sample-rate choices offered per node. Bounds mirror the backend clamp (500ms–60s).
-const CADENCE_PRESETS: { label: string; ms: number }[] = [
-  { label: '0.5s', ms: 500 },
-  { label: '1s', ms: 1000 },
-  { label: '5s', ms: 5000 },
-  { label: '30s', ms: 30000 },
-];
+// Slider snap points for a sensor's sample rate (ms). Bounds mirror the backend clamp
+// (500ms–60s); log-ish spacing so the fast end isn't cramped.
+const CADENCE_STOPS = [500, 1000, 2000, 5000, 10000, 30000, 60000];
+// A sensor with no explicit cadence runs at the firmware default — assume it for the TTL bar.
+const DEFAULT_CADENCE_MS = 5000;
+const fmtRate = (ms: number): string => `${ms / 1000}s`;
+const nearestStop = (ms: number): number => {
+  let best = CADENCE_STOPS[0];
+  for (const s of CADENCE_STOPS) if (Math.abs(s - ms) < Math.abs(best - ms)) best = s;
+  return best;
+};
 
 function formatValue(r: Reading | null, cap: HomeCapability): string {
   if (!r) return '—';
@@ -243,15 +248,20 @@ export default function DashboardScreen() {
     }
   };
 
-  // Ask a node to sample faster/slower. Optimistic: reflect the choice at once, then let the
-  // hub relay it to the node — live readings speed up within a few seconds. Revert on failure.
-  const changeCadence = async (nodeId: string, ms: number) => {
-    const prev = cadences[nodeId];
-    setCadences((c) => ({ ...c, [nodeId]: ms }));
+  // Ask one sensor to sample faster/slower. Optimistic: reflect the choice at once, then let
+  // the hub relay it to the node — that sensor's readings speed up within a few seconds.
+  const changeCadence = async (input: string, ms: number) => {
+    const prev = cadences[input];
+    setCadences((c) => ({ ...c, [input]: ms }));
     try {
-      await setCadence(nodeId, ms, token);
+      await setCadence(input, ms, token);
     } catch {
-      setCadences((c) => ({ ...c, [nodeId]: prev as number }));
+      setCadences((c) => {
+        const next = { ...c };
+        if (prev == null) delete next[input];
+        else next[input] = prev;
+        return next;
+      });
     }
   };
 
@@ -265,13 +275,6 @@ export default function DashboardScreen() {
   if (status === 'signedOut') return <Redirect href="/signin" />;
 
   const sensors = home?.capabilities.filter((c) => c.kind === 'sensor') ?? [];
-  // Group sensor tiles under their node so each node gets one sample-rate control (the
-  // firmware samples all a node's sensors on one timer, so cadence is per node, not per sensor).
-  const sensorNodes = (home?.nodes ?? [])
-    .map((n) => ({ node: n, sensors: n.capabilities.filter((c) => c.kind === 'sensor') }))
-    .filter((g) => g.sensors.length > 0);
-  const groupedIds = new Set(sensorNodes.flatMap((g) => g.sensors.map((s) => s.id)));
-  const looseSensors = sensors.filter((c) => !groupedIds.has(c.id));
   const devices = home?.nodes.length ?? 0;
   const pad = { paddingHorizontal: gutter };
 
@@ -468,28 +471,18 @@ export default function DashboardScreen() {
                   <Text style={[styles.liveText, { color: theme.textMuted }]}>hub offline</Text>
                 ) : null}
               </View>
-              {sensorNodes.map(({ node, sensors: ns }) => (
-                <View key={node.id} style={styles.nodeGroup}>
-                  <View style={styles.nodeHead}>
-                    <Text style={[styles.nodeName, { color: theme.textSecondary }]} numberOfLines={1}>
-                      {node.name}
-                    </Text>
-                    <CadenceControl theme={theme} active={cadences[node.id]} onPick={(ms) => changeCadence(node.id, ms)} />
-                  </View>
-                  <View style={styles.tileGrid}>
-                    {ns.map((c) => (
-                      <SensorTile key={c.id} theme={theme} cap={c} reading={readings[c.id] ?? null} />
-                    ))}
-                  </View>
-                </View>
-              ))}
-              {looseSensors.length ? (
-                <View style={styles.tileGrid}>
-                  {looseSensors.map((c) => (
-                    <SensorTile key={c.id} theme={theme} cap={c} reading={readings[c.id] ?? null} />
-                  ))}
-                </View>
-              ) : null}
+              <View style={styles.tileGrid}>
+                {sensors.map((c) => (
+                  <SensorTile
+                    key={c.id}
+                    theme={theme}
+                    cap={c}
+                    reading={readings[c.id] ?? null}
+                    active={cadences[c.id]}
+                    onChange={(ms) => changeCadence(c.id, ms)}
+                  />
+                ))}
+              </View>
             </View>
           ) : null}
 
@@ -648,53 +641,113 @@ function SensorTile({
   theme,
   cap,
   reading,
+  active,
+  onChange,
 }: {
   theme: ReturnType<typeof useTheme>;
   cap: HomeCapability;
   reading: Reading | null;
+  active?: number;
+  onChange: (ms: number) => void;
 }) {
+  // The interval this sensor is actually running at (falls back to the firmware default).
+  const effectiveMs = active ?? DEFAULT_CADENCE_MS;
+  const [pulse] = useState(() => new Animated.Value(0));
+  const [ttl] = useState(() => new Animated.Value(0));
+  const ts = reading?.ts;
+
+  // Every fresh reading (its timestamp changes) fires a pulse and refills the TTL bar, which
+  // then drains over the sensor's own interval — a visible heartbeat you can watch speed up.
+  useEffect(() => {
+    if (ts == null) return;
+    pulse.setValue(1);
+    Animated.timing(pulse, { toValue: 0, duration: 800, useNativeDriver: true }).start();
+    ttl.setValue(1);
+    const drain = Animated.timing(ttl, { toValue: 0, duration: effectiveMs, useNativeDriver: false });
+    drain.start();
+    return () => drain.stop();
+  }, [ts, effectiveMs, pulse, ttl]);
+
+  const ring = {
+    opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0, 0.55] }),
+    transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [2.6, 1] }) }],
+  };
+  const ttlWidth = ttl.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+
   return (
     <View style={[styles.tile, { backgroundColor: theme.card, borderColor: theme.border }]}>
-      <Text style={styles.tileIcon}>{cap.icon}</Text>
+      <View style={styles.tileTop}>
+        <Text style={styles.tileIcon}>{cap.icon}</Text>
+        <View style={styles.pulseWrap}>
+          <Animated.View style={[styles.pulseRing, { borderColor: theme.ember }, ring]} />
+          <View style={[styles.pulseDot, { backgroundColor: reading ? theme.ember : theme.textMuted }]} />
+        </View>
+      </View>
       <Text style={[styles.tileValue, { color: theme.text }]} numberOfLines={1}>
         {formatValue(reading, cap)}
       </Text>
       <Text style={[styles.tileLabel, { color: theme.textMuted }]} numberOfLines={1}>
         {cap.label}
       </Text>
+      {/* TTL: full on each receive, drains toward the next expected reading */}
+      <View style={[styles.ttlTrack, { backgroundColor: theme.backgroundElement }]}>
+        <Animated.View style={[styles.ttlFill, { backgroundColor: theme.ember, width: ttlWidth }]} />
+      </View>
+      <CadenceSlider theme={theme} valueMs={effectiveMs} isSet={active != null} onChange={onChange} />
     </View>
   );
 }
 
-function CadenceControl({
+// A tiny stepped slider (500ms–60s) on React Native's built-in responder props (what
+// PanResponder wraps) — no refs, no worklets, so it behaves identically on web and native.
+// Commits the chosen rate on release.
+function CadenceSlider({
   theme,
-  active,
-  onPick,
+  valueMs,
+  isSet,
+  onChange,
 }: {
   theme: ReturnType<typeof useTheme>;
-  active?: number;
-  onPick: (ms: number) => void;
+  valueMs: number;
+  isSet: boolean;
+  onChange: (ms: number) => void;
 }) {
+  const [w, setW] = useState(0);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+
+  const baseIdx = Math.max(0, CADENCE_STOPS.indexOf(nearestStop(valueMs)));
+  const idx = dragIdx ?? baseIdx;
+  const frac = idx / (CADENCE_STOPS.length - 1);
+
+  const posToIdx = (x: number): number => {
+    if (w <= 0) return idx;
+    const f = Math.max(0, Math.min(1, x / w));
+    return Math.round(f * (CADENCE_STOPS.length - 1));
+  };
+
+  const lit = isSet || dragIdx != null;
   return (
-    <View style={styles.cadence}>
-      <Text style={[styles.cadenceLabel, { color: theme.textMuted }]}>sample</Text>
-      {CADENCE_PRESETS.map((p) => {
-        const on = active === p.ms;
-        return (
-          <Pressable
-            key={p.ms}
-            onPress={() => onPick(p.ms)}
-            style={[
-              styles.cadenceBtn,
-              {
-                borderColor: on ? theme.emberDeep : theme.border,
-                backgroundColor: on ? theme.emberGlow : theme.backgroundElement,
-              },
-            ]}>
-            <Text style={[styles.cadenceBtnText, { color: on ? theme.ember : theme.textSecondary }]}>{p.label}</Text>
-          </Pressable>
-        );
-      })}
+    <View style={styles.sliderRow}>
+      <View
+        style={styles.sliderTrackWrap}
+        onLayout={(ev) => setW(ev.nativeEvent.layout.width)}
+        onStartShouldSetResponder={() => true}
+        onMoveShouldSetResponder={() => true}
+        onResponderGrant={(e) => setDragIdx(posToIdx(e.nativeEvent.locationX))}
+        onResponderMove={(e) => setDragIdx(posToIdx(e.nativeEvent.locationX))}
+        onResponderRelease={(e) => {
+          const i = posToIdx(e.nativeEvent.locationX);
+          setDragIdx(null);
+          onChange(CADENCE_STOPS[i]);
+        }}
+        onResponderTerminate={() => setDragIdx(null)}>
+        <View style={[styles.sliderTrack, { backgroundColor: theme.backgroundElement }]} />
+        <View style={[styles.sliderFill, { backgroundColor: theme.emberDeep, width: `${frac * 100}%` }]} />
+        <View
+          style={[styles.sliderThumb, { backgroundColor: theme.ember, borderColor: theme.card, left: `${frac * 100}%` }]}
+        />
+      </View>
+      <Text style={[styles.sliderVal, { color: lit ? theme.ember : theme.textMuted }]}>{fmtRate(CADENCE_STOPS[idx])}</Text>
     </View>
   );
 }
@@ -780,26 +833,38 @@ const styles = StyleSheet.create({
   liveDot: { width: 7, height: 7, borderRadius: 4 },
   liveText: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
 
-  nodeGroup: { gap: Spacing.two },
-  nodeHead: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.two, rowGap: 6 },
-  nodeName: { flex: 1, minWidth: 120, fontFamily: Fonts?.mono, fontSize: 12.5, fontWeight: '700', letterSpacing: 0.2 },
-  cadence: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  cadenceLabel: { fontFamily: Fonts?.mono, fontSize: 10.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginRight: 2 },
-  cadenceBtn: { paddingVertical: 5, paddingHorizontal: 11, borderRadius: Radius.pill, borderWidth: 1, minWidth: 40, alignItems: 'center' },
-  cadenceBtnText: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700' },
-
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.three },
   tile: {
-    minWidth: 120,
+    minWidth: 168,
     flexGrow: 1,
+    flexBasis: 168,
+    maxWidth: 260,
     borderRadius: Radius.md,
     borderWidth: 1,
     padding: Spacing.three,
     gap: 4,
   },
+  tileTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   tileIcon: { fontSize: 18 },
   tileValue: { fontFamily: Fonts?.sans, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 },
   tileLabel: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '600' },
+
+  // pulse — a heartbeat ping in the tile corner on every fresh reading
+  pulseWrap: { width: 12, height: 12, alignItems: 'center', justifyContent: 'center' },
+  pulseRing: { position: 'absolute', width: 12, height: 12, borderRadius: 6, borderWidth: 1.5 },
+  pulseDot: { width: 6, height: 6, borderRadius: 3 },
+
+  // TTL — a bar that refills on receive and drains toward the next expected reading
+  ttlTrack: { height: 3, borderRadius: 2, marginTop: 6, overflow: 'hidden' },
+  ttlFill: { height: 3, borderRadius: 2 },
+
+  // slider — stepped sample-rate control per sensor
+  sliderRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, marginTop: 8 },
+  sliderTrackWrap: { flex: 1, height: 22, justifyContent: 'center' },
+  sliderTrack: { height: 4, borderRadius: 2 },
+  sliderFill: { position: 'absolute', height: 4, borderRadius: 2, left: 0 },
+  sliderThumb: { position: 'absolute', width: 14, height: 14, borderRadius: 7, borderWidth: 2, marginLeft: -7 },
+  sliderVal: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700', minWidth: 34, textAlign: 'right' },
 
   watchHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   watchTitle: { flex: 1, fontFamily: Fonts?.sans, fontSize: 16, fontWeight: '700' },

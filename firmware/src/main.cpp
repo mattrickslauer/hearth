@@ -24,14 +24,25 @@ DHT dht(DHT_PIN, DHT_TYPE);
 #endif
 
 static String   gNodeId;
-static uint32_t gLastSample = 0;
-// The live sample interval. Starts at the compile-time default but the hub can retune it
-// at runtime: every ingest POST comes back with an optional {"sampleIntervalMs": N} the
-// dashboard set, letting a user speed a node up (or slow it down) without reflashing.
-static uint32_t gSampleIntervalMs = SAMPLE_INTERVAL_MS;
+static bool     gAnnounced  = false;
+
+// ── per-sensor cadence ──────────────────────────────────────────────────────
+// Each sensor samples on its OWN timer. Intervals start at the compile-time default but
+// the hub retunes them at runtime: every ingest POST comes back with the cadences the
+// dashboard set for THIS node's sensors, keyed by sensor key, e.g.
+//   {"ok":true,"cadences":{"board.temp":1000,"dht.humidity":5000}}
+// so a user can speed up one sensor without touching its siblings — no reflash.
+enum { S_BOARD_TEMP, S_DHT_TEMP, S_DHT_HUM, S_COUNT };
+static const char* const SENSOR_KEYS[S_COUNT] = { "board.temp", "dht.temp", "dht.humidity" };
+static uint32_t sInterval[S_COUNT] = { SAMPLE_INTERVAL_MS, SAMPLE_INTERVAL_MS, SAMPLE_INTERVAL_MS };
+static uint32_t sLast[S_COUNT]     = { 0, 0, 0 };
+#if DHT_PIN >= 0
+static const bool sEnabled[S_COUNT] = { true, true, true };
+#else
+static const bool sEnabled[S_COUNT] = { true, false, false };   // DHT absent → only the builtin
+#endif
 static const uint32_t SAMPLE_MIN_MS = 500;    // floor — matches the backend clamp
 static const uint32_t SAMPLE_MAX_MS = 60000;  // ceiling — matches the backend clamp
-static bool     gAnnounced  = false;
 static String   gHubUrl;                 // resolved hub ingest URL (mDNS, or fallback)
 static bool     gMdnsUp     = false;
 static uint32_t gLastDiscover = 0;
@@ -70,23 +81,39 @@ static String describeJson() {
   return s;
 }
 
-// A snapshot of current readings. Absent/failed sensors report null rather than
-// being dropped — a missing value is itself information the hub can reason about.
-static String readingsJson() {
-  String s = "{";
-  s += "\"type\":\"hearth.node.reading\",";
-  s += "\"id\":\"" + gNodeId + "\",";
-  s += "\"uptime_ms\":" + String((uint32_t)millis()) + ",";
-  s += "\"readings\":{";
-  s += "\"board.temp\":" + String(chipTempC(), 1);
+static bool postJson(const String& body);   // fwd decl — sampleDue posts; postJson is below
+
+// One sensor's current value as a JSON scalar. Absent/failed sensors report null rather
+// than being dropped — a missing value is itself information the hub can reason about.
+static String sensorValue(int i) {
+  if (i == S_BOARD_TEMP) return String(chipTempC(), 1);
 #if DHT_PIN >= 0
-  float t = dht.readTemperature();
-  float h = dht.readHumidity();
-  s += ",\"dht.temp\":"     + (isnan(t) ? String("null") : String(t, 1));
-  s += ",\"dht.humidity\":" + (isnan(h) ? String("null") : String(h, 1));
+  if (i == S_DHT_TEMP) { float t = dht.readTemperature(); return isnan(t) ? String("null") : String(t, 1); }
+  if (i == S_DHT_HUM)  { float h = dht.readHumidity();    return isnan(h) ? String("null") : String(h, 1); }
 #endif
-  s += "}}";
-  return s;
+  return String("null");
+}
+
+// Sample every sensor whose own interval has elapsed and, if any are due, emit ONE reading
+// document carrying just those keys. Partial docs are fine end-to-end: the hub merges them
+// into its snapshot and the dashboard patches tiles per key — so each sensor streams at its
+// own cadence. Serial always prints; the network POST is opt-in (only once a hub is known).
+static void sampleDue() {
+  uint32_t now = millis();
+  String body = "{\"type\":\"hearth.node.reading\",\"id\":\"" + gNodeId +
+                "\",\"uptime_ms\":" + String(now) + ",\"readings\":{";
+  bool any = false;
+  for (int i = 0; i < S_COUNT; i++) {
+    if (!sEnabled[i] || now - sLast[i] < sInterval[i]) continue;
+    sLast[i] = now;
+    if (any) body += ",";
+    body += "\""; body += SENSOR_KEYS[i]; body += "\":"; body += sensorValue(i);
+    any = true;
+  }
+  if (!any) return;
+  body += "}}";
+  Serial.println("READING " + body);
+  postJson(body);
 }
 
 static void connectWifi() {
@@ -108,21 +135,33 @@ static void connectWifi() {
     Serial.println(" FAILED — continuing serial-only");
 }
 
-// Retune our sample interval from a hub ingest response like {"ok":true,"sampleIntervalMs":1000}.
-// Hand-parsed (no JSON lib) to keep the node's footprint tiny: find the key, read the number.
+// Retune per-sensor intervals from a hub ingest response carrying the node's cadences, e.g.
+//   {"ok":true,"cadences":{"board.temp":1000,"dht.humidity":5000}}
+// Hand-parsed (no JSON lib) to keep the node's footprint tiny. A sensor absent from the map
+// reverts to the compile-time default, so clearing a cadence in the dashboard restores it.
+// When the response has no "cadences" field at all we leave every interval untouched.
 static void applyCadence(const String& body) {
-  int k = body.indexOf("\"sampleIntervalMs\"");
-  if (k < 0) return;                       // no override → keep the current interval
-  int c = body.indexOf(':', k);
-  if (c < 0) return;
-  long ms = strtol(body.c_str() + c + 1, nullptr, 10);
-  if (ms <= 0) return;
-  uint32_t next = (uint32_t)ms;
-  if (next < SAMPLE_MIN_MS) next = SAMPLE_MIN_MS;
-  if (next > SAMPLE_MAX_MS) next = SAMPLE_MAX_MS;
-  if (next != gSampleIntervalMs) {
-    Serial.printf("[cadence] sample interval %u -> %u ms (set from dashboard)\n", gSampleIntervalMs, next);
-    gSampleIntervalMs = next;
+  if (body.indexOf("\"cadences\"") < 0) return;
+  for (int i = 0; i < S_COUNT; i++) {
+    if (!sEnabled[i]) continue;
+    uint32_t next = SAMPLE_INTERVAL_MS;                 // default unless the map overrides it
+    String needle = String("\"") + SENSOR_KEYS[i] + "\"";
+    int k = body.indexOf(needle);
+    if (k >= 0) {
+      int c = body.indexOf(':', k + needle.length());
+      if (c >= 0) {
+        long ms = strtol(body.c_str() + c + 1, nullptr, 10);
+        if (ms > 0) {
+          next = (uint32_t)ms;
+          if (next < SAMPLE_MIN_MS) next = SAMPLE_MIN_MS;
+          if (next > SAMPLE_MAX_MS) next = SAMPLE_MAX_MS;
+        }
+      }
+    }
+    if (next != sInterval[i]) {
+      Serial.printf("[cadence] %s %u -> %u ms (set from dashboard)\n", SENSOR_KEYS[i], sInterval[i], next);
+      sInterval[i] = next;
+    }
   }
 }
 
@@ -202,12 +241,7 @@ void loop() {
     gAnnounced = postJson(describeJson());
   }
 
-  if (millis() - gLastSample >= gSampleIntervalMs) {
-    gLastSample = millis();
-    String reading = readingsJson();
-    Serial.println("READING " + reading);   // serial is the always-on channel
-    postJson(reading);                       // network is opt-in
-  }
+  sampleDue();   // each sensor emits on its own interval (serial always; network when paired)
 
   delay(20);
 }

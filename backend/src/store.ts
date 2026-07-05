@@ -98,10 +98,10 @@ export interface HomeStore {
   putHubDevices(snap: HubDeviceSnapshot): Promise<void>;
   /** All paired hubs' latest device snapshots. */
   listHubDevices(): Promise<HubDeviceSnapshot[]>;
-  /** The desired per-node sample cadence (nodeId → ms) the account has requested. */
+  /** The desired per-sensor sample cadence (input id "<node>.<key>" → ms) the account requested. */
   getCadences(): Promise<Record<string, number>>;
-  /** Set (or clear, when ms is null) a node's desired sample cadence in milliseconds. */
-  setCadence(nodeId: string, intervalMs: number | null): Promise<void>;
+  /** Set (or clear, when ms is null) one sensor's desired sample cadence in milliseconds. */
+  setCadence(input: string, intervalMs: number | null): Promise<void>;
 }
 
 /** Compute an aggregate over a window ending at `now` (numbers only for mean/min/max). */
@@ -139,8 +139,8 @@ export class MemoryStore implements HomeStore {
   protected records = new Map<string, RecordPolicy>();
   protected events: RunEventRow[] = [];
   protected hubDevices = new Map<string, HubDeviceSnapshot>();
-  // Per-node desired sample cadence in ms (nodeId → ms). Relayed to the owning hub on
-  // its next device sync, which in turn tells the node on its next ingest POST.
+  // Per-sensor desired sample cadence in ms (input id "<node>.<key>" → ms). Relayed to the
+  // owning hub on its next device sync, which in turn tells the node on its next ingest POST.
   protected cadences = new Map<string, number>();
 
   /**
@@ -290,9 +290,9 @@ export class MemoryStore implements HomeStore {
   async getCadences(): Promise<Record<string, number>> {
     return Object.fromEntries(this.cadences);
   }
-  async setCadence(nodeId: string, intervalMs: number | null): Promise<void> {
-    if (intervalMs == null) this.cadences.delete(nodeId);
-    else this.cadences.set(nodeId, intervalMs);
+  async setCadence(input: string, intervalMs: number | null): Promise<void> {
+    if (intervalMs == null) this.cadences.delete(input);
+    else this.cadences.set(input, intervalMs);
     this.persist();
   }
 }
