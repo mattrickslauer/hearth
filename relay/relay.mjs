@@ -24,13 +24,15 @@ import http from 'node:http';
 import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT || 8790);
-const SESSION_SECRET = process.env.AUTH_SESSION_SECRET || '';
+// The key that signs/verifies browser tickets — set identically on the backend deploy env.
+// Falls back to AUTH_SESSION_SECRET when RELAY_TICKET_SECRET is unset (backend's own fallback).
+const TICKET_SECRET = process.env.RELAY_TICKET_SECRET || process.env.AUTH_SESSION_SECRET || '';
 const PUBLISH_SECRET = process.env.RELAY_PUBLISH_SECRET || '';
 const JWT_ISS = 'hearth';
 const JWT_AUD_WS = 'hearth-ws';
 
-if (!SESSION_SECRET || !PUBLISH_SECRET) {
-  console.error('[relay] refusing to start: AUTH_SESSION_SECRET and RELAY_PUBLISH_SECRET are required');
+if (!TICKET_SECRET || !PUBLISH_SECRET) {
+  console.error('[relay] refusing to start: RELAY_TICKET_SECRET (or AUTH_SESSION_SECRET) and RELAY_PUBLISH_SECRET are required');
   process.exit(1);
 }
 
@@ -45,7 +47,7 @@ function verifyTicket(token) {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   const [h, p, sig] = parts;
-  const expected = createHmac('sha256', SESSION_SECRET).update(`${h}.${p}`).digest('base64url');
+  const expected = createHmac('sha256', TICKET_SECRET).update(`${h}.${p}`).digest('base64url');
   if (!constEq(sig, expected)) return null;
   try {
     const header = JSON.parse(b64urlToBuf(h).toString('utf8'));

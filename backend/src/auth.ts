@@ -425,30 +425,29 @@ export function hmacHex(input: string): string {
   return createHmac('sha256', sessionSecret()).update(input).digest('hex');
 }
 
-export interface WsTicketPayload {
-  sub: string; // account id
-  hub: string; // the hub id this session is authorized to stream from
-  iat: number;
-  exp: number;
+/**
+ * Signing key for realtime WebSocket tickets. Distinct from the session secret so the relay
+ * (which verifies these tickets) holds only a scoped, relay-specific key rather than the key
+ * that signs user sessions. Falls back to the session secret for local dev where RELAY_* is
+ * unset. Keep RELAY_TICKET_SECRET identical on the backend deploy env and the relay.
+ */
+function wsTicketSecret(): string {
+  return process.env.RELAY_TICKET_SECRET || sessionSecret();
 }
 
 /**
- * A short-lived (90s) ticket the browser presents to the API Gateway at register time
- * (as the `password` request param). The gateway forwards it to /live/register, where we
- * verify it here — so the AppSecret never touches the browser; only this scoped, expiring
- * token does. Bound to a specific hub so a ticket can't be replayed against another's hub.
+ * A short-lived (90s) ticket the browser presents to the relay when opening its WebSocket
+ * (as the `?ticket=` query param). The relay verifies it with the same RELAY_TICKET_SECRET
+ * and joins the socket to `sub`'s channel — so no long-lived credential ever reaches the
+ * browser. Bound to a specific hub for clarity/auditing.
  */
 export function issueWsTicket(accountId: string, hubId: string): string {
   const now = Math.floor(Date.now() / 1000);
-  return issueJwt({ sub: accountId, hub: hubId, aud: JWT_AUD_WS, iat: now, exp: now + WS_TICKET_TTL_SEC });
-}
-
-export function verifyWsTicket(token: string | undefined): WsTicketPayload | null {
-  const p = verifyJwt(token, JWT_AUD_WS);
-  if (!p) return null;
-  if (typeof p.sub !== 'string' || !p.sub) return null;
-  if (typeof p.hub !== 'string' || !p.hub) return null;
-  return { sub: p.sub, hub: p.hub, iat: typeof p.iat === 'number' ? p.iat : 0, exp: p.exp as number };
+  const header = b64urlJson(JWT_HEADER);
+  const payload = b64urlJson({ iss: JWT_ISS, sub: accountId, hub: hubId, aud: JWT_AUD_WS, iat: now, exp: now + WS_TICKET_TTL_SEC });
+  const signingInput = `${header}.${payload}`;
+  const sig = createHmac('sha256', wsTicketSecret()).update(signingInput).digest('base64url');
+  return `${signingInput}.${sig}`;
 }
 
 /* --------------------------------------------------------------- email (Zepto) */
