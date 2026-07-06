@@ -37,7 +37,7 @@ import {
   type Watch,
 } from '@/lib/home';
 import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
-import { useHubLive } from '@/lib/live';
+import { useHubLive, type LiveStatus } from '@/lib/live';
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 // Give the scroll frame a bounded height on web so the ScrollView actually scrolls
@@ -64,6 +64,16 @@ const nearestStop = (ms: number): number => {
   let best = CADENCE_STOPS[0];
   for (const s of CADENCE_STOPS) if (Math.abs(s - ms) < Math.abs(best - ms)) best = s;
   return best;
+};
+
+// How each realtime WebSocket state reads in the header. `tone` drives colour + animation:
+// live = connected & streaming, pending = negotiating/reconnecting, down = no live socket.
+const LIVE_META: Record<LiveStatus, { label: string; tone: 'live' | 'pending' | 'down' }> = {
+  live: { label: 'live', tone: 'live' },
+  connecting: { label: 'connecting…', tone: 'pending' },
+  offline: { label: 'hub offline', tone: 'down' },
+  unconfigured: { label: 'realtime off', tone: 'down' },
+  off: { label: 'disconnected', tone: 'down' },
 };
 
 function formatValue(r: Reading | null, cap: HomeCapability): string {
@@ -460,16 +470,7 @@ export default function DashboardScreen() {
             <View style={styles.section}>
               <View style={styles.sensorsHead}>
                 <Text style={[styles.sectionTitle, { color: theme.text }]}>Sensors</Text>
-                {liveStatus === 'live' ? (
-                  <View style={styles.liveBadge}>
-                    <View style={[styles.liveDot, { backgroundColor: theme.success }]} />
-                    <Text style={[styles.liveText, { color: theme.success }]}>live</Text>
-                  </View>
-                ) : liveStatus === 'connecting' ? (
-                  <Text style={[styles.liveText, { color: theme.textMuted }]}>connecting…</Text>
-                ) : liveStatus === 'offline' ? (
-                  <Text style={[styles.liveText, { color: theme.textMuted }]}>hub offline</Text>
-                ) : null}
+                <LiveIndicator theme={theme} status={liveStatus} />
               </View>
               <View style={styles.tileGrid}>
                 {sensors.map((c) => (
@@ -633,6 +634,38 @@ function Stat({ theme, value, label }: { theme: ReturnType<typeof useTheme>; val
     <View style={[styles.stat, { backgroundColor: theme.backgroundElement, borderColor: theme.border }]}>
       <Text style={[styles.statValue, { color: theme.text }]}>{value}</Text>
       <Text style={[styles.statLabel, { color: theme.textMuted }]}>{label}</Text>
+    </View>
+  );
+}
+
+// Realtime connection status, driven entirely by the WebSocket lifecycle (via useHubLive):
+// a green pulsing dot while the socket is open and streaming, an amber blink while it's
+// negotiating/reconnecting, and a steady muted dot when there's no live socket.
+function LiveIndicator({ theme, status }: { theme: ReturnType<typeof useTheme>; status: LiveStatus }) {
+  const meta = LIVE_META[status];
+  const tone = meta.tone;
+  const color = tone === 'live' ? theme.success : tone === 'pending' ? theme.warn : theme.textMuted;
+  const [pulse] = useState(() => new Animated.Value(0.9));
+  useEffect(() => {
+    if (tone === 'down') {
+      pulse.stopAnimation();
+      pulse.setValue(0.9);
+      return;
+    }
+    const dur = tone === 'live' ? 1100 : 480; // slow breathe when live, quick blink when connecting
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.25, duration: dur, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: dur, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [tone, pulse]);
+  return (
+    <View style={styles.liveBadge}>
+      <Animated.View style={[styles.liveDot, { backgroundColor: color, opacity: pulse }]} />
+      <Text style={[styles.liveText, { color }]}>{meta.label}</Text>
     </View>
   );
 }
