@@ -30,3 +30,13 @@
 // once the node reaches a hub, the dashboard can retune it at runtime (the hub hands the
 // node a new interval in each ingest response — see applyCadence in main.cpp).
 #define SAMPLE_INTERVAL_MS 5000
+
+// ─── Actuator (what this node can DO, not just sense) ──────────────────────
+// A single on/off output the hub can drive when a watch fires. The default is
+// GPIO2, the built-in LED on most ESP32 dev boards — so a bare board can light
+// up on command with nothing wired. Point it at a relay/MOSFET GPIO to switch a
+// real load (heater, lamp). Set ACTUATOR_PIN to -1 to disable actuation.
+#define ACTUATOR_PIN 2
+#define ACTUATOR_ACTIVE_HIGH 1  // 1: HIGH = on (built-in LED). 0: for active-low relays.
+#define ACTUATOR_KEY "led"      // the name this output advertises to the hub
+#define ACTUATOR_PORT 8080      // the node listens here for POST /actuate

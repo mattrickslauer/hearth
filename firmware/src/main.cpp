@@ -12,6 +12,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
+#include <WebServer.h>
 #include <DHT.h>
 #include "config.h"
 
@@ -47,6 +48,42 @@ static const uint32_t SAMPLE_MAX_MS = 60000;  // ceiling — matches the backend
 static String   gHubUrl;                 // resolved hub ingest URL (mDNS, or fallback)
 static bool     gMdnsUp     = false;
 static uint32_t gLastDiscover = 0;
+
+#if ACTUATOR_PIN >= 0
+static WebServer gCmdServer(ACTUATOR_PORT); // listens for POST /actuate from the hub
+static bool      gActuatorOn = false;
+static bool      gCmdServerUp = false;
+
+// Drive the actuator output, honoring the board's active level.
+static void setActuator(bool on) {
+  gActuatorOn = on;
+  digitalWrite(ACTUATOR_PIN, (on == !!ACTUATOR_ACTIVE_HIGH) ? HIGH : LOW);
+  Serial.printf("[actuate] %s -> %s\n", ACTUATOR_KEY, on ? "ON" : "OFF");
+}
+
+// POST /actuate  { "actuator":"led", "value":"on"|"off"|true|false }
+// A watch firing on the hub calls this. Body parsing is deliberately forgiving.
+static void handleActuate() {
+  String body = gCmdServer.arg("plain");
+  bool off = body.indexOf("\"off\"") >= 0 || body.indexOf("false") >= 0 ||
+             body.indexOf(":0") >= 0 || body.indexOf("\"0\"") >= 0;
+  setActuator(!off);
+  gCmdServer.send(200, "application/json",
+                  String("{\"ok\":true,\"") + ACTUATOR_KEY + "\":" + (gActuatorOn ? "true" : "false") + "}");
+}
+
+static void startCmdServer() {
+  if (gCmdServerUp) return;
+  gCmdServer.on("/actuate", HTTP_POST, handleActuate);
+  gCmdServer.on("/", HTTP_GET, []() {
+    gCmdServer.send(200, "application/json",
+                    String("{\"id\":\"") + gNodeId + "\",\"" + ACTUATOR_KEY + "\":" + (gActuatorOn ? "true" : "false") + "}");
+  });
+  gCmdServer.begin();
+  gCmdServerUp = true;
+  Serial.printf("[actuate] command server on :%d (POST /actuate)\n", ACTUATOR_PORT);
+}
+#endif
 
 // Stable per-chip identity, derived from the factory-burned MAC.
 static String nodeId() {
@@ -87,6 +124,8 @@ static String describeJson() {
   s += "\"id\":\"" + gNodeId + "\",";
   s += "\"fw\":\"" HEARTH_FW_VERSION "\",";
   s += "\"board\":\"esp32-wroom-32\",";
+  // Where the hub can reach us for actuator commands (empty until Wi-Fi is up).
+  if (WiFi.status() == WL_CONNECTED) s += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
   s += "\"sensors\":[";
   s += "{\"key\":\"board.temp\",\"kind\":\"temperature\",\"unit\":\"C\",\"wiring\":\"builtin\"}";
 #if DHT_PIN >= 0
@@ -96,7 +135,12 @@ static String describeJson() {
 #if DIST_TRIG_PIN >= 0
   s += ",{\"key\":\"dist.range\",\"kind\":\"distance\",\"unit\":\"cm\",\"pin\":" + String(DIST_ECHO_PIN) + "}";
 #endif
-  s += "]}";
+  s += "]";
+#if ACTUATOR_PIN >= 0
+  // What this node can DO — the hub POSTs here when a watch fires.
+  s += ",\"actuators\":[{\"key\":\"" ACTUATOR_KEY "\",\"kind\":\"switch\",\"port\":" + String(ACTUATOR_PORT) + ",\"path\":\"/actuate\"}]";
+#endif
+  s += "}";
   return s;
 }
 
@@ -245,6 +289,10 @@ void setup() {
 #if DHT_PIN >= 0
   dht.begin();
 #endif
+#if ACTUATOR_PIN >= 0
+  pinMode(ACTUATOR_PIN, OUTPUT);
+  setActuator(false); // start OFF
+#endif
 #if DIST_TRIG_PIN >= 0
   pinMode(DIST_TRIG_PIN, OUTPUT);
   pinMode(DIST_ECHO_PIN, INPUT);
@@ -258,6 +306,9 @@ void setup() {
   if (WiFi.status() == WL_CONNECTED) {
     mdnsBegin();
     gHubUrl = queryHub();
+#if ACTUATOR_PIN >= 0
+    startCmdServer(); // accept actuator commands from the hub
+#endif
   }
   if (gHubUrl.length() == 0 && strlen(HUB_ENDPOINT) > 0) {
     gHubUrl = HUB_ENDPOINT;
@@ -266,6 +317,10 @@ void setup() {
 }
 
 void loop() {
+#if ACTUATOR_PIN >= 0
+  if (gCmdServerUp) gCmdServer.handleClient(); // service any actuator command from the hub
+#endif
+
   const bool online = WiFi.status() == WL_CONNECTED;
 
   // (Re)discover the hub whenever we don't have one — on boot, or after we lost contact
@@ -274,6 +329,9 @@ void loop() {
     gLastDiscover = millis();
     gHubUrl = queryHub();
     if (gHubUrl.length() > 0) gAnnounced = false;   // (re)announce to the (re)discovered hub
+#if ACTUATOR_PIN >= 0
+    startCmdServer(); // Wi-Fi may have come up after boot; ensure the server is live
+#endif
   }
 
   // Announce ourselves on first contact AND periodically thereafter, so a hub that restarted

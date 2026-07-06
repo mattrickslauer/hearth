@@ -9,7 +9,9 @@
   },
   "scripts": {
     "start": "node hub.mjs",
-    "reset": "node hub.mjs --reset"
+    "reset": "node hub.mjs --reset",
+    "selftest": "node tools/selftest.mjs",
+    "fake-node": "node tools/fake-node.mjs"
   },
   "dependencies": {
     "bonjour-service": "^1.2.1"

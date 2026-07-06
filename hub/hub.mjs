@@ -38,6 +38,8 @@ import { homedir, hostname, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { attachWebSocket } from './ws.mjs';
 
+import { createRuntime } from './runtime.mjs';
+
 // ── config ──────────────────────────────────────────────────────────────────
 const DEFAULT_BACKEND = 'https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run';
 const BACKEND_URL = (process.env.BACKEND_URL || DEFAULT_BACKEND).replace(/\/$/, '');
@@ -102,20 +104,30 @@ function cadencesForNode(nodeId) {
 // HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
 let live = null;
 
+// The watch runtime: evaluates compiled watches against live node readings and fires
+// (actuate a node + push a phone notification) on a rising edge. It shares the `nodes`
+// registry so it can resolve a node's address to send actuator commands back to it.
+const runtime = createRuntime({ nodes });
+
+// Node hands back IPv4-mapped IPv6 for LAN peers (::ffff:192.168.x.y) — strip it.
+const cleanAddr = (a) => (typeof a === 'string' ? a.replace(/^::ffff:/, '') : a);
+
 // Fold a node's document into the registry. DESCRIBE registers identity + capabilities;
 // READING updates the latest values. Either way we learn the node exists — no node is
-// ever configured on the hub by hand.
-function ingest(doc) {
+// ever configured on the hub by hand. `addr` is the node's source IP (for actuation).
+function ingest(doc, addr) {
   const id = doc && doc.id;
   if (!id) return false;
   const entry = nodes.get(id) || { id, describe: null, lastReading: null, readingCount: 0, firstSeen: iso() };
   entry.lastSeen = iso();
+  if (addr) entry.addr = cleanAddr(addr); // remember where to send actuator commands
 
   if (doc.type === 'hearth.node.describe') {
     const known = entry.describe != null;
     entry.describe = doc;
     const sensors = (doc.sensors || []).map((s) => s.key).join(', ');
-    console.log(`[hub] ${known ? 're-announce' : '+ NEW NODE'} ${id} (${doc.board || '?'}) can sense: ${sensors}`);
+    const acts = (doc.actuators || []).map((a) => a.key).join(', ');
+    console.log(`[hub] ${known ? 're-announce' : '+ NEW NODE'} ${id} (${doc.board || '?'}) can sense: ${sensors}${acts ? ` · can do: ${acts}` : ''}`);
     if (!known) queueMicrotask(syncToCloud); // push a newly-discovered node up promptly
     // Tell live dashboards a (possibly new) node exists so its sensor tiles appear at once.
     if (live) live.broadcast({ type: 'describe', node: id, at: Date.now(), describe: doc });
@@ -130,6 +142,9 @@ function ingest(doc) {
     // And nudge a cloud sync so remote (cloud-brokered) dashboards update promptly too,
     // coalescing bursts instead of waiting out the 15s timer.
     scheduleSync();
+    nodes.set(id, entry); // ensure the registry has this node before the runtime resolves its address
+    runtime.onReading(doc); // feed the engine + fire watches on this fresh reading
+    return true;
   } else {
     return false;
   }
@@ -336,7 +351,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'POST' && req.url === INGEST_PATH) {
     const doc = await readJson(req);
-    const ok = ingest(doc);
+    const ok = ingest(doc, req.socket?.remoteAddress);
     // Downlink: hand this node the per-sensor cadences the account set for its inputs (keyed
     // by bare sensor key). Always present (possibly {}) so the node can tell "cleared" from
     // "unspoken" and revert cleared sensors to their default.
@@ -380,6 +395,10 @@ async function main() {
 
   // Device sync runs on its own timer regardless of pairing state (no-op until paired).
   const syncTimer = setInterval(syncToCloud, SYNC_MS);
+
+  // Watch runtime: evaluate compiled watches against live readings and fire
+  // (actuate + notify) on a rising edge; also ticks for time-based predicates.
+  runtime.start();
 
   const shutdown = () => {
     console.log('\n[hub] shutting down…');

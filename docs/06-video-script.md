@@ -1,22 +1,51 @@
-# 06 — Demo Video Script (≤ 3:00)
+# 06 — Demo Video Script (≤ 3:00) — ECOSYSTEM-UNVEILING cut
 
-Submission video for **Track 5: EdgeAgent**. Target runtime **2:45**. Format: 1080p+, YouTube/Vimeo/Youku.
-Base layer = **you on camera** (host segments); everything else is **screen capture**, **real hardware footage**,
-and **generated overlay graphics** dropped on top.
+Submission video for **Track 5: EdgeAgent**. Target runtime **2:55**. Format: 1080p+, YouTube/Vimeo/Youku.
+This cut is an **unveiling of an open-source ecosystem**, told **architecture-first**: the four open layers, the one
+self-describing contract that composes them, and the catalog of solutions you can wire up from the same parts. The
+real end-to-end hardware loop appears as *proof*, not as the whole story.
 
-**Legend:** `[CAM]` you to camera · `[SCREEN]` app screen-capture · `[SHOOT]` real hardware footage ·
-`[GFX]` generated graphic/overlay · `[VO]` voiceover over B-roll.
-
-**Compliance (from the audit — do not skip):**
-- No third-party **trademarks/logos** on screen. Blur any brand logos, plates, house numbers in `[SHOOT]` entryway footage.
-- **No unlicensed music.** Royalty-free / original only.
-- Naming Qwen / Qwen-VL is required (Stage-1 gate wants visible Qwen use) — that's fine; avoid other companies' logos.
-- The **Alibaba Cloud deployment proof** is a *separate* screen recording, not this video.
+**Legend:** `[CAM]` you to camera · `[GFX]` generated graphic/overlay (the architecture diagram is the visual spine) ·
+`[SCREEN]` app/terminal capture · `[SHOOT]` real hardware footage · `[VO]` voiceover over B-roll.
 
 ---
 
-## The one-line spine
-Describe your home in plain words → an AI wires it up → and it reasons about the real world as it runs.
+## The spine: the architecture diagram (build it up layer by layer as you narrate)
+
+The hero graphic. The VO climbs the stack from the edge, so **reveal it bottom-to-top — Nodes → Hub → Cloud → App —**
+one layer lighting up per beat, then pull back to the whole stack for the close. A polished, theme-aware web version to
+screen-record is published as an Artifact (see "Architecture GFX" below).
+
+```
+        YOU ── plain words ─┐
+                            ▼
+   ┌───────────────────────────────────────────────────┐
+   │  APP        web · mobile · zero-hardware simulator  │   describe · watch CRUD · activity feed
+   └───────────────────────────┬───────────────────────┘
+                               │  HTTPS · MCP
+   ┌───────────────────────────▼───────────────────────┐
+   │  CLOUD      Hearth on Alibaba Function Compute      │   Qwen brain + MCP tool surface
+   │             author_question (NL → watch) ·          │   list_devices · read_input · query_history · notify
+   └───────────────────────────┬───────────────────────┘
+                               │  pair (claim code) · device + reading sync
+   ┌───────────────────────────▼───────────────────────┐
+   │  HUB        Raspberry Pi / laptop — the edge agent  │   mDNS discovery · rule engine ·
+   │             fires LOCALLY · works OFFLINE           │   actuate + notify on a watch firing
+   └──────────────▲───────────────────────┬────────────┘
+        _hearth._tcp (discover)           │  POST /actuate
+        DESCRIBE · READING (up)           ▼
+   ┌───────────────────────────────────────────────────┐
+   │  NODES      self-describing ESP32 kit               │   flash → it announces what it can
+   │             sense  →  temp · humidity · door ·      │   sense AND do; the hub needs zero
+   │             motion · distance · RFID · camera       │   prior knowledge of any node
+   │             do     →  relay · LED · servo           │
+   └───────────────────────────────────────────────────┘
+```
+
+**The one idea that makes it an ecosystem — three open contracts:**
+1. **Self-describe** — every node emits `DESCRIBE` (what I sense + do) + a `READING` stream + accepts `/actuate`. Add hardware, nothing upstream changes.
+2. **The compiled watch** — Qwen turns plain words into one portable `PredicateNode` spec that runs **unchanged** in the browser sim *and* on the hub.
+3. **MCP** — every capability of the home is a standard tool call, so *any* agent (not just Hearth's app) can perceive and act.
 
 ---
 
@@ -24,42 +53,68 @@ Describe your home in plain words → an AI wires it up → and it reasons about
 
 | Time | Visual | Audio |
 |---|---|---|
-| **0:00–0:13** | `[CAM]` You, direct to camera. Clean room, warm light. | "Home automation has a problem. To automate *anything*, you have to *program* it — rules, thresholds, if-this-then-that. So ninety-nine percent of us never automate a single thing." |
-| **0:13–0:24** | `[CAM]` → `[GFX]` title card: **Hearth — the open-source, AI-native home.** | "So we built Hearth. You don't write rules. You just *say what you want* — and an AI wires it up." |
-| **0:24–0:40** | `[SCREEN]` Landing → `/demo`. A living software home: zones, sensors, actuators. Drag a sensor into a room. | `[VO]` "This is the platform, running in your browser — the same software that drives real devices. So anyone can try it, it ships with a simulated home: zones, sensors, actuators, all drag-and-drop." |
-| **0:40–1:05** | `[SCREEN]` Type into the Describe box: *"Warn me if the garage is open after dark and it's cold — and turn on the heater."* `[GFX]` the **compiled deployment card** animates in (inputs it chose · local-vs-cloud · action · cost · privacy). | `[VO]` "Watch. I type what I want. Qwen reads what this home can *sense* and *do*, and synthesizes the whole deployment — which sensors to bind, the logic, the action. I never wrote a rule. That's program synthesis, not a form." |
-| **1:05–1:25** | `[SCREEN]` The world panel: dials for **time of day, temperature, humidity.** `[GFX]` data-flow line: reading → typed → stored, with a live "where your data lives" callout. | `[VO]` "Every reading is typed and stored — you can see exactly where your data lives. And I can turn the world: push it past dark, drop the temperature—" |
-| **1:25–1:38** | `[SCREEN]` The world crosses the threshold → `[GFX]` deployment fires; heater actuator flips ON; phone push toast. | `[VO]` "—and the deployment fires on its own. Heater on. Notified. It just *works*." |
-| **1:38–2:05** | `[SHOOT]` Real camera on your entryway feeding a monitor; live playback. `[GFX]` overlay: bounding box + a quiet left-rule **reasoning trace** appearing as text. Someone walks up. | `[VO]` "But the real magic is reasoning about the messy real world. This is a *real* camera on my entryway, on real hardware. Live, Qwen-VL watches the scene." |
-| **2:05–2:25** | `[SHOOT]`+`[GFX]` overlay reasons in plain language: *"Not a household member. First frame unclear — looked closer."* box tightens on the face. | `[VO]` "It doesn't fire a dumb motion alarm. It *reasons*: do I know this person? The frame was unclear, so it looked closer — then it decides if this is even worth interrupting me for. That's an agent, not a sensor." |
-| **2:25–2:38** | `[SCREEN]`/`[GFX]` split: kill-network toast → local watches still green; then a **"while you were dark"** summary. Side-by-side: **raw local frame vs. minimized/redacted frame sent to cloud.** | `[VO]` "Cut the network — the simple watches keep running locally, and it tells you what it missed. And the raw video never leaves home. Only a minimized, redacted frame is ever sent." |
-| **2:38–2:52** | `[CAM]` You, direct to camera. `[GFX]` end card: **Hearth · open source · built on Qwen Cloud · <repo URL>.** | "No rules. No YAML. You describe your home — it figures out the rest. Hearth is open source. Clone it, and go talk to your house." |
+| **0:00–0:14** | `[CAM]` You, direct to camera. | "Home automation is closed. Closed hubs, closed clouds, closed protocols — you rent your own house back from whoever sold you the gadget. Today we're opening the whole stack." |
+| **0:14–0:24** | `[GFX]` Title: **Hearth — an open-source operating system for your home.** Then the empty architecture frame fades in. | "This is Hearth. Four open layers, held together by one idea: your hardware describes itself, and an AI wires it up." |
+| **0:24–0:52** | `[GFX]` **NODES** layer lights up. `[SHOOT]` hands flash an ESP32; `[SCREEN]` serial: `DESCRIBE … can sense: … · can do: …`. `[GFX]` a **node catalog** montage fans out (temp, humidity, door, motion, distance, RFID, camera, relay) — each stamped with the same `DESCRIBE` badge. | `[VO]` "Start at the edge. A Hearth node is a cheap ESP32 you flash — and it introduces itself: here's what I can sense, here's what I can do. Temperature, a door, motion, distance, RFID, a camera, a relay — the same self-describing contract for every one. Add a new sensor, nothing upstream changes." |
+| **0:52–1:15** | `[GFX]` **HUB** layer lights up; an animated line shows a node auto-discovering the hub (`_hearth._tcp`). `[SCREEN]` hub terminal: `+ NEW NODE …`. `[GFX]` "rule engine · fires locally · works offline" badges. | `[VO]` "Those nodes find your hub on their own — no addresses, no setup. The hub is the edge agent — a Pi, a spare laptop. It runs the rule engine right there in your house, so your automations fire locally, and keep firing with the internet cut." |
+| **1:15–1:45** | `[GFX]` **CLOUD** layer lights up. `[SCREEN]` Describe a wish → **Compile ↵** → **QWEN IS COMPILING** → watch card. `[GFX]` the **MCP tool surface** as a labeled bus (author_question · list_devices · read_input · notify) with an "any agent" arrow tapping in. | `[VO]` "Above the hub sits the brain: Qwen, on Alibaba Cloud. This is where plain words become a running system — you describe what you want, Qwen compiles it into a watch. And every capability of your home is exposed as an MCP tool, so any agent — not just ours — can see your devices and act. Open standard, not a walled garden." |
+| **1:45–1:58** | `[GFX]` **APP** layer lights up; quick pan of dashboard (web + mobile) and the `/demo` simulator. Pull back to reveal the **whole stack** glowing. | `[VO]` "And on top, any app — web, mobile, or a full simulator you can try right now with zero hardware." |
+| **1:58–2:22** | `[GFX]` **Solutions montage** — the same 4-layer stack re-skinned fast for each use case (icons snapping into the NODES row): warmth+heater · doorway+camera+RFID · motion+light · tank distance at the grid edge. Each ends on the same tag: **plug in · describe · done.** | `[VO]` "Now look what you wire up from the same parts. Warmth and a heater. A doorway, a camera, an RFID tag — so the house knows who's home. Motion and light. A distance sensor watching a tank at the edge of the grid. Every one is the same three moves: plug it in, describe it, done." |
+| **2:22–2:40** | **PROOF.** `[SHOOT]` one continuous take: cup the ESP32 in your hand → `[GFX]` temperature climbs → the board's **LED lights** → your **phone buzzes**. Overlay: the diagram's NODES→HUB→(phone) path pulses in sync. | `[VO]` "And it's not a mockup. I warm this board with my hand — the watch fires on the hub, the node lights up, my phone buzzes. The whole stack, end to end, on real hardware." |
+| **2:40–2:55** | `[CAM]` You to camera. `[GFX]` end card: **Hearth · open source · built on Qwen Cloud · <repo URL>** over the full architecture diagram. | "Every layer is open source. Self-host it, run it offline, swap the model, build your own node. Clone it — and go wire up your house." |
 
-**Total: ~2:52.** Buffer to trim: the world-dial beat (1:05–1:25) can lose ~5s if long.
+**Total: ~2:55.** Buffer to trim: the solutions montage (1:58–2:22) can lose ~5s; the app beat (1:45–1:58) ~3s.
 
 ---
 
-## Word count / pacing
-~300 spoken words ≈ 2:45 at a calm 110–120 wpm, leaving air for the overlays to breathe. If you run long,
-cut sentences before cutting beats — every beat above maps to a rubric clause.
+## Node catalog — showcase honestly (shipped vs buildable)
+Show the whole catalog to sell the ecosystem, but keep the split truthful. Everything shares the one `DESCRIBE`/`READING`/`/actuate` contract.
 
-## Beat → rubric map (why each shot earns its place)
+| Node | Senses / does | Status | Notes for the montage |
+|---|---|---|---|
+| **Board temp** | temperature (built-in) | ✅ shipped | real reading on a bare board; drives the proof shot |
+| **DHT11** | temperature + humidity | ✅ shipped | GPIO4, optional |
+| **LED / relay** | on/off actuator | ✅ shipped | GPIO2 LED default; relay via `ACTUATOR_PIN` |
+| **Door / reed** | open/closed | 🛠 buildable | same contract; not in firmware yet — show as a catalog card, not live |
+| **Motion (PIR)** | presence | 🛠 buildable | catalog card |
+| **Distance (HC-SR04)** | range / tank level | 🛠 buildable | ties to off-grid / edge monitoring |
+| **RFID (RC522)** | identity ("who's home") | 🛠 buildable | pairs with the doorway solution |
+| **Camera** | frames for **Qwen-VL** | 🚧 Phase 2 | **do NOT film as live vision** — no camera in firmware, no image sent to a model yet. Present as "the same contract takes a camera next." |
+
+**Honesty guardrail:** ✅ items are filmable as real hardware today. 🛠/🚧 items are shown as **catalog/roadmap cards in the architecture GFX** — the point is the *contract composes*, not that each is wired. Never narrate a buildable node as if it's running.
+
+## Architecture GFX (the hero asset)
+A self-contained, theme-aware **web architecture diagram** — the four layers, the node catalog with status, and the three
+contracts, in Hearth's ember identity. Source: [`assets/architecture.diagram.html`](assets/architecture.diagram.html).
+Live (screen-record this): **https://claude.ai/code/artifact/717df1dd-0654-4bbe-89ee-265825d98c10**
+Record a slow reveal (bottom-to-top to match the VO), and key it under the narration. Ask me to tweak layers/labels/colors
+and I'll redeploy it to the same URL.
+
+## Beat → rubric map
 | Beat | Serves |
 |---|---|
-| Describe → compiled card | **Innovation + Tech**: NL→config program synthesis; visible, sophisticated Qwen use |
-| World dials → deployment fires | **Tech**: end-to-end loop, judge-runnable with zero hardware |
-| Real camera + Qwen-VL reasoning trace | **Tech + Innovation**: real edge perceive→reason→act; "agent, not sensor" |
-| Offline "while you were dark" | Rubric's graceful-degradation clause |
-| Raw-vs-sent privacy reveal | Rubric's privacy-aware data-handling clause |
-| Open-source close | **Impact + Presentation**: accessibility, credibility |
+| Open-stack hook + layer reveal | **Innovation + Presentation**: it's a platform, not a gadget |
+| Self-describing node catalog | **Innovation + Tech**: zero-config, composable edge hardware |
+| Hub runs the engine locally / offline | **Tech**: edge autonomy, graceful degradation |
+| Qwen NL→watch + MCP tool surface | **Innovation + Tech**: program synthesis + open agent interface |
+| Solutions montage | **Impact**: breadth — one architecture, many homes/uses |
+| Real hand→LED→phone proof | **Tech**: the whole stack fires on real hardware |
+| Open-source close | **Impact + Presentation**: self-hostable, offline, model-swappable |
 
-## Shot list to capture (production checklist)
-- `[CAM]` 3 host takes: hook (0:00), thesis (0:13), close (2:38). Same framing/wardrobe for continuity.
-- `[SCREEN]` clean capture of: landing→/demo, drag-in, Describe→compile, world dials, fire event, offline + privacy reveal.
-- `[SHOOT]` entryway: camera→monitor live playback, one person approaching, good light. Shoot several passes.
-- `[GFX]` to generate: title card, compiled-deployment card, data-flow/storage callout, VL bounding box + reasoning trace, raw-vs-sent split, end card.
+## Shot list
+- `[CAM]` host takes: hook (0:00), close (2:40).
+- `[GFX]` architecture diagram with per-layer reveal states; MCP-bus callout; solutions-montage re-skins; end card. (Screen-record the generated web diagram.)
+- `[SHOOT]` flashing a board; the **hero proof take** (hand → LED → phone in one frame, several passes).
+- `[SCREEN]` serial DESCRIBE, hub `+ NEW NODE`, Describe→Compile watch card, dashboard + `/demo`.
+
+## Production notes
+- **Rehearse the whole loop with no hardware:** `node hub/hub.mjs` + `node hub/tools/fake-node.mjs` reproduces fire→LED→push for clean terminal B-roll.
+- **Make the LED read on camera:** wire a bigger LED or a relay+lamp to a GPIO (`ACTUATOR_PIN`, `ACTUATOR_ACTIVE_HIGH 0` for active-low). Still 100% real.
+- **Phone push:** `export NTFY_TOPIC=hearth-<unique>` + the free ntfy app before recording.
+- The browser `/demo` brain reads **"Qwen (simulated)"** by default; set `EXPO_PUBLIC_USE_QWEN=1` if you want the live pill on screen.
 
 ## Open calls (yours)
 1. **Product name** on the title/end cards — keep "Hearth"?
-2. **Voice** — VO in post, or on-camera sync sound throughout?
-3. Show the **second** hardware example if time allows, or keep the single camera demo for tightness? (Lean: single, tighter.)
+2. **Voice** — VO in post, or on-camera throughout?
+3. **How wide to go on the solutions montage** — the four above are a tight set; add more catalog cards if you want to sell breadth harder (costs a few seconds).
+4. **Firmware still needs an on-device flash to verify** the actuator before the proof shot (no ESP toolchain in CI).

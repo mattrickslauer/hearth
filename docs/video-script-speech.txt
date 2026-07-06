@@ -1,19 +1,21 @@
-Home automation has a problem. To automate anything, you have to program it — rules, thresholds, if-this-then-that. So ninety-nine percent of us never automate a single thing.
+HEARTH — read-aloud script, ECOSYSTEM-UNVEILING cut (~2:50 at ~120 wpm)
+Architecture-first: reveal the four open layers + the one contract that composes them.
+Say "watch" (the on-screen noun) and "compile" (the button word). Shipped vs buildable node list: see docs/06.
 
-So we built Hearth. You don't write rules. You just say what you want — and an AI wires it up.
+Home automation is closed. Closed hubs, closed clouds, closed protocols — you rent your own house back from whoever sold you the gadget. Today we're opening the whole stack. This is Hearth — an open-source operating system for your home.
 
-This is the platform, running in your browser — the same software that drives real devices. So anyone can try it, it ships with a simulated home: zones, sensors, actuators, all drag-and-drop.
+Four open layers, held together by one idea: your hardware describes itself, and an AI wires it up.
 
-Watch. I type what I want. Qwen reads what this home can sense and do, and synthesizes the whole deployment — which sensors to bind, the logic, the action. I never wrote a rule. That's program synthesis, not a form.
+Start at the edge. A Hearth node is a cheap ESP32 you flash — and it introduces itself: here's what I can sense, here's what I can do. Temperature, a door, motion, distance, an RFID reader, a camera, a relay — the same self-describing contract for every one. Add a new sensor, nothing upstream changes — it just announces itself.
 
-Every reading is typed and stored — you can see exactly where your data lives. And I can turn the world: push it past dark, drop the temperature —
+Those nodes find your hub on their own — no addresses, no setup. The hub is the edge agent: a Raspberry Pi, a spare laptop. It runs the rule engine right there in your house, so your automations fire locally — and keep firing with the internet cut.
 
-— and the deployment fires on its own. Heater on. Notified. It just works.
+Above the hub sits the brain: Qwen, on Alibaba Cloud. This is where plain words become a running system — you describe what you want, and Qwen compiles it into a watch. And every capability of your home is exposed as an MCP tool, so any agent, not just ours, can see your devices and act. Open standard, not a walled garden.
 
-But the real magic is reasoning about the messy real world. This is a real camera on my entryway, on real hardware. Live, Qwen-VL watches the scene.
+On top, any app — web, mobile, or a full simulator you can try with zero hardware.
 
-It doesn't fire a dumb motion alarm. It reasons: do I know this person? The frame was unclear, so it looked closer — then it decides if this is even worth interrupting me for. That's an agent, not a sensor.
+Now look what you wire up from the same parts. Warmth and a heater. A doorway, a camera, an RFID tag — so the house knows who's home. Motion and light. A distance sensor watching a tank at the edge of the grid. Every one is the same three moves: plug it in, describe it, done.
 
-Cut the network — the simple watches keep running locally, and it tells you what it missed. And the raw video never leaves home. Only a minimized, redacted frame is ever sent.
+And it's not a mockup. I warm this board with my hand — the watch fires on the hub, the node lights up, my phone buzzes. The whole stack, end to end, on real hardware.
 
-No rules. No YAML. You describe your home — it figures out the rest. Hearth is open source. Clone it, and go talk to your house.
+Every layer is open source — self-host it, run it offline, build your own node. Clone it, and go wire up your house.

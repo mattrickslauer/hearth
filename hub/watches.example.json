@@ -1,0 +1,14 @@
+[
+  {
+    "_comment": "Copy to ~/.hearth/watches.json (or set HUB_WATCHES_FILE). `compiledSpec` is exactly what Qwen emits when you author a watch in plain English — author one in the Hearth app and paste its spec here, or hand-write one like this. Replace nodeId with your node's id (printed as `id node-XXXX` on boot / shown in `curl http://localhost:8899/nodes`). Calibrate the threshold: run the node, note the idle board.temp, set `right` a few degrees above it, then cup the chip in your hand to cross it.",
+    "id": "w-hot-board",
+    "title": "Warn me if the board gets hot",
+    "compiledSpec": {
+      "kind": "local",
+      "local": { "expr": { "op": ">", "left": { "input": "board.temp" }, "right": 58 } }
+    },
+    "fire": { "edge": "rising", "cooldown": "30s" },
+    "actuate": [{ "nodeId": "node-REPLACE_WITH_YOUR_NODE_ID", "actuator": "led", "value": "on" }],
+    "notify": "The board just crossed the threshold ({detail})."
+  }
+]
