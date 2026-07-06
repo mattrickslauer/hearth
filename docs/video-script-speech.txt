@@ -1,21 +1,41 @@
-HEARTH — read-aloud script, ECOSYSTEM-UNVEILING cut (~2:50 at ~120 wpm)
-Architecture-first: reveal the four open layers + the one contract that composes them.
-Say "watch" (the on-screen noun) and "compile" (the button word). Shipped vs buildable node list: see docs/06.
+HEARTH — read-aloud script, DASHBOARD cut · PROOF-LAST (~2:40 at ~135 wpm)
+Five movements, one peak: the fire. Cost + the Qwen wiring AI + "open" collapse into the close as the punchline.
+Say the on-screen words: "Your home", "live", "Author", "watch", "local", "Fired · Actuated · Notified".
 
-Home automation is closed. Closed hubs, closed clouds, closed protocols — you rent your own house back from whoever sold you the gadget. Today we're opening the whole stack. This is Hearth — an open-source operating system for your home.
+DELIVERY
+· Three registers — [CAMERA] slow + warm · [SCREEN] brisk, you're pointing · [PROOF] slowest, let the hardware breathe.
+· Rule of three is the metronome: "hubs, clouds, apps" · "76, 78, 79" · "Fired, Actuated, Notified." Land the third beat.
+· Two golden silences — ~1.5s after "there's my phone", and a full stop before "Clone it."
+· One idea per breath. Start every screen line with a pointing word: "This is…", "See that…", "There it is…"
 
-Four open layers, held together by one idea: your hardware describes itself, and an AI wires it up.
 
-Start at the edge. A Hearth node is a cheap ESP32 you flash — and it introduces itself: here's what I can sense, here's what I can do. Temperature, a door, motion, distance, an RFID reader, a camera, a relay — the same self-describing contract for every one. Add a new sensor, nothing upstream changes — it just announces itself.
+═══ 1 · HOOK  [camera — slow, warm]
+Home automation is closed. Closed hubs, closed clouds, closed apps — you rent your own house back from whoever sold you the gadget.
+So we opened the whole stack. This is Hearth… and this is my home, on one screen.
 
-Those nodes find your hub on their own — no addresses, no setup. The hub is the edge agent: a Raspberry Pi, a spare laptop. It runs the rule engine right there in your house, so your automations fire locally — and keep firing with the internet cut.
 
-Above the hub sits the brain: Qwen, on Alibaba Cloud. This is where plain words become a running system — you describe what you want, and Qwen compiles it into a watch. And every capability of your home is exposed as an MCP tool, so any agent, not just ours, can see your devices and act. Open standard, not a walled garden.
+═══ 2 · THE SCREEN  [dashboard — brisk, pointing]
+"Your home." Everything here is live — my hubs, my devices, my sensors, my watches.
+See that green dot — "live"? That's a real stream off the hub in my house. Every tile has a heartbeat — watch it pulse when a reading lands. I can dial any sensor right here — once a minute, or twice a second.
 
-On top, any app — web, mobile, or a full simulator you can try with zero hardware.
 
-Now look what you wire up from the same parts. Warmth and a heater. A doorway, a camera, an RFID tag — so the house knows who's home. Motion and light. A distance sensor watching a tank at the edge of the grid. Every one is the same three moves: plug it in, describe it, done.
+═══ 3 · THE ASK  [dashboard — brisk]
+Now, the good part. I don't write code — I just say what I want.
+"If the nursery goes over seventy-eight, cut the heater and text me."
+I hit Author… and Qwen turns that one sentence into a running watch. There it is — over seventy-eight, heater off, notify me.
+See that little "local" tag? That rule runs on the hub, in my house. Cut the internet — it still fires.
 
-And it's not a mockup. I warm this board with my hand — the watch fires on the hub, the node lights up, my phone buzzes. The whole stack, end to end, on real hardware.
 
-Every layer is open source — self-host it, run it offline, build your own node. Clone it, and go wire up your house.
+═══ 4 · THE PROOF  [hardware + screen — slowest, let it breathe]
+So let's make it real. I warm this sensor with my hand… and the tile climbs — seventy-six… seventy-eight… seventy-nine —
+the watch flashes, and the feed lights up: Fired… Actuated… Notified.
+And — [phone buzzes] —
+                          …there's my phone.
+Real sensor. Real rule. Real alert. No cloud required.
+
+
+═══ 5 · CLOSE  [wiring flash, then camera — land it]
+And here's the thing. That whole loop? A five-dollar chip, and one sentence to Qwen.
+Don't know how to wire it? Just ask — Qwen tells you which pin goes where.
+It's open, from the sensor to the cloud. This isn't the finished product — it's the platform you build it on.
+Clone it… and go build.
