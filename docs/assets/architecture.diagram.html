@@ -1,0 +1,384 @@
+<!-- Hearth — architecture diagram (hero GFX for the demo video).
+     Rendered as a claude.ai Artifact; screen-record the top-to-bottom layer reveal. -->
+<title>Hearth — the architecture</title>
+
+<style>
+  :root {
+    --ground: #131010;
+    --panel: #1b1613;
+    --panel-2: #221b17;
+    --line: #3a2f28;
+    --line-soft: #2b221d;
+    --ink: #f4ece3;
+    --muted: #b9aa9a;
+    --faint: #8a7b6d;
+    --ember: #f3852e;
+    --ember-soft: #f6a85a;
+    --gold: #f6c667;
+    --glow: rgba(243, 133, 46, 0.20);
+    --chip-bg: rgba(243, 133, 46, 0.08);
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #fbf6ef;
+      --panel: #fffdfa;
+      --panel-2: #f4ece1;
+      --line: #e6d8c8;
+      --line-soft: #efe6d9;
+      --ink: #241c16;
+      --muted: #6e6055;
+      --faint: #9a8b7c;
+      --ember: #d9641a;
+      --ember-soft: #c2510e;
+      --gold: #b9821c;
+      --glow: rgba(217, 100, 26, 0.13);
+      --chip-bg: rgba(217, 100, 26, 0.07);
+      color-scheme: light;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #131010; --panel: #1b1613; --panel-2: #221b17; --line: #3a2f28; --line-soft: #2b221d;
+    --ink: #f4ece3; --muted: #b9aa9a; --faint: #8a7b6d; --ember: #f3852e; --ember-soft: #f6a85a;
+    --gold: #f6c667; --glow: rgba(243,133,46,0.20); --chip-bg: rgba(243,133,46,0.08); color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --ground: #fbf6ef; --panel: #fffdfa; --panel-2: #f4ece1; --line: #e6d8c8; --line-soft: #efe6d9;
+    --ink: #241c16; --muted: #6e6055; --faint: #9a8b7c; --ember: #d9641a; --ember-soft: #c2510e;
+    --gold: #b9821c; --glow: rgba(217,100,26,0.13); --chip-bg: rgba(217,100,26,0.07); color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .stage {
+    position: relative;
+    min-height: 100vh;
+    padding: clamp(28px, 5vw, 64px) clamp(16px, 4vw, 40px);
+    overflow: hidden;
+  }
+  /* ambient hearth glow */
+  .stage::before {
+    content: "";
+    position: absolute;
+    top: -12%;
+    left: 50%;
+    width: min(900px, 120vw);
+    aspect-ratio: 1;
+    transform: translateX(-50%);
+    background: radial-gradient(circle, var(--glow) 0%, transparent 62%);
+    pointer-events: none;
+    animation: breathe 7s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%, 100% { opacity: 0.7; } 50% { opacity: 1; } }
+
+  .wrap { position: relative; max-width: 1080px; margin: 0 auto; }
+
+  /* ── header ── */
+  header { text-align: center; margin-bottom: clamp(24px, 4vw, 40px); }
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--ember);
+    margin: 0 0 14px;
+  }
+  .wordmark {
+    font-size: clamp(44px, 8vw, 76px);
+    font-weight: 680;
+    letter-spacing: -0.025em;
+    line-height: 1;
+    margin: 0;
+    text-wrap: balance;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.28em;
+  }
+  .flame { width: 0.72em; height: 0.72em; flex: none; filter: drop-shadow(0 2px 10px var(--glow)); }
+  .tagline {
+    font-family: var(--font-mono);
+    font-size: clamp(13px, 1.8vw, 15px);
+    color: var(--muted);
+    margin: 16px 0 0;
+    letter-spacing: 0.02em;
+  }
+  .tagline b { color: var(--ink); font-weight: 600; }
+
+  /* ── entry pill ── */
+  .entry {
+    display: flex; justify-content: center; margin: 4px 0 6px;
+  }
+  .entry span {
+    font-family: var(--font-mono); font-size: 12.5px; color: var(--muted);
+    border: 1px dashed var(--line); border-radius: 999px; padding: 7px 16px; background: var(--panel);
+  }
+  .entry span b { color: var(--ember); font-weight: 600; }
+
+  /* ── the stack ── */
+  .stack { display: flex; flex-direction: column; align-items: stretch; }
+
+  .conduit {
+    display: flex; align-items: center; justify-content: center; gap: 14px;
+    height: 62px; position: relative;
+  }
+  .conduit .rail {
+    position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-50%);
+    background: repeating-linear-gradient(to bottom, var(--ember) 0 7px, transparent 7px 15px);
+    opacity: 0.5; animation: flow 1.1s linear infinite;
+  }
+  @keyframes flow { to { background-position-y: 15px; } }
+  .conduit .label {
+    position: relative; z-index: 1; font-family: var(--font-mono); font-size: 11.5px;
+    letter-spacing: 0.06em; color: var(--muted);
+    background: var(--ground); padding: 4px 12px; border: 1px solid var(--line-soft); border-radius: 999px;
+    white-space: nowrap;
+  }
+  .conduit .dir { position: relative; z-index: 1; font-family: var(--font-mono); font-size: 10px; color: var(--faint); }
+
+  .layer {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: clamp(18px, 2.4vw, 26px);
+    display: grid;
+    grid-template-columns: 148px 1fr;
+    gap: clamp(16px, 3vw, 30px);
+    align-items: center;
+    box-shadow: 0 1px 0 var(--line-soft), 0 24px 48px -36px rgba(0, 0, 0, 0.6);
+  }
+  .layer::before {
+    content: "";
+    position: absolute; left: 0; top: 14px; bottom: 14px; width: 3px;
+    border-radius: 3px; background: linear-gradient(var(--ember), var(--ember-soft));
+    opacity: 0.9;
+  }
+  .layer .tag { display: flex; flex-direction: column; gap: 6px; }
+  .layer .kicker {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: var(--ember); font-weight: 600;
+  }
+  .layer h2 { font-size: clamp(19px, 2.4vw, 23px); font-weight: 640; margin: 0; letter-spacing: -0.01em; }
+  .layer .who { font-family: var(--font-mono); font-size: 11.5px; color: var(--faint); }
+
+  .layer .role { margin: 0 0 12px; color: var(--muted); font-size: 14.5px; max-width: 62ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font-family: var(--font-mono); font-size: 12px; color: var(--ink);
+    background: var(--chip-bg); border: 1px solid var(--line);
+    border-radius: 8px; padding: 5px 10px;
+  }
+  .chip.k { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 40%, var(--line)); }
+
+  /* ── nodes catalog ── */
+  .catalog { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 4px; }
+  .node {
+    border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; background: var(--panel-2);
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .node .n { font-family: var(--font-mono); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+  .node .cap { font-size: 11.5px; color: var(--faint); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .dot.ship { background: var(--ember); box-shadow: 0 0 0 3px var(--chip-bg); }
+  .dot.build { background: transparent; border: 1.5px solid var(--muted); }
+  .dot.phase { background: transparent; border: 1.5px dashed var(--ember-soft); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 14px; font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 8px; }
+
+  /* ── contracts strip ── */
+  .contracts {
+    margin-top: clamp(28px, 4vw, 44px);
+    border-top: 1px solid var(--line);
+    padding-top: clamp(22px, 3vw, 32px);
+  }
+  .contracts .head {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.24em; text-transform: uppercase;
+    color: var(--faint); text-align: center; margin-bottom: 18px;
+  }
+  .contract-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .contract {
+    border: 1px solid var(--line); border-radius: 14px; padding: 18px; background: var(--panel);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .contract .num { font-family: var(--font-mono); font-size: 12px; color: var(--ember); font-weight: 700; }
+  .contract h3 { margin: 0; font-size: 15.5px; font-weight: 640; }
+  .contract p { margin: 0; font-size: 13px; color: var(--muted); }
+  .contract code { font-family: var(--font-mono); font-size: 12px; color: var(--gold); background: var(--chip-bg); padding: 1px 5px; border-radius: 4px; }
+
+  footer {
+    margin-top: clamp(26px, 4vw, 40px); text-align: center;
+    font-family: var(--font-mono); font-size: 12px; color: var(--faint); letter-spacing: 0.04em;
+  }
+  footer b { color: var(--ember); font-weight: 600; }
+
+  @media (max-width: 720px) {
+    .layer { grid-template-columns: 1fr; gap: 12px; }
+    .layer::before { top: 0; bottom: auto; left: 14px; right: 14px; top: 0; width: auto; height: 3px; }
+    .catalog { grid-template-columns: repeat(2, 1fr); }
+    .contract-grid { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .stage::before { animation: none; }
+    .conduit .rail { animation: none; }
+  }
+</style>
+
+<div class="stage">
+  <div class="wrap">
+    <header>
+      <p class="eyebrow">Open-source · Edge-agent · Built on Qwen</p>
+      <h1 class="wordmark">
+        <svg class="flame" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12.5 1.5c.6 3.2-1.8 4.7-3.4 6.6C7.3 10.2 6 12 6 14.6a6 6 0 0 0 12 .3c0-2.2-1-4-2.2-5.6-.5.9-1.2 1.5-2 1.7.9-2.6.3-6.2-1.3-9.5Z"
+            fill="var(--ember)"/>
+          <path d="M12 12c.4 1.5-.8 2.2-1.5 3-.6.7-1 1.5-1 2.5a2.5 2.5 0 0 0 5 .1c0-1-.5-1.8-1.1-2.5-.5.5-1 .7-1.4.6.5-1.2.3-2.5-.0-3.7Z"
+            fill="var(--gold)"/>
+        </svg>
+        Hearth
+      </h1>
+      <p class="tagline">An <b>open-source operating system</b> for your home — four open layers, one contract.</p>
+    </header>
+
+    <div class="entry"><span>YOU &nbsp;→&nbsp; <b>plain words</b> &nbsp;("warn me if the garage is cold and open — turn on the heater")</span></div>
+
+    <div class="stack">
+
+      <!-- APP -->
+      <div class="conduit"><span class="label">↑ state · events&nbsp;&nbsp;·&nbsp;&nbsp;↓ intent</span></div>
+      <section class="layer">
+        <div class="tag">
+          <span class="kicker">Layer 4</span>
+          <h2>App</h2>
+          <span class="who">web · mobile · sim</span>
+        </div>
+        <div class="body">
+          <p class="role">Any surface. Describe what you want in plain words, manage your watches, watch the activity feed — or try the whole thing in a browser with zero hardware.</p>
+          <div class="chips">
+            <span class="chip">Describe console</span>
+            <span class="chip">Watch CRUD</span>
+            <span class="chip">Activity feed</span>
+            <span class="chip">Hub pairing</span>
+            <span class="chip">Zero-hardware simulator</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- CLOUD -->
+      <div class="conduit">
+        <span class="rail"></span>
+        <span class="label">HTTPS · MCP</span>
+        <span class="dir">▲ readings&nbsp;&nbsp;▼ watches</span>
+      </div>
+      <section class="layer">
+        <div class="tag">
+          <span class="kicker">Layer 3</span>
+          <h2>Cloud</h2>
+          <span class="who">Alibaba FC</span>
+        </div>
+        <div class="body">
+          <p class="role">The brain. <b style="color:var(--ink)">Qwen</b> compiles your sentence into a running watch — and every capability of the home is an <b style="color:var(--ink)">MCP tool</b>, so any agent, not just ours, can perceive and act.</p>
+          <div class="chips">
+            <span class="chip k">author_question · NL→watch</span>
+            <span class="chip">list_hub_devices</span>
+            <span class="chip">read_input</span>
+            <span class="chip">query_history</span>
+            <span class="chip">notify</span>
+            <span class="chip">per-account Home Model</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- HUB -->
+      <div class="conduit">
+        <span class="rail"></span>
+        <span class="label">pair (claim code) · device + reading sync</span>
+        <span class="dir">▲ sync&nbsp;&nbsp;▼ pair</span>
+      </div>
+      <section class="layer">
+        <div class="tag">
+          <span class="kicker">Layer 2</span>
+          <h2>Hub</h2>
+          <span class="who">Pi · laptop</span>
+        </div>
+        <div class="body">
+          <p class="role">The edge agent. Auto-discovers nodes, runs the rule engine <b style="color:var(--ink)">right in your house</b>, and fires on its own — actuating hardware and pushing your phone. Cut the internet and it keeps working.</p>
+          <div class="chips">
+            <span class="chip k">rule engine · fires locally</span>
+            <span class="chip">mDNS discovery</span>
+            <span class="chip">works offline</span>
+            <span class="chip">actuate</span>
+            <span class="chip">ntfy / Telegram push</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- NODES -->
+      <div class="conduit">
+        <span class="rail"></span>
+        <span class="label">_hearth._tcp&nbsp;·&nbsp;DESCRIBE · READING · /actuate</span>
+        <span class="dir">▲ sense&nbsp;&nbsp;▼ act</span>
+      </div>
+      <section class="layer">
+        <div class="tag">
+          <span class="kicker">Layer 1</span>
+          <h2>Nodes</h2>
+          <span class="who">ESP32 kit</span>
+        </div>
+        <div class="body">
+          <p class="role">Self-describing hardware. Flash a cheap board and it <b style="color:var(--ink)">announces what it can sense and do</b> — the hub needs zero prior knowledge of it. One contract; swap or add nodes freely.</p>
+          <div class="catalog">
+            <div class="node"><span class="n"><i class="dot ship"></i>Board temp</span><span class="cap">temperature · built-in</span></div>
+            <div class="node"><span class="n"><i class="dot ship"></i>DHT11</span><span class="cap">temp + humidity</span></div>
+            <div class="node"><span class="n"><i class="dot ship"></i>LED / relay</span><span class="cap">on/off actuator</span></div>
+            <div class="node"><span class="n"><i class="dot build"></i>Door / reed</span><span class="cap">open · closed</span></div>
+            <div class="node"><span class="n"><i class="dot build"></i>Motion (PIR)</span><span class="cap">presence</span></div>
+            <div class="node"><span class="n"><i class="dot build"></i>Distance</span><span class="cap">range · tank level</span></div>
+            <div class="node"><span class="n"><i class="dot build"></i>RFID</span><span class="cap">identity · who's home</span></div>
+            <div class="node"><span class="n"><i class="dot phase"></i>Camera</span><span class="cap">frames → Qwen-VL</span></div>
+          </div>
+          <div class="legend">
+            <span><i class="dot ship"></i> shipped — real today</span>
+            <span><i class="dot build"></i> buildable — same contract</span>
+            <span><i class="dot phase"></i> next — Qwen-VL vision</span>
+          </div>
+        </div>
+      </section>
+
+    </div><!-- /stack -->
+
+    <div class="contracts">
+      <div class="head">The three contracts that make it compose</div>
+      <div class="contract-grid">
+        <div class="contract">
+          <span class="num">01</span>
+          <h3>Self-describe</h3>
+          <p>Every node emits <code>DESCRIBE</code> + a <code>READING</code> stream and accepts <code>/actuate</code>. Add hardware — nothing upstream changes.</p>
+        </div>
+        <div class="contract">
+          <span class="num">02</span>
+          <h3>The portable watch</h3>
+          <p>Qwen compiles plain words into one <code>PredicateNode</code> spec that runs <b style="color:var(--ink)">unchanged</b> in the browser sim and on the hub.</p>
+        </div>
+        <div class="contract">
+          <span class="num">03</span>
+          <h3>MCP</h3>
+          <p>Every capability of the home is a standard tool call — so any agent, not just Hearth's app, can see and act.</p>
+        </div>
+      </div>
+    </div>
+
+    <footer><b>Hearth</b> · open source · built on Qwen Cloud · self-host it, run it offline, swap the model, build your own node</footer>
+  </div>
+</div>

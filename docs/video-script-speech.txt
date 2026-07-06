@@ -1,21 +1,21 @@
-HEARTH — read-aloud script, REAL-HARDWARE cut (~2:50 at ~120 wpm)
-Every beat below is real and filmable today (see docs/06-video-script.md for the shot list).
-Say "watch" (the on-screen noun) and "compile" (the button word).
+HEARTH — read-aloud script, ECOSYSTEM-UNVEILING cut (~2:50 at ~120 wpm)
+Architecture-first: reveal the four open layers + the one contract that composes them.
+Say "watch" (the on-screen noun) and "compile" (the button word). Shipped vs buildable node list: see docs/06.
 
-Everyone wants a smart home. Almost nobody has one — because to automate anything, you first have to program it. Rules, thresholds, if-this-then-that. So the rest of us just… don't.
+Home automation is closed. Closed hubs, closed clouds, closed protocols — you rent your own house back from whoever sold you the gadget. Today we're opening the whole stack. This is Hearth — an open-source operating system for your home.
 
-Hearth kills the rules. You plug in a chip, tell your house what you want in plain words, and an AI wires it up — on real hardware, in your actual home.
+Four open layers, held together by one idea: your hardware describes itself, and an AI wires it up.
 
-This is a two-dollar chip. I flash it — and it introduces itself. Here's who I am, here's what I can sense, here's what I can do. No driver, no config file. It just starts talking.
+Start at the edge. A Hearth node is a cheap ESP32 you flash — and it introduces itself: here's what I can sense, here's what I can do. Temperature, a door, motion, distance, an RFID reader, a camera, a relay — the same self-describing contract for every one. Add a new sensor, nothing upstream changes — it just announces itself.
 
-My hub finds it on the network on its own — no address to type. I pair the hub to the cloud with one code, and the device shows up on my phone, live, with its real temperature. That's running on Alibaba Cloud.
+Those nodes find your hub on their own — no addresses, no setup. The hub is the edge agent: a Raspberry Pi, a spare laptop. It runs the rule engine right there in your house, so your automations fire locally — and keep firing with the internet cut.
 
-Now I just say what I want. "If this gets too warm, turn on the light and text me." I hit compile — and Qwen reads what my hardware can actually sense and do, and turns that one sentence into a running watch. I never picked a sensor. I never wrote a rule.
+Above the hub sits the brain: Qwen, on Alibaba Cloud. This is where plain words become a running system — you describe what you want, and Qwen compiles it into a watch. And every capability of your home is exposed as an MCP tool, so any agent, not just ours, can see your devices and act. Open standard, not a walled garden.
 
-So let's try it for real. I warm the sensor with my hand… the temperature climbs… it crosses the line — and the board lights up, and my phone buzzes. Real sensor, real trigger, a real device switching on.
+On top, any app — web, mobile, or a full simulator you can try with zero hardware.
 
-And here's the part that matters: that watch runs right on the hub, in my house. It doesn't need the cloud to fire — cut the internet and it still works. Nothing about my home has to leave my home for the simple stuff.
+Now look what you wire up from the same parts. Warmth and a heater. A doorway, a camera, an RFID tag — so the house knows who's home. Motion and light. A distance sensor watching a tank at the edge of the grid. Every one is the same three moves: plug it in, describe it, done.
 
-Today this node senses temperature and switches a light. The exact same self-describing contract takes a camera next — so Qwen can reason about what it actually sees. Same chip, same one sentence, richer senses.
+And it's not a mockup. I warm this board with my hand — the watch fires on the hub, the node lights up, my phone buzzes. The whole stack, end to end, on real hardware.
 
-No rules. No YAML. You plug it in and tell your house what you want. Hearth is open source — clone it, and go talk to your house.
+Every layer is open source — self-host it, run it offline, build your own node. Clone it, and go wire up your house.
