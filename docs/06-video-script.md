@@ -1,10 +1,10 @@
 # 06 — Demo Video Script (≤ 3:00) — DASHBOARD cut
 
-Submission video for **Track 5: EdgeAgent**. Target runtime **2:55** (hard cap 3:00). Format: 1080p+, YouTube/Vimeo/Youku.
-This cut is a **product demo**, told through **one screen**: the Hearth dashboard. We run a single lived scenario end to
-end — describe a rule in plain words, watch Qwen compile it, make it **fire on real hardware** — then close by selling
-Hearth as **cheap, buildable baseline infrastructure**: a five-dollar chip, a Qwen wiring assistant that tells you which
-pin goes where, and an open platform any agent can build on. The dashboard IS the story; the hardware is the payoff.
+Submission video for **Track 5: EdgeAgent**. Target runtime **~2:40** (hard cap 3:00). Format: 1080p+, YouTube/Vimeo/Youku.
+This cut is a **product demo**, told through **one screen**: the Hearth dashboard, in a **PROOF-LAST** structure — five
+movements, one peak. We run a single lived scenario, build to the hardware fire as the *final* spectacle, then collapse
+**cheap + the Qwen wiring AI + open** into the close as the punchline (never explain after the peak). The dashboard IS
+the story; the hardware is the payoff; the "platform you build on" is the last word.
 
 **Legend:** `[CAM]` you to camera · `[SCREEN]` dashboard capture (the visual spine) · `[SHOOT]` real hardware in frame ·
 `[VO]` voiceover.
@@ -14,21 +14,24 @@ pin goes where, and an open platform any agent can build on. The dashboard IS th
 climbs, the watch flashes, the activity feed streams **Fired · Actuated · Notified**, and your phone buzzes. Everything
 the viewer sees is a real string on the real screen (`frontend/src/app/dashboard.tsx`).
 
+**Cadence:** three registers — `[CAM]` slow + warm · `[SCREEN]` brisk, pointing · `[PROOF]` slowest, let the hardware
+breathe. Rule of three is the metronome ("hubs, clouds, apps" · "76, 78, 79" · "Fired, Actuated, Notified"). Two golden
+silences: ~1.5s after *"there's my phone"*, and a full stop before *"Clone it."* Deliver ~135 wpm so the pauses land.
+
 ---
 
 ## Script
 
-| Time | Visual | Audio |
-|---|---|---|
-| **0:00–0:13** | `[CAM]` You, direct to camera. | "Home automation is closed. Closed hubs, closed clouds, closed apps — you rent your own house back from whoever sold you the gadget. So we opened the whole stack. This is Hearth — and this is my home, running on one screen." |
-| **0:13–0:26** | `[SCREEN]` Cut to the dashboard. Hold on the **"Your home"** header and the four stat chips — **hubs · devices · sensors · watches** — each with a live number. | `[VO]` "One dashboard. *Your home.* Up top — my hubs, my devices, my sensors, my watches. Every number here is live… and every layer underneath is open source." |
-| **0:26–0:46** | `[SCREEN]` Scroll to **Sensors**. Point at the green pulsing **"live"** badge. Tiles update on their own — the corner **heartbeat** pings, the **TTL bar** refills. Drag a **cadence slider** from `60s` → `0.5s`; that tile visibly speeds up. | `[VO]` "These are my live sensors. That green dot — *live*? That's a live stream off my hub. Every tile has a heartbeat — watch it pulse when a reading lands. And I can dial any sensor right here — once a minute, or twice a second — live." |
-| **0:46–1:16** | `[SCREEN]` **Describe a new watch** card. Type: *"If the nursery goes over 78, cut the heater and text me."* Click **Author →** → spinner → a new **watch card** appears reading **`when temperature over 78 → turn heater off, notify me`**, tagged **`local`**. Zoom the **`local`** tag. | `[VO]` "Now the good part. I don't write code — I just say what I want. *If the nursery goes over seventy-eight, cut the heater and text me.* I hit **Author**… and Qwen, on Alibaba Cloud, turns that one sentence into a running watch. There it is — over seventy-eight, heater off, notify me. And see that little *local* tag? That rule runs on the hub, in my house — cut the internet, it still fires." |
-| **1:16–1:45** | **PAYOFF — one continuous take, hardware + screen in frame.** `[SHOOT]` cup the ESP32 in your hand; `[SCREEN]` the temp tile climbs `76 → 78 → 79`, the **watch card flashes ember**, and the **Activity** feed streams **`🔥 Fired · ⚡ Actuated · 📨 Notified`** in real time. `[SHOOT]` your **phone buzzes**. | `[VO]` "So let's make it real. I warm this sensor with my hand… the tile climbs — seventy-six, seventy-eight, seventy-nine — the watch flashes, and the activity feed lights up: Fired… Actuated… Notified. And — *[phone buzzes]* — there's my phone. Real sensor, real rule, real alert. No cloud required." |
-| **1:45–2:18** | `[SCREEN]` Hold up the bare **$5 ESP32** + a cheap sensor to camera. Cut to a **wiring-assistant** capture: type *"add a soil sensor"* → Qwen returns a short **wiring recipe** (e.g. `VCC→3V3 · GND→GND · signal→GPIO4`) + the flash command. Then the new node **appears as a tile** on the dashboard. | `[VO]` "And here's the part I love. This is baseline infrastructure. The hardware's a five-dollar chip and sensors that cost cents. Want your own setup? You don't touch a datasheet — you ask. I tell Qwen *add a soil sensor,* and it walks me through the wiring — this pin, that pin, done. Plug it in, the node describes itself, and it shows up right here. Every device is a standard MCP tool — any agent can build on top." |
-| **2:18–2:55** | `[CAM]` You to camera. `[SCREEN]` end card: **Hearth · open source · built on Qwen Cloud · \<repo URL\>** over a clean shot of the dashboard. | "A whole home — one screen, built on Qwen, open from the sensor to the cloud. Self-host it, run it offline, wire up your own node. This isn't the finished product — it's the platform you build it on. Clone it… and go build." |
+| # · Movement | Time | Visual | Audio |
+|---|---|---|---|
+| **1 · HOOK** | **0:00–0:14** | `[CAM]` You, direct to camera. Slow, warm. | "Home automation is closed. Closed hubs, closed clouds, closed apps — you rent your own house back from whoever sold you the gadget. So we opened the whole stack. This is Hearth… and this is my home, on one screen." |
+| **2 · THE SCREEN** | **0:14–0:44** | `[SCREEN]` One continuous move: land on **"Your home"** + the live chips (**hubs · devices · sensors · watches**), scroll to **Sensors**, point at the green **"live"** badge, a tile's **heartbeat** ping, then drag a **cadence slider** `60s → 0.5s`. | `[VO]` "*Your home.* Everything here is live — my hubs, my devices, my sensors, my watches. See that green dot — *live*? That's a real stream off the hub in my house. Every tile has a heartbeat — watch it pulse when a reading lands. I can dial any sensor right here — once a minute, or twice a second." |
+| **3 · THE ASK** | **0:44–1:16** | `[SCREEN]` **Describe a new watch** card. Type *"If the nursery goes over 78, cut the heater and text me."* → **Author →** → a new **watch card**: **`when temperature over 78 → turn heater off, notify me`**, tagged **`local`**. Zoom the **`local`** tag. | `[VO]` "Now, the good part. I don't write code — I just say what I want. *If the nursery goes over seventy-eight, cut the heater and text me.* I hit **Author**… and Qwen turns that one sentence into a running watch. There it is — over seventy-eight, heater off, notify me. See that little *local* tag? That rule runs on the hub, in my house — cut the internet, it still fires." |
+| **4 · THE PROOF** *(peak)* | **1:16–1:48** | **One continuous take, hardware + screen in frame. Slowest register — let it breathe.** `[SHOOT]` cup the ESP32; `[SCREEN]` temp tile climbs `76 → 78 → 79`, **watch card flashes ember**, **Activity** streams **`🔥 Fired · ⚡ Actuated · 📨 Notified`**. `[SHOOT]` **phone buzzes** — hold ~1.5s of silence on it. | `[VO]` "So let's make it real. I warm this sensor with my hand… the tile climbs — seventy-six… seventy-eight… seventy-nine — the watch flashes, and the feed lights up: Fired… Actuated… Notified. And — *[phone buzzes]* — …there's my phone. Real sensor. Real rule. Real alert. No cloud required." |
+| **5 · CLOSE** | **1:48–2:25** | `[SCREEN]` 3s **wiring-assistant** flash: type *"add a soil sensor"* → Qwen returns a **pin recipe** `VCC→3V3 · GND→GND · signal→GPIO4`. Then `[CAM]` to camera over the end card: **Hearth · open source · built on Qwen Cloud · \<repo URL\>**. Full stop before "Clone it." | "And here's the thing. That whole loop? A five-dollar chip, and one sentence to Qwen. Don't know how to wire it? Just ask — Qwen tells you which pin goes where. It's open, from the sensor to the cloud. This isn't the finished product — it's the platform you build it on. Clone it… and go build." |
 
-**Total: ~2:55.** Buffer to trim: the Sensors beat (0:28–0:48) can lose ~4s; the wiring/infra beat (1:45–2:18) ~5s (drop the flash-command line, keep the pin recipe).
+**Total: ~2:40 with the pauses** (~275 spoken words; the silences + the board-warming beat carry the rest). Buffer if long:
+trim the cadence-slider drag in Movement 2 (~4s) or the wiring flash in Movement 5 (~3s). Don't cut the two golden silences.
 
 ---
 
@@ -65,27 +68,25 @@ Verified against `frontend/src/app/dashboard.tsx`. Match the spoken word to the 
 
 ---
 
-## Beat → rubric map
-| Beat | Serves |
+## Movement → rubric map
+| Movement | Serves |
 |---|---|
-| Open-stack hook + "one screen" | **Innovation + Presentation**: a product, not a gadget |
-| "Your home" + live chips | **Presentation**: the whole home at a glance |
-| Live sensors + cadence slider | **Tech**: real-time streaming off the edge, tunable live |
-| Describe → Author → watch card | **Innovation + Tech**: plain words → a running rule via Qwen |
-| Hand → tile climbs → feed streams → phone buzzes | **Tech**: the whole chain fires on real hardware, on-screen |
-| Cheap hardware + Qwen wiring AI + MCP | **Impact + Innovation**: baseline infra, buildable by anyone, no datasheet |
-| "Platform you build it on" open-source close | **Impact + Presentation**: self-hostable, offline, model-swappable |
+| 1 · Hook — "we opened the whole stack" | **Innovation + Presentation**: a product, not a gadget |
+| 2 · The screen — "Your home", live chips, live sensors, cadence slider | **Presentation + Tech**: the whole home at a glance, streaming off the edge, tunable live |
+| 3 · The ask — Describe → Author → watch card (`local` tag) | **Innovation + Tech**: plain words → a running rule via Qwen, fires locally/offline |
+| 4 · The proof *(peak)* — hand → tile climbs → feed streams → phone buzzes | **Tech**: the whole chain fires on real hardware, on-screen |
+| 5 · The close — $5 chip + Qwen wiring AI + open + "platform you build on" | **Impact + Innovation**: cheap, buildable baseline infra; self-hostable, offline, model-swappable |
 
 ## Shot list
-- `[CAM]` host takes: hook (0:00), close (2:18).
-- `[SCREEN]` dashboard capture: "Your home" + chips; Sensors (live badge, heartbeat, cadence-slider drag); Describe→Author→new watch card; the payoff (tile climb + card flash + Activity stream); the **wiring-assistant** capture (type a sensor → Qwen returns the pin recipe → new tile appears); end card.
-- `[SHOOT]` the **hero payoff take** — hand cupping the ESP32 and the dashboard in one frame, several passes; the **phone buzz**. Plus a **hand-held $5 board + cheap sensor** insert for the "baseline infrastructure" beat.
+- `[CAM]` host takes: hook (0:00), close (1:48 → to camera over the end card).
+- `[SCREEN]` dashboard capture: "Your home" + chips; Sensors (live badge, heartbeat, cadence-slider drag); Describe→Author→new watch card; the proof (tile climb + card flash + Activity stream); the 3s **wiring-assistant** flash (type a sensor → Qwen returns the pin recipe); end card.
+- `[SHOOT]` the **hero proof take** — hand cupping the ESP32 and the dashboard in one frame, several passes; the **phone buzz** (hold ~1.5s). Optional: a **hand-held $5 board + cheap sensor** insert to cut over the close.
 
 ## Production notes
 - **Sign in first** — `/dashboard` redirects to `/signin` when signed out; the account email shows in the header pill, so use a clean demo account (e.g. `demo@hearth…`).
 - **Get the live badge green before rolling:** the hub must be checked in and streaming so Sensors reads **`live`** (not `connecting…` / `hub offline`). Confirm one tile is updating on its own.
-- **Pre-author nothing you'll type on camera** — the nursery watch should be authored *live* so `✍️ Authored` lands in the feed; but pre-create one or two extra watches so the 1:45 beat has cards to show.
-- **Wiring-assistant capture (1:45 beat):** pre-run the *"add a soil sensor"* prompt once so you know the exact recipe Qwen returns, then capture it clean. Keep the recipe short on screen (pins only); the flash command can be the trim if you're over time.
+- **Pre-author nothing you'll type on camera** — the nursery watch should be authored *live* in Movement 3 so `✍️ Authored` lands in the feed; but pre-create one or two extra watches so the screen isn't empty.
+- **Wiring-assistant capture (Movement 5 close):** pre-run the *"add a soil sensor"* prompt once so you know the exact recipe Qwen returns, then capture it clean. Keep it to the **pin recipe only** (3s) — it's a punchline flash under the close, not a teaching beat.
 - **Make the actuator read on camera:** wire a bigger LED or a relay+lamp to the actuator GPIO (`ACTUATOR_PIN`, `ACTUATOR_ACTIVE_HIGH 0` for active-low) so "cut the heater" is visible. Still 100% real.
 - **Phone push:** `export NTFY_TOPIC=hearth-<unique>` + the free ntfy app, foregrounded, before recording — so the buzz + banner land on the hero take.
 - **Ship features #1, #2 and #3 (above) before the shoot** — the live feed + Test button carry the payoff; the wiring assistant carries the "baseline infrastructure" beat. Without them those beats are narrated over a static screen.
