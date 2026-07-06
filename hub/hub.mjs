@@ -138,14 +138,24 @@ function ingest(doc) {
   return true;
 }
 
-// Replace our view of desired cadences with the cloud's latest (nodeId → ms). Nodes the
+// The fastest cadence any sensor is currently set to (ms), or 0 when none is set. Used to
+// pace cloud syncs with the fastest sensor so a 500ms sensor isn't capped by a 1s debounce.
+let fastestCadenceMs = 0;
+
+// Replace our view of desired cadences with the cloud's latest (input id → ms). Inputs the
 // account hasn't set a cadence for simply won't appear — we send them no override.
 function applyCadences(cadences) {
   if (!cadences || typeof cadences !== 'object') return;
   desiredCadence.clear();
-  for (const [nodeId, ms] of Object.entries(cadences)) {
-    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) desiredCadence.set(nodeId, Math.round(ms));
+  let fastest = Infinity;
+  for (const [input, ms] of Object.entries(cadences)) {
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) {
+      const v = Math.round(ms);
+      desiredCadence.set(input, v);
+      if (v < fastest) fastest = v;
+    }
   }
+  fastestCadenceMs = Number.isFinite(fastest) ? fastest : 0;
 }
 
 function readJson(req) {
@@ -178,15 +188,25 @@ async function api(path, body, token) {
 }
 
 // Coalesce reading bursts into at most one cloud sync per debounce window, so remote
-// dashboards get near-realtime updates without a POST per reading.
+// dashboards get near-realtime updates without a POST per reading. The window ADAPTS to the
+// fastest set cadence: with a 500ms sensor we forward ~twice a second instead of once, so
+// sub-second cadence actually reaches the cloud-brokered dashboard. Floored so we never
+// hammer the backend faster than the fastest sensor could possibly produce fresh data.
 const SYNC_DEBOUNCE_MS = Number(process.env.HUB_SYNC_DEBOUNCE_MS || 1000);
+const SYNC_DEBOUNCE_MIN_MS = Number(process.env.HUB_SYNC_DEBOUNCE_MIN_MS || 250);
 let syncDebounce = null;
+function debounceMs() {
+  // No cadence set → keep the gentle 1s default. Otherwise track the fastest sensor,
+  // clamped to [MIN, default] so we neither hammer the backend nor slow a fast sensor down.
+  if (!fastestCadenceMs) return SYNC_DEBOUNCE_MS;
+  return Math.max(SYNC_DEBOUNCE_MIN_MS, Math.min(SYNC_DEBOUNCE_MS, fastestCadenceMs));
+}
 function scheduleSync() {
   if (syncDebounce) return;
   syncDebounce = setTimeout(() => {
     syncDebounce = null;
     syncToCloud();
-  }, SYNC_DEBOUNCE_MS);
+  }, debounceMs());
   if (syncDebounce.unref) syncDebounce.unref();
 }
 
