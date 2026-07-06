@@ -1,40 +1,42 @@
-HEARTH — read-aloud script, DASHBOARD cut (~2:45 at ~125 wpm)
-One screen, one lived scenario: describe a watch in plain words → it compiles → it fires on real hardware — all on the dashboard.
+HEARTH — read-aloud script, DASHBOARD cut (~2:50 at ~125 wpm)
+One screen, one lived scenario: describe a watch in plain words → it compiles → it fires on real hardware — then show how cheap + easy it is to build your own on top.
 Say the on-screen words: "Your home", "live", "Author", "watch", "local", "Fired · Actuated · Notified".
 Beat markers [0:00] are delivery pacing, not hard cuts. Breathe on the ellipses.
 
 
 [0:00 — to camera]
-Home automation is closed. Closed hubs, closed clouds, closed apps — you buy a gadget, and then you rent your own house back from whoever sold it to you.
+Home automation is closed. Closed hubs, closed clouds, closed apps — you rent your own house back from whoever sold you the gadget.
 So we opened the whole stack. This is Hearth — and this is my home, running on one screen.
 
 
-[0:15 — the dashboard: "Your home"]
+[0:13 — the dashboard: "Your home"]
 One dashboard. "Your home." Up top — my hubs, my devices, my sensors, my watches. Every number here is live… and every layer underneath is open source.
 
 
-[0:29 — Sensors: the live badge and the tiles]
-These are my live sensors. See that green dot — "live"? That's a real stream, straight off the hub sitting in my house. Every tile has a heartbeat — watch it pulse the moment a reading lands. And I can dial any sensor right here — from once a minute… down to twice a second… live.
+[0:26 — Sensors: the live badge and the tiles]
+These are my live sensors. That green dot — "live"? That's a live stream off my hub. Every tile has a heartbeat — watch it pulse when a reading lands. And I can dial any sensor right here — once a minute, or twice a second — live.
 
 
-[0:50 — Describe a watch → Author]
+[0:46 — Describe a watch → Author]
 Now the good part. I don't write code — I just say what I want.
 "If the nursery goes over seventy-eight, cut the heater and text me."
-I hit Author… and Qwen, on Alibaba Cloud, turns that one sentence into a running watch. There it is — when temperature is over seventy-eight, turn the heater off, notify me.
+I hit Author… and Qwen, on Alibaba Cloud, turns that one sentence into a running watch. There it is — over seventy-eight, heater off, notify me.
 And see that little "local" tag? That rule runs on the hub, in my house. Cut the internet — it still fires.
 
 
-[1:22 — make it fire, on real hardware]
-So let's make it real. I warm this sensor with my hand… and the tile climbs — seventy-six… seventy-eight… seventy-nine — the watch flashes, and watch the activity feed light up: Fired… Actuated… Notified.
-And — [phone buzzes] — there's my phone. Real sensor, real rule, real alert. Top to bottom, no cloud required.
+[1:16 — make it fire, on real hardware]
+So let's make it real. I warm this sensor with my hand… the tile climbs — seventy-six… seventy-eight… seventy-nine — the watch flashes, and the activity feed lights up: Fired… Actuated… Notified.
+And — [phone buzzes] — there's my phone. Real sensor, real rule, real alert. No cloud required.
 
 
-[1:55 — breadth, MCP, self-describing]
-And every sensor, every watch, is a standard MCP tool — so any agent, not just mine, can see my home and act on it.
-Plug in a new sensor and it introduces itself — what it can sense, what it can do — and it just shows up on this dashboard. No addresses. No setup.
+[1:45 — cheap, easy, a wiring AI: baseline infrastructure]
+And here's the part I love. This is baseline infrastructure. The hardware's a five-dollar chip and sensors that cost cents.
+Want your own setup? You don't touch a datasheet — you ask. I tell Qwen "add a soil sensor," and it walks me through the wiring — this pin, that pin, done.
+Plug it in, the node describes itself, and it shows up right here. Every device is a standard MCP tool — any agent can build on top.
 
 
 [2:18 — close, to camera]
-So that's a whole home — run from one screen, built on Qwen — and every single layer is open source.
-Self-host it. Run it offline. Swap the model. Build your own node.
-Clone it… and go run your house.
+A whole home — one screen, built on Qwen, open from the sensor to the cloud.
+Self-host it, run it offline, wire up your own node.
+This isn't the finished product — it's the platform you build it on.
+Clone it… and go build.
