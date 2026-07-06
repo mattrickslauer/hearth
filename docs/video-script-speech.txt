@@ -1,21 +1,40 @@
-HEARTH — read-aloud script, ECOSYSTEM-UNVEILING cut (~2:50 at ~120 wpm)
-Architecture-first: reveal the four open layers + the one contract that composes them.
-Say "watch" (the on-screen noun) and "compile" (the button word). Shipped vs buildable node list: see docs/06.
+HEARTH — read-aloud script, DASHBOARD cut (~2:45 at ~125 wpm)
+One screen, one lived scenario: describe a watch in plain words → it compiles → it fires on real hardware — all on the dashboard.
+Say the on-screen words: "Your home", "live", "Author", "watch", "local", "Fired · Actuated · Notified".
+Beat markers [0:00] are delivery pacing, not hard cuts. Breathe on the ellipses.
 
-Home automation is closed. Closed hubs, closed clouds, closed protocols — you rent your own house back from whoever sold you the gadget. Today we're opening the whole stack. This is Hearth — an open-source operating system for your home.
 
-Four open layers, held together by one idea: your hardware describes itself, and an AI wires it up.
+[0:00 — to camera]
+Home automation is closed. Closed hubs, closed clouds, closed apps — you buy a gadget, and then you rent your own house back from whoever sold it to you.
+So we opened the whole stack. This is Hearth — and this is my home, running on one screen.
 
-Start at the edge. A Hearth node is a cheap ESP32 you flash — and it introduces itself: here's what I can sense, here's what I can do. Temperature, a door, motion, distance, an RFID reader, a camera, a relay — the same self-describing contract for every one. Add a new sensor, nothing upstream changes — it just announces itself.
 
-Those nodes find your hub on their own — no addresses, no setup. The hub is the edge agent: a Raspberry Pi, a spare laptop. It runs the rule engine right there in your house, so your automations fire locally — and keep firing with the internet cut.
+[0:15 — the dashboard: "Your home"]
+One dashboard. "Your home." Up top — my hubs, my devices, my sensors, my watches. Every number here is live… and every layer underneath is open source.
 
-Above the hub sits the brain: Qwen, on Alibaba Cloud. This is where plain words become a running system — you describe what you want, and Qwen compiles it into a watch. And every capability of your home is exposed as an MCP tool, so any agent, not just ours, can see your devices and act. Open standard, not a walled garden.
 
-On top, any app — web, mobile, or a full simulator you can try with zero hardware.
+[0:29 — Sensors: the live badge and the tiles]
+These are my live sensors. See that green dot — "live"? That's a real stream, straight off the hub sitting in my house. Every tile has a heartbeat — watch it pulse the moment a reading lands. And I can dial any sensor right here — from once a minute… down to twice a second… live.
 
-Now look what you wire up from the same parts. Warmth and a heater. A doorway, a camera, an RFID tag — so the house knows who's home. Motion and light. A distance sensor watching a tank at the edge of the grid. Every one is the same three moves: plug it in, describe it, done.
 
-And it's not a mockup. I warm this board with my hand — the watch fires on the hub, the node lights up, my phone buzzes. The whole stack, end to end, on real hardware.
+[0:50 — Describe a watch → Author]
+Now the good part. I don't write code — I just say what I want.
+"If the nursery goes over seventy-eight, cut the heater and text me."
+I hit Author… and Qwen, on Alibaba Cloud, turns that one sentence into a running watch. There it is — when temperature is over seventy-eight, turn the heater off, notify me.
+And see that little "local" tag? That rule runs on the hub, in my house. Cut the internet — it still fires.
 
-Every layer is open source — self-host it, run it offline, build your own node. Clone it, and go wire up your house.
+
+[1:22 — make it fire, on real hardware]
+So let's make it real. I warm this sensor with my hand… and the tile climbs — seventy-six… seventy-eight… seventy-nine — the watch flashes, and watch the activity feed light up: Fired… Actuated… Notified.
+And — [phone buzzes] — there's my phone. Real sensor, real rule, real alert. Top to bottom, no cloud required.
+
+
+[1:55 — breadth, MCP, self-describing]
+And every sensor, every watch, is a standard MCP tool — so any agent, not just mine, can see my home and act on it.
+Plug in a new sensor and it introduces itself — what it can sense, what it can do — and it just shows up on this dashboard. No addresses. No setup.
+
+
+[2:18 — close, to camera]
+So that's a whole home — run from one screen, built on Qwen — and every single layer is open source.
+Self-host it. Run it offline. Swap the model. Build your own node.
+Clone it… and go run your house.
