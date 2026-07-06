@@ -25,8 +25,26 @@ DHT dht(DHT_PIN, DHT_TYPE);
 #endif
 
 static String   gNodeId;
-static uint32_t gLastSample = 0;
 static bool     gAnnounced  = false;
+static uint32_t gLastAnnounce = 0;    // last time we (re)sent our describe
+static uint8_t  gFailStreak   = 0;    // consecutive failed POSTs (→ rediscover the hub)
+static const uint32_t ANNOUNCE_INTERVAL_MS = 30000;  // re-announce describe every 30s
+static const uint8_t  FAIL_REDISCOVER      = 3;      // this many failures → re-browse mDNS
+
+// ── per-sensor cadence ──────────────────────────────────────────────────────
+// Each sensor samples on its OWN timer. Intervals start at the compile-time default but
+// the hub retunes them at runtime: every ingest POST comes back with the cadences the
+// dashboard set for THIS node's sensors, keyed by sensor key, e.g.
+//   {"ok":true,"cadences":{"board.temp":1000,"dht.humidity":5000}}
+// so a user can speed up one sensor without touching its siblings — no reflash.
+enum { S_BOARD_TEMP, S_DHT_TEMP, S_DHT_HUM, S_DIST, S_COUNT };
+static const char* const SENSOR_KEYS[S_COUNT] = { "board.temp", "dht.temp", "dht.humidity", "dist.range" };
+static uint32_t sInterval[S_COUNT] = { SAMPLE_INTERVAL_MS, SAMPLE_INTERVAL_MS, SAMPLE_INTERVAL_MS, SAMPLE_INTERVAL_MS };
+static uint32_t sLast[S_COUNT]     = { 0, 0, 0, 0 };
+// A sensor is enabled only if its hardware is configured; unconfigured ones are never sampled.
+static const bool sEnabled[S_COUNT] = { true, (DHT_PIN >= 0), (DHT_PIN >= 0), (DIST_TRIG_PIN >= 0) };
+static const uint32_t SAMPLE_MIN_MS = 500;    // floor — matches the backend clamp
+static const uint32_t SAMPLE_MAX_MS = 60000;  // ceiling — matches the backend clamp
 static String   gHubUrl;                 // resolved hub ingest URL (mDNS, or fallback)
 static bool     gMdnsUp     = false;
 static uint32_t gLastDiscover = 0;
@@ -82,6 +100,21 @@ static float chipTempC() {
   return temperatureRead();
 }
 
+#if DIST_TRIG_PIN >= 0
+// HC-SR04: pulse TRIG high 10µs, time the ECHO high pulse, convert to cm using the speed of
+// sound (~58µs per round-trip cm). Returns NAN on timeout (out of range / not wired) → null.
+static float distanceCm() {
+  digitalWrite(DIST_TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(DIST_TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(DIST_TRIG_PIN, LOW);
+  unsigned long us = pulseIn(DIST_ECHO_PIN, HIGH, 25000UL);  // ~25ms ≈ 4m round-trip
+  if (us == 0) return NAN;
+  return us / 58.0f;
+}
+#endif
+
 static bool wifiConfigured() { return strlen(WIFI_SSID) > 0; }
 
 // The self-description: identity + the menu of what this node can sense.
@@ -99,6 +132,9 @@ static String describeJson() {
   s += ",{\"key\":\"dht.temp\",\"kind\":\"temperature\",\"unit\":\"C\",\"pin\":" + String(DHT_PIN) + "}";
   s += ",{\"key\":\"dht.humidity\",\"kind\":\"humidity\",\"unit\":\"pct\",\"pin\":" + String(DHT_PIN) + "}";
 #endif
+#if DIST_TRIG_PIN >= 0
+  s += ",{\"key\":\"dist.range\",\"kind\":\"distance\",\"unit\":\"cm\",\"pin\":" + String(DIST_ECHO_PIN) + "}";
+#endif
   s += "]";
 #if ACTUATOR_PIN >= 0
   // What this node can DO — the hub POSTs here when a watch fires.
@@ -108,23 +144,42 @@ static String describeJson() {
   return s;
 }
 
-// A snapshot of current readings. Absent/failed sensors report null rather than
-// being dropped — a missing value is itself information the hub can reason about.
-static String readingsJson() {
-  String s = "{";
-  s += "\"type\":\"hearth.node.reading\",";
-  s += "\"id\":\"" + gNodeId + "\",";
-  s += "\"uptime_ms\":" + String((uint32_t)millis()) + ",";
-  s += "\"readings\":{";
-  s += "\"board.temp\":" + String(chipTempC(), 1);
+static bool postJson(const String& body);   // fwd decl — sampleDue posts; postJson is below
+
+// One sensor's current value as a JSON scalar. Absent/failed sensors report null rather
+// than being dropped — a missing value is itself information the hub can reason about.
+static String sensorValue(int i) {
+  if (i == S_BOARD_TEMP) return String(chipTempC(), 1);
 #if DHT_PIN >= 0
-  float t = dht.readTemperature();
-  float h = dht.readHumidity();
-  s += ",\"dht.temp\":"     + (isnan(t) ? String("null") : String(t, 1));
-  s += ",\"dht.humidity\":" + (isnan(h) ? String("null") : String(h, 1));
+  if (i == S_DHT_TEMP) { float t = dht.readTemperature(); return isnan(t) ? String("null") : String(t, 1); }
+  if (i == S_DHT_HUM)  { float h = dht.readHumidity();    return isnan(h) ? String("null") : String(h, 1); }
 #endif
-  s += "}}";
-  return s;
+#if DIST_TRIG_PIN >= 0
+  if (i == S_DIST) { float d = distanceCm(); return isnan(d) ? String("null") : String(d, 1); }
+#endif
+  return String("null");
+}
+
+// Sample every sensor whose own interval has elapsed and, if any are due, emit ONE reading
+// document carrying just those keys. Partial docs are fine end-to-end: the hub merges them
+// into its snapshot and the dashboard patches tiles per key — so each sensor streams at its
+// own cadence. Serial always prints; the network POST is opt-in (only once a hub is known).
+static void sampleDue() {
+  uint32_t now = millis();
+  String body = "{\"type\":\"hearth.node.reading\",\"id\":\"" + gNodeId +
+                "\",\"uptime_ms\":" + String(now) + ",\"readings\":{";
+  bool any = false;
+  for (int i = 0; i < S_COUNT; i++) {
+    if (!sEnabled[i] || now - sLast[i] < sInterval[i]) continue;
+    sLast[i] = now;
+    if (any) body += ",";
+    body += "\""; body += SENSOR_KEYS[i]; body += "\":"; body += sensorValue(i);
+    any = true;
+  }
+  if (!any) return;
+  body += "}}";
+  Serial.println("READING " + body);
+  postJson(body);
 }
 
 static void connectWifi() {
@@ -146,7 +201,38 @@ static void connectWifi() {
     Serial.println(" FAILED — continuing serial-only");
 }
 
-// Best-effort POST to the discovered hub. Returns true on a 2xx/3xx.
+// Retune per-sensor intervals from a hub ingest response carrying the node's cadences, e.g.
+//   {"ok":true,"cadences":{"board.temp":1000,"dht.humidity":5000}}
+// Hand-parsed (no JSON lib) to keep the node's footprint tiny. A sensor absent from the map
+// reverts to the compile-time default, so clearing a cadence in the dashboard restores it.
+// When the response has no "cadences" field at all we leave every interval untouched.
+static void applyCadence(const String& body) {
+  if (body.indexOf("\"cadences\"") < 0) return;
+  for (int i = 0; i < S_COUNT; i++) {
+    if (!sEnabled[i]) continue;
+    uint32_t next = SAMPLE_INTERVAL_MS;                 // default unless the map overrides it
+    String needle = String("\"") + SENSOR_KEYS[i] + "\"";
+    int k = body.indexOf(needle);
+    if (k >= 0) {
+      int c = body.indexOf(':', k + needle.length());
+      if (c >= 0) {
+        long ms = strtol(body.c_str() + c + 1, nullptr, 10);
+        if (ms > 0) {
+          next = (uint32_t)ms;
+          if (next < SAMPLE_MIN_MS) next = SAMPLE_MIN_MS;
+          if (next > SAMPLE_MAX_MS) next = SAMPLE_MAX_MS;
+        }
+      }
+    }
+    if (next != sInterval[i]) {
+      Serial.printf("[cadence] %s %u -> %u ms (set from dashboard)\n", SENSOR_KEYS[i], sInterval[i], next);
+      sInterval[i] = next;
+    }
+  }
+}
+
+// Best-effort POST to the discovered hub. Returns true on a 2xx/3xx. Also reads the hub's
+// response body, which may carry a dashboard-set sample cadence for this node.
 static bool postJson(const String& body) {
   if (WiFi.status() != WL_CONNECTED || gHubUrl.length() == 0) return false;
   HTTPClient http;
@@ -156,8 +242,20 @@ static bool postJson(const String& body) {
   http.addHeader("Content-Type", "application/json");
   int code = http.POST(body);
   Serial.printf("[post] %s -> %d\n", gHubUrl.c_str(), code);
+  bool ok = code >= 200 && code < 400;
+  if (ok) {
+    applyCadence(http.getString());
+    gFailStreak = 0;
+  } else if (++gFailStreak >= FAIL_REDISCOVER) {
+    // The hub stopped answering (down, or moved to a new IP) — drop it and re-browse mDNS
+    // on the next loop, then re-announce, so we recover without a node reboot.
+    Serial.println("[hub] no response — will rediscover");
+    gHubUrl = "";
+    gAnnounced = false;
+    gFailStreak = 0;
+  }
   http.end();
-  return code >= 200 && code < 400;
+  return ok;
 }
 
 // ─── hub discovery (mDNS / DNS-SD) ─────────────────────────────────────────
@@ -195,6 +293,11 @@ void setup() {
   pinMode(ACTUATOR_PIN, OUTPUT);
   setActuator(false); // start OFF
 #endif
+#if DIST_TRIG_PIN >= 0
+  pinMode(DIST_TRIG_PIN, OUTPUT);
+  pinMode(DIST_ECHO_PIN, INPUT);
+  digitalWrite(DIST_TRIG_PIN, LOW);
+#endif
   // Always announce over serial, even offline.
   Serial.println("DESCRIBE " + describeJson());
   connectWifi();
@@ -218,28 +321,30 @@ void loop() {
   if (gCmdServerUp) gCmdServer.handleClient(); // service any actuator command from the hub
 #endif
 
-  // Keep browsing until we know a hub — it may come online after the node does.
-  if (WiFi.status() == WL_CONNECTED && gHubUrl.length() == 0 &&
-      millis() - gLastDiscover >= 15000) {
+  const bool online = WiFi.status() == WL_CONNECTED;
+
+  // (Re)discover the hub whenever we don't have one — on boot, or after we lost contact
+  // (postJson clears gHubUrl after repeated failures). The node keeps browsing forever.
+  if (online && gHubUrl.length() == 0 && millis() - gLastDiscover >= 15000) {
     gLastDiscover = millis();
     gHubUrl = queryHub();
-    if (gHubUrl.length() > 0) gAnnounced = false;   // announce to the new hub
+    if (gHubUrl.length() > 0) gAnnounced = false;   // (re)announce to the (re)discovered hub
 #if ACTUATOR_PIN >= 0
     startCmdServer(); // Wi-Fi may have come up after boot; ensure the server is live
 #endif
   }
 
-  // Announce ourselves once, as soon as we can reach a hub.
-  if (!gAnnounced && gHubUrl.length() > 0 && WiFi.status() == WL_CONNECTED) {
-    gAnnounced = postJson(describeJson());
+  // Announce ourselves on first contact AND periodically thereafter, so a hub that restarted
+  // (and forgot us) re-learns our capabilities on its own — no node reboot needed.
+  if (online && gHubUrl.length() > 0 &&
+      (!gAnnounced || millis() - gLastAnnounce >= ANNOUNCE_INTERVAL_MS)) {
+    if (postJson(describeJson())) {
+      gAnnounced = true;
+      gLastAnnounce = millis();
+    }
   }
 
-  if (millis() - gLastSample >= SAMPLE_INTERVAL_MS) {
-    gLastSample = millis();
-    String reading = readingsJson();
-    Serial.println("READING " + reading);   // serial is the always-on channel
-    postJson(reading);                       // network is opt-in
-  }
+  sampleDue();   // each sensor emits on its own interval (serial always; network when paired)
 
   delay(20);
 }

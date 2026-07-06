@@ -75,11 +75,19 @@ resources:
         TABLESTORE_INSTANCE: ${env('TABLESTORE_INSTANCE')}
         ALI_ACCESS_KEY_ID: ${env('ALI_ACCESS_KEY_ID')}
         ALI_ACCESS_KEY_SECRET: ${env('ALI_ACCESS_KEY_SECRET')}
-        # Auth control plane (accounts + OTP) stays in-memory for now — its Tablestore
-        # tables (accounts/account_email/auth_otp) aren't provisioned yet, so pin these
-        # rather than inherit HEARTH_STORE. Flip to `tablestore` once those tables exist.
-        HEARTH_ACCOUNT_STORE: memory
-        HEARTH_OTP_STORE: memory
+        # Auth control plane (accounts + OTP) AND the hub-pairing registry — all durable on
+        # Tablestore so a redeploy no longer wipes accounts or unpairs hubs. The three auth
+        # tables (accounts/account_email/auth_otp) auto-create on first use (ensureAuthTables);
+        # the hub registry lives in the shared `hearth_home` table's `_hubs` partition.
+        HEARTH_ACCOUNT_STORE: tablestore
+        HEARTH_OTP_STORE: tablestore
+        # Realtime relay (cloud-brokered live readings → dashboard). The URLs aren't secret;
+        # the two secrets come from the deploy env and MUST match the relay container's env on
+        # agfarms (~/hearth-relay/relay.env). Unset → realtime off. See docs/realtime-relay.md.
+        RELAY_WS_URL: wss://hub-ws.agfarms.dev/live
+        RELAY_PUBLISH_URL: https://hub-ws.agfarms.dev/publish
+        RELAY_PUBLISH_SECRET: ${env('RELAY_PUBLISH_SECRET')}
+        RELAY_TICKET_SECRET: ${env('RELAY_TICKET_SECRET')}
         # Add once wired: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
       triggers:
         - triggerName: http

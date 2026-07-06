@@ -24,11 +24,13 @@ import {
   verifyOtp,
   verifySession,
   verifyHubToken,
+  issueWsTicket,
   assertAuthConfig,
   type AuthDeps,
 } from './auth';
-import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore } from './hubs';
+import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore, hubView } from './hubs';
 import { syncHubDevices } from './hub-devices';
+import { relayConfig, relayEnabled, publishToRelay } from './relay';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
@@ -57,6 +59,12 @@ function bearer(req: IncomingMessage): string | undefined {
   return typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : undefined;
 }
 
+// Sensible bounds for a node's sample cadence: fast enough to feel live, not so fast it
+// floods the LAN/hub, and capped at a minute so a "slow" node still checks in reasonably.
+const CADENCE_MIN_MS = 500;
+const CADENCE_MAX_MS = 60_000;
+const clampCadence = (ms: number): number => Math.min(CADENCE_MAX_MS, Math.max(CADENCE_MIN_MS, ms));
+
 /** Verify the session; on failure send 401 and return null so the caller returns early. */
 function requireSession(req: IncomingMessage, res: ServerResponse) {
   const session = verifySession(bearer(req));
@@ -72,6 +80,23 @@ function clientIp(req: IncomingMessage): string | undefined {
   const xff = req.headers['x-forwarded-for'];
   if (typeof xff === 'string' && xff) return xff.split(',')[0].trim();
   return req.socket?.remoteAddress ?? undefined;
+}
+
+/**
+ * Push a hub's just-synced readings to every browser the account has connected to the relay.
+ * Best-effort. Awaited by the caller BEFORE responding, because on Function Compute
+ * post-response async work may not run (the instance can freeze after the response).
+ */
+async function pushReadingsToAccount(accountId: string, body: Record<string, unknown>): Promise<void> {
+  if (!relayEnabled()) return;
+  const nodes = Array.isArray(body.nodes) ? body.nodes : [];
+  const payload = nodes
+    .map((n) => (n && typeof n === 'object' ? (n as Record<string, unknown>) : {}))
+    .filter((n) => typeof n.id === 'string')
+    .map((n) => ({ id: n.id as string, readings: (n.lastReading as Record<string, unknown>) ?? {} }));
+  if (!payload.length) return;
+  const message = JSON.stringify({ type: 'readings', at: Date.now(), nodes: payload });
+  await publishToRelay(accountId, message);
 }
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -180,7 +205,67 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const result = await syncHubDevices(store, { hubId: hub.id, hubName: hub.name, fw: hub.fw }, body);
       hub.lastSeenAt = Date.now(); // a device sync also proves liveness
       await getHubStore().save(hub);
-      return send(res, 200, result);
+      // Fan the fresh readings out to this account's live browsers over the gateway.
+      // Awaited (not fire-and-forget) so it actually runs before FC may freeze the instance.
+      await pushReadingsToAccount(claims.acc, body);
+      // Downlink: hand the hub the account's desired per-sensor sample cadences. The hub
+      // relays each to its node on the node's next ingest POST — the only downlink path.
+      return send(res, 200, { ...result, cadences: await store.getCadences() });
+    }
+
+    /* --- per-sensor sample cadence (frontend → backend → hub → node downlink) --- */
+
+    // Read the account's desired per-sensor cadences (input id "<node>.<key>" → ms).
+    if (path === '/inputs/cadence' && method === 'GET') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const store = await getStoreFor(session.sub);
+      return send(res, 200, { cadences: await store.getCadences() });
+    }
+
+    // Set one sensor's desired sample cadence. Takes effect within ~1 hub sync + 1 node cycle.
+    if (path === '/inputs/cadence' && method === 'POST') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const body = await readBody(req);
+      const input = typeof body.input === 'string' ? body.input : '';
+      if (!input) return send(res, 400, { error: 'input required' });
+      const store = await getStoreFor(session.sub);
+      // Only accept cadence for a sensor this account actually owns (via a paired hub).
+      const owns = (await store.listHubDevices()).some((s) =>
+        s.nodes.some((n) => n.sensors.some((se) => `${n.id}.${se.key}` === input)),
+      );
+      if (!owns) return send(res, 404, { error: 'unknown input' });
+      const raw = Number(body.intervalMs);
+      if (!Number.isFinite(raw)) return send(res, 400, { error: 'intervalMs must be a number' });
+      const intervalMs = Math.round(clampCadence(raw));
+      await store.setCadence(input, intervalMs);
+      return send(res, 200, { ok: true, input, intervalMs });
+    }
+
+    /* --- realtime (cloud-brokered WebSocket via the relay) --- */
+
+    // Browser asks "how do I open a live socket to my hub?" — autodiscovery + a scoped,
+    // short-lived ticket. No client config: the session JWT tells us the account, we find
+    // its hub, and hand back the relay wss URL + a ticket the relay verifies on connect.
+    if (path === '/live/ticket' && method === 'GET') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const cfg = relayConfig();
+      if (!cfg) return send(res, 200, { enabled: false });
+      const hubs = await getHubStore().listByAccount(session.sub);
+      const now = Date.now();
+      // Prefer an online hub; otherwise report the most recent so the UI can say "offline".
+      const views = hubs.map((h) => hubView(h, now)).sort((a, b) => Number(b.online) - Number(a.online) || b.createdAt - a.createdAt);
+      const hub = views[0];
+      if (!hub) return send(res, 200, { enabled: true, hub: null });
+      return send(res, 200, {
+        enabled: true,
+        hubId: hub.id,
+        online: hub.online,
+        wsUrl: cfg.wsUrl,
+        ticket: issueWsTicket(session.sub, hub.id),
+      });
     }
 
     // User-facing: require a signed-in session.

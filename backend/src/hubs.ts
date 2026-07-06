@@ -26,6 +26,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 import { hmacHex, issueHubToken, verifyHubToken } from './auth';
+import { HOME_TABLE, ensureHomeTable, tsDeleteRow, tsGetRange, tsGetRow, tsPutRow } from './tablestore';
 
 /** A hub is "online" if we've heard a heartbeat within this window (heartbeat cadence ~30s). */
 export const HUB_ONLINE_WINDOW_MS = 90_000;
@@ -137,10 +138,72 @@ class FileHubStore extends MemoryHubStore {
   }
 }
 
+/**
+ * Tablestore-backed hub registry — the production home for pairings, so a backend redeploy
+ * (which wipes in-memory state) no longer unpairs every hub. The registry is GLOBAL (claim
+ * lookup happens before we know the account), so every hub is a row in a reserved partition
+ * of the shared table: PK (account="_hubs", sk="h#<hubId>"), the whole Hub JSON in `data`.
+ *
+ * getById is a single-row get (the hot path — every heartbeat/sync re-checks the record).
+ * getByClaimCode and listByAccount scan the (tiny) `_hubs` partition; a handful of hubs makes
+ * a full partition sweep cheaper than maintaining secondary-index rows and their consistency.
+ */
+const HUBS_PARTITION = '_hubs';
+const hubSk = (id: string) => `h#${id}`;
+
+class TablestoreHubStore implements HubStore {
+  private async all(): Promise<Hub[]> {
+    const rows = await tsGetRange(HOME_TABLE, { account: HUBS_PARTITION, sk: 'h#' }, { account: HUBS_PARTITION, sk: 'h$' });
+    const out: Hub[] = [];
+    for (const r of rows) {
+      if (typeof r.attrs.data === 'string') {
+        try {
+          out.push(JSON.parse(r.attrs.data) as Hub);
+        } catch {
+          /* skip a corrupt row */
+        }
+      }
+    }
+    return out;
+  }
+  async create(hub: Hub): Promise<void> {
+    await ensureHomeTable();
+    await tsPutRow(HOME_TABLE, { account: HUBS_PARTITION, sk: hubSk(hub.id) }, { data: JSON.stringify(hub) });
+  }
+  async getById(id: string): Promise<Hub | null> {
+    const row = await tsGetRow(HOME_TABLE, { account: HUBS_PARTITION, sk: hubSk(id) });
+    if (!row || typeof row.data !== 'string') return null;
+    try {
+      return JSON.parse(row.data) as Hub;
+    } catch {
+      return null;
+    }
+  }
+  async getByClaimCode(code: string): Promise<Hub | null> {
+    const now = Date.now();
+    for (const h of await this.all()) {
+      if (h.claimCode && h.claimCode === code && (h.claimExpiresAt ?? 0) > now) return h;
+    }
+    return null;
+  }
+  async listByAccount(accountId: string): Promise<Hub[]> {
+    return (await this.all()).filter((h) => h.accountId === accountId);
+  }
+  async save(hub: Hub): Promise<void> {
+    await tsPutRow(HOME_TABLE, { account: HUBS_PARTITION, sk: hubSk(hub.id) }, { data: JSON.stringify(hub) });
+  }
+  async remove(id: string): Promise<void> {
+    await tsDeleteRow(HOME_TABLE, { account: HUBS_PARTITION, sk: hubSk(id) });
+  }
+}
+
 let hubStore: HubStore | null = null;
 export function getHubStore(): HubStore {
   if (!hubStore) {
-    if ((process.env.HEARTH_ACCOUNT_STORE || process.env.HEARTH_STORE) === 'file') {
+    const mode = process.env.HEARTH_ACCOUNT_STORE || process.env.HEARTH_STORE;
+    if (mode === 'tablestore') {
+      hubStore = new TablestoreHubStore();
+    } else if (mode === 'file') {
       const dir = process.env.HEARTH_DATA_DIR || join(process.cwd(), '.data');
       hubStore = FileHubStore.open(join(dir, 'hubs.json'));
     } else {

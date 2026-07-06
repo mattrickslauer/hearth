@@ -2,6 +2,7 @@ import { Redirect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Linking,
   Platform,
   Pressable,
@@ -22,10 +23,13 @@ import {
   authorWatch,
   deleteWatch,
   describeHome,
+  listCadences,
   listEvents,
   listWatches,
   readInput,
+  setCadence,
   updateWatch,
+  type Cadences,
   type HomeCapability,
   type HomeModel,
   type Reading,
@@ -33,6 +37,7 @@ import {
   type Watch,
 } from '@/lib/home';
 import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
+import { useHubLive, type LiveStatus } from '@/lib/live';
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 // Give the scroll frame a bounded height on web so the ScrollView actually scrolls
@@ -48,6 +53,28 @@ function ago(ts: number): string {
   if (h < 24) return `${h}h ago`;
   return `${Math.round(h / 24)}d ago`;
 }
+
+// Slider snap points for a sensor's sample rate (ms). Bounds mirror the backend clamp
+// (500ms–60s); log-ish spacing so the fast end isn't cramped.
+const CADENCE_STOPS = [500, 1000, 2000, 5000, 10000, 30000, 60000];
+// A sensor with no explicit cadence runs at the firmware default — assume it for the TTL bar.
+const DEFAULT_CADENCE_MS = 5000;
+const fmtRate = (ms: number): string => `${ms / 1000}s`;
+const nearestStop = (ms: number): number => {
+  let best = CADENCE_STOPS[0];
+  for (const s of CADENCE_STOPS) if (Math.abs(s - ms) < Math.abs(best - ms)) best = s;
+  return best;
+};
+
+// How each realtime WebSocket state reads in the header. `tone` drives colour + animation:
+// live = connected & streaming, pending = negotiating/reconnecting, down = no live socket.
+const LIVE_META: Record<LiveStatus, { label: string; tone: 'live' | 'pending' | 'down' }> = {
+  live: { label: 'live', tone: 'live' },
+  connecting: { label: 'connecting…', tone: 'pending' },
+  offline: { label: 'hub offline', tone: 'down' },
+  unconfigured: { label: 'realtime off', tone: 'down' },
+  off: { label: 'disconnected', tone: 'down' },
+};
 
 function formatValue(r: Reading | null, cap: HomeCapability): string {
   if (!r) return '—';
@@ -80,6 +107,7 @@ export default function DashboardScreen() {
   const [watches, setWatches] = useState<Watch[] | null>(null);
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [readings, setReadings] = useState<Record<string, Reading | null>>({});
+  const [cadences, setCadences] = useState<Cadences>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -102,16 +130,18 @@ export default function DashboardScreen() {
     setLoading(true);
     setError(null);
     try {
-      const [h, w, e, hb] = await Promise.all([
+      const [h, w, e, hb, cd] = await Promise.all([
         describeHome(token),
         listWatches(token),
         listEvents(20, token),
         listHubs(token).catch(() => [] as HubView[]),
+        listCadences(token).catch(() => ({}) as Cadences),
       ]);
       setHome(h);
       setWatches(w);
       setEvents(e);
       setHubs(hb);
+      setCadences(cd);
       const sensors = h.capabilities.filter((c) => c.kind === 'sensor');
       const pairs = await Promise.all(
         sensors.map(async (c) => [c.id, await readInput(c.id, token).catch(() => null)] as const),
@@ -127,6 +157,17 @@ export default function DashboardScreen() {
   useEffect(() => {
     if (status === 'signedIn') void load();
   }, [status, load]);
+
+  // Realtime: auto-discovers the account's hub and opens a secure, cloud-brokered
+  // WebSocket (via Alibaba API Gateway) that streams readings and patches tiles in place.
+  // Degrades silently to the load-on-mount + manual refresh path when realtime isn't
+  // provisioned or the hub is offline.
+  const liveStatus = useHubLive(
+    token,
+    useCallback((updates: Record<string, Reading>) => {
+      setReadings((prev) => ({ ...prev, ...updates }));
+    }, []),
+  );
 
   const submitWish = async () => {
     if (!wish.trim() || authoring) return;
@@ -214,6 +255,23 @@ export default function DashboardScreen() {
       setHubs((prev) => (prev ? prev.filter((h) => h.id !== hub.id) : prev));
     } catch (err) {
       setHubError((err as Error).message);
+    }
+  };
+
+  // Ask one sensor to sample faster/slower. Optimistic: reflect the choice at once, then let
+  // the hub relay it to the node — that sensor's readings speed up within a few seconds.
+  const changeCadence = async (input: string, ms: number) => {
+    const prev = cadences[input];
+    setCadences((c) => ({ ...c, [input]: ms }));
+    try {
+      await setCadence(input, ms, token);
+    } catch {
+      setCadences((c) => {
+        const next = { ...c };
+        if (prev == null) delete next[input];
+        else next[input] = prev;
+        return next;
+      });
     }
   };
 
@@ -410,20 +468,20 @@ export default function DashboardScreen() {
           {/* sensors */}
           {sensors.length ? (
             <View style={styles.section}>
-              <Text style={[styles.sectionTitle, { color: theme.text }]}>Sensors</Text>
+              <View style={styles.sensorsHead}>
+                <Text style={[styles.sectionTitle, { color: theme.text }]}>Sensors</Text>
+                <LiveIndicator theme={theme} status={liveStatus} />
+              </View>
               <View style={styles.tileGrid}>
                 {sensors.map((c) => (
-                  <View
+                  <SensorTile
                     key={c.id}
-                    style={[styles.tile, { backgroundColor: theme.card, borderColor: theme.border }]}>
-                    <Text style={styles.tileIcon}>{c.icon}</Text>
-                    <Text style={[styles.tileValue, { color: theme.text }]} numberOfLines={1}>
-                      {formatValue(readings[c.id] ?? null, c)}
-                    </Text>
-                    <Text style={[styles.tileLabel, { color: theme.textMuted }]} numberOfLines={1}>
-                      {c.label}
-                    </Text>
-                  </View>
+                    theme={theme}
+                    cap={c}
+                    reading={readings[c.id] ?? null}
+                    active={cadences[c.id]}
+                    onChange={(ms) => changeCadence(c.id, ms)}
+                  />
                 ))}
               </View>
             </View>
@@ -580,6 +638,153 @@ function Stat({ theme, value, label }: { theme: ReturnType<typeof useTheme>; val
   );
 }
 
+// Realtime connection status, driven entirely by the WebSocket lifecycle (via useHubLive):
+// a green pulsing dot while the socket is open and streaming, an amber blink while it's
+// negotiating/reconnecting, and a steady muted dot when there's no live socket.
+function LiveIndicator({ theme, status }: { theme: ReturnType<typeof useTheme>; status: LiveStatus }) {
+  const meta = LIVE_META[status];
+  const tone = meta.tone;
+  const color = tone === 'live' ? theme.success : tone === 'pending' ? theme.warn : theme.textMuted;
+  const [pulse] = useState(() => new Animated.Value(0.9));
+  useEffect(() => {
+    if (tone === 'down') {
+      pulse.stopAnimation();
+      pulse.setValue(0.9);
+      return;
+    }
+    const dur = tone === 'live' ? 1100 : 480; // slow breathe when live, quick blink when connecting
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 0.25, duration: dur, useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: dur, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [tone, pulse]);
+  return (
+    <View style={styles.liveBadge}>
+      <Animated.View style={[styles.liveDot, { backgroundColor: color, opacity: pulse }]} />
+      <Text style={[styles.liveText, { color }]}>{meta.label}</Text>
+    </View>
+  );
+}
+
+function SensorTile({
+  theme,
+  cap,
+  reading,
+  active,
+  onChange,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  cap: HomeCapability;
+  reading: Reading | null;
+  active?: number;
+  onChange: (ms: number) => void;
+}) {
+  // The interval this sensor is actually running at (falls back to the firmware default).
+  const effectiveMs = active ?? DEFAULT_CADENCE_MS;
+  const [pulse] = useState(() => new Animated.Value(0));
+  const [ttl] = useState(() => new Animated.Value(0));
+  const ts = reading?.ts;
+
+  // Every fresh reading (its timestamp changes) fires a pulse and refills the TTL bar, which
+  // then drains over the sensor's own interval — a visible heartbeat you can watch speed up.
+  useEffect(() => {
+    if (ts == null) return;
+    pulse.setValue(1);
+    Animated.timing(pulse, { toValue: 0, duration: 800, useNativeDriver: true }).start();
+    ttl.setValue(1);
+    const drain = Animated.timing(ttl, { toValue: 0, duration: effectiveMs, useNativeDriver: false });
+    drain.start();
+    return () => drain.stop();
+  }, [ts, effectiveMs, pulse, ttl]);
+
+  const ring = {
+    opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0, 0.55] }),
+    transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [2.6, 1] }) }],
+  };
+  const ttlWidth = ttl.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
+
+  return (
+    <View style={[styles.tile, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <View style={styles.tileTop}>
+        <Text style={styles.tileIcon}>{cap.icon}</Text>
+        <View style={styles.pulseWrap}>
+          <Animated.View style={[styles.pulseRing, { borderColor: theme.ember }, ring]} />
+          <View style={[styles.pulseDot, { backgroundColor: reading ? theme.ember : theme.textMuted }]} />
+        </View>
+      </View>
+      <Text style={[styles.tileValue, { color: theme.text }]} numberOfLines={1}>
+        {formatValue(reading, cap)}
+      </Text>
+      <Text style={[styles.tileLabel, { color: theme.textMuted }]} numberOfLines={1}>
+        {cap.label}
+      </Text>
+      {/* TTL: full on each receive, drains toward the next expected reading */}
+      <View style={[styles.ttlTrack, { backgroundColor: theme.backgroundElement }]}>
+        <Animated.View style={[styles.ttlFill, { backgroundColor: theme.ember, width: ttlWidth }]} />
+      </View>
+      <CadenceSlider theme={theme} valueMs={effectiveMs} isSet={active != null} onChange={onChange} />
+    </View>
+  );
+}
+
+// A tiny stepped slider (500ms–60s) on React Native's built-in responder props (what
+// PanResponder wraps) — no refs, no worklets, so it behaves identically on web and native.
+// Commits the chosen rate on release.
+function CadenceSlider({
+  theme,
+  valueMs,
+  isSet,
+  onChange,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  valueMs: number;
+  isSet: boolean;
+  onChange: (ms: number) => void;
+}) {
+  const [w, setW] = useState(0);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+
+  const baseIdx = Math.max(0, CADENCE_STOPS.indexOf(nearestStop(valueMs)));
+  const idx = dragIdx ?? baseIdx;
+  const frac = idx / (CADENCE_STOPS.length - 1);
+
+  const posToIdx = (x: number): number => {
+    if (w <= 0) return idx;
+    const f = Math.max(0, Math.min(1, x / w));
+    return Math.round(f * (CADENCE_STOPS.length - 1));
+  };
+
+  const lit = isSet || dragIdx != null;
+  return (
+    <View style={styles.sliderRow}>
+      <View
+        style={styles.sliderTrackWrap}
+        onLayout={(ev) => setW(ev.nativeEvent.layout.width)}
+        onStartShouldSetResponder={() => true}
+        onMoveShouldSetResponder={() => true}
+        onResponderGrant={(e) => setDragIdx(posToIdx(e.nativeEvent.locationX))}
+        onResponderMove={(e) => setDragIdx(posToIdx(e.nativeEvent.locationX))}
+        onResponderRelease={(e) => {
+          const i = posToIdx(e.nativeEvent.locationX);
+          setDragIdx(null);
+          onChange(CADENCE_STOPS[i]);
+        }}
+        onResponderTerminate={() => setDragIdx(null)}>
+        <View style={[styles.sliderTrack, { backgroundColor: theme.backgroundElement }]} />
+        <View style={[styles.sliderFill, { backgroundColor: theme.emberDeep, width: `${frac * 100}%` }]} />
+        <View
+          style={[styles.sliderThumb, { backgroundColor: theme.ember, borderColor: theme.card, left: `${frac * 100}%` }]}
+        />
+      </View>
+      <Text style={[styles.sliderVal, { color: lit ? theme.ember : theme.textMuted }]}>{fmtRate(CADENCE_STOPS[idx])}</Text>
+    </View>
+  );
+}
+
 function Tag({ theme, on, text }: { theme: ReturnType<typeof useTheme>; on?: boolean; text: string }) {
   return (
     <View
@@ -656,19 +861,43 @@ const styles = StyleSheet.create({
 
   section: { gap: Spacing.three },
   sectionTitle: { fontFamily: Fonts?.sans, fontSize: 15, fontWeight: '700', letterSpacing: 0.2 },
+  sensorsHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  liveBadge: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  liveDot: { width: 7, height: 7, borderRadius: 4 },
+  liveText: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '700', letterSpacing: 0.4, textTransform: 'uppercase' },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.three },
   tile: {
-    minWidth: 120,
+    minWidth: 168,
     flexGrow: 1,
+    flexBasis: 168,
+    maxWidth: 260,
     borderRadius: Radius.md,
     borderWidth: 1,
     padding: Spacing.three,
     gap: 4,
   },
+  tileTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   tileIcon: { fontSize: 18 },
   tileValue: { fontFamily: Fonts?.sans, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 },
   tileLabel: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '600' },
+
+  // pulse — a heartbeat ping in the tile corner on every fresh reading
+  pulseWrap: { width: 12, height: 12, alignItems: 'center', justifyContent: 'center' },
+  pulseRing: { position: 'absolute', width: 12, height: 12, borderRadius: 6, borderWidth: 1.5 },
+  pulseDot: { width: 6, height: 6, borderRadius: 3 },
+
+  // TTL — a bar that refills on receive and drains toward the next expected reading
+  ttlTrack: { height: 3, borderRadius: 2, marginTop: 6, overflow: 'hidden' },
+  ttlFill: { height: 3, borderRadius: 2 },
+
+  // slider — stepped sample-rate control per sensor
+  sliderRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, marginTop: 8 },
+  sliderTrackWrap: { flex: 1, height: 22, justifyContent: 'center' },
+  sliderTrack: { height: 4, borderRadius: 2 },
+  sliderFill: { position: 'absolute', height: 4, borderRadius: 2, left: 0 },
+  sliderThumb: { position: 'absolute', width: 14, height: 14, borderRadius: 7, borderWidth: 2, marginLeft: -7 },
+  sliderVal: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700', minWidth: 34, textAlign: 'right' },
 
   watchHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   watchTitle: { flex: 1, fontFamily: Fonts?.sans, fontSize: 16, fontWeight: '700' },

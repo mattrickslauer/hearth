@@ -36,6 +36,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { homedir, hostname, platform } from 'node:os';
 import { dirname, join } from 'node:path';
+import { attachWebSocket } from './ws.mjs';
 
 import { createRuntime } from './runtime.mjs';
 
@@ -83,6 +84,25 @@ let accountId = state.accountId || null;
 
 // ── node registry (LAN side) ──────────────────────────────────────────────────
 const nodes = new Map();
+// Desired per-sensor sample cadence in ms (input id "<node>.<key>" → ms), learned from the
+// cloud on each device sync. We hand each node its own sensors' cadences in the HTTP response
+// to its next ingest POST — the node polls us by POSTing, so its POST is the downlink carrier
+// (no node server). Keyed by full input id upstream; handed to the node keyed by bare sensor key.
+const desiredCadence = new Map();
+
+// The cadences for one node, keyed by bare sensor key (strip the "<node>." prefix) — this is
+// exactly what the node needs to retune its own per-sensor timers. Empty = no overrides.
+function cadencesForNode(nodeId) {
+  const prefix = `${nodeId}.`;
+  const out = {};
+  for (const [input, ms] of desiredCadence) {
+    if (input.startsWith(prefix)) out[input.slice(prefix.length)] = ms;
+  }
+  return out;
+}
+// LAN realtime channel (browser dashboards on the same network). Set in main() once the
+// HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
+let live = null;
 
 // The watch runtime: evaluates compiled watches against live node readings and fires
 // (actuate a node + push a phone notification) on a rising edge. It shares the `nodes`
@@ -109,11 +129,20 @@ function ingest(doc, addr) {
     const acts = (doc.actuators || []).map((a) => a.key).join(', ');
     console.log(`[hub] ${known ? 're-announce' : '+ NEW NODE'} ${id} (${doc.board || '?'}) can sense: ${sensors}${acts ? ` · can do: ${acts}` : ''}`);
     if (!known) queueMicrotask(syncToCloud); // push a newly-discovered node up promptly
+    // Tell live dashboards a (possibly new) node exists so its sensor tiles appear at once.
+    if (live) live.broadcast({ type: 'describe', node: id, at: Date.now(), describe: doc });
   } else if (doc.type === 'hearth.node.reading') {
-    entry.lastReading = doc.readings || null;
+    // Merge, don't replace: with per-sensor cadence a reading doc may carry only the sensors
+    // that were due, so keep the last value of the others in our snapshot.
+    entry.lastReading = { ...(entry.lastReading || {}), ...(doc.readings || {}) };
     entry.readingCount += 1;
     console.log(`[hub] ${id} reading #${entry.readingCount}: ${JSON.stringify(doc.readings)}`);
-    nodes.set(id, entry);
+    // Fan the reading out to LAN dashboards the instant it lands — the direct realtime path.
+    if (live) live.broadcast({ type: 'reading', node: id, at: Date.now(), readings: doc.readings || {} });
+    // And nudge a cloud sync so remote (cloud-brokered) dashboards update promptly too,
+    // coalescing bursts instead of waiting out the 15s timer.
+    scheduleSync();
+    nodes.set(id, entry); // ensure the registry has this node before the runtime resolves its address
     runtime.onReading(doc); // feed the engine + fire watches on this fresh reading
     return true;
   } else {
@@ -122,6 +151,26 @@ function ingest(doc, addr) {
 
   nodes.set(id, entry);
   return true;
+}
+
+// The fastest cadence any sensor is currently set to (ms), or 0 when none is set. Used to
+// pace cloud syncs with the fastest sensor so a 500ms sensor isn't capped by a 1s debounce.
+let fastestCadenceMs = 0;
+
+// Replace our view of desired cadences with the cloud's latest (input id → ms). Inputs the
+// account hasn't set a cadence for simply won't appear — we send them no override.
+function applyCadences(cadences) {
+  if (!cadences || typeof cadences !== 'object') return;
+  desiredCadence.clear();
+  let fastest = Infinity;
+  for (const [input, ms] of Object.entries(cadences)) {
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) {
+      const v = Math.round(ms);
+      desiredCadence.set(input, v);
+      if (v < fastest) fastest = v;
+    }
+  }
+  fastestCadenceMs = Number.isFinite(fastest) ? fastest : 0;
 }
 
 function readJson(req) {
@@ -153,6 +202,29 @@ async function api(path, body, token) {
   return { ok: res.ok, status: res.status, data };
 }
 
+// Coalesce reading bursts into at most one cloud sync per debounce window, so remote
+// dashboards get near-realtime updates without a POST per reading. The window ADAPTS to the
+// fastest set cadence: with a 500ms sensor we forward ~twice a second instead of once, so
+// sub-second cadence actually reaches the cloud-brokered dashboard. Floored so we never
+// hammer the backend faster than the fastest sensor could possibly produce fresh data.
+const SYNC_DEBOUNCE_MS = Number(process.env.HUB_SYNC_DEBOUNCE_MS || 1000);
+const SYNC_DEBOUNCE_MIN_MS = Number(process.env.HUB_SYNC_DEBOUNCE_MIN_MS || 250);
+let syncDebounce = null;
+function debounceMs() {
+  // No cadence set → keep the gentle 1s default. Otherwise track the fastest sensor,
+  // clamped to [MIN, default] so we neither hammer the backend nor slow a fast sensor down.
+  if (!fastestCadenceMs) return SYNC_DEBOUNCE_MS;
+  return Math.max(SYNC_DEBOUNCE_MIN_MS, Math.min(SYNC_DEBOUNCE_MS, fastestCadenceMs));
+}
+function scheduleSync() {
+  if (syncDebounce) return;
+  syncDebounce = setTimeout(() => {
+    syncDebounce = null;
+    syncToCloud();
+  }, debounceMs());
+  if (syncDebounce.unref) syncDebounce.unref();
+}
+
 let syncing = false;
 // Push the current registry to Hearth Cloud, authenticated with the in-memory hub token.
 // No-op (LAN ingest keeps working) until paired. Serialized so a slow sync can't overlap.
@@ -163,6 +235,8 @@ async function syncToCloud() {
     const { ok, status, data } = await api('/hub/devices', { platform: platform(), nodes: [...nodes.values()] }, hubToken);
     if (ok) {
       console.log(`[hub→cloud] synced ${data.nodes ?? '?'} node(s), ${data.readings ?? 0} reading(s)`);
+      // Absorb the account's desired per-node cadences; each node picks its up on next ingest.
+      applyCadences(data.cadences);
     } else if (status === 401 || status === 403) {
       // Token invalid or hub unpaired → drop it and re-pair. Re-enroll surfaces a fresh code.
       console.log(`[hub→cloud] rejected ${status}: ${data.error || 'unpaired'} — re-pairing.`);
@@ -278,8 +352,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === INGEST_PATH) {
     const doc = await readJson(req);
     const ok = ingest(doc, req.socket?.remoteAddress);
+    // Downlink: hand this node the per-sensor cadences the account set for its inputs (keyed
+    // by bare sensor key). Always present (possibly {}) so the node can tell "cleared" from
+    // "unspoken" and revert cleared sensors to their default.
     res.writeHead(ok ? 200 : 400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok }));
+    res.end(JSON.stringify(ok && doc && doc.id ? { ok, cadences: cadencesForNode(doc.id) } : { ok }));
     return;
   }
   res.writeHead(404, { 'content-type': 'application/json' });
@@ -305,7 +382,13 @@ async function main() {
   console.log(`[hearth-hub] backend ${BACKEND_URL}  name "${HUB_NAME}"  state ${STATE_DIR}`);
 
   await new Promise((resolve) => server.listen(PORT, '0.0.0.0', resolve));
-  console.log(`[hub] ingest listening on :${PORT} (POST ${INGEST_PATH}, GET /nodes)`);
+  // Realtime LAN channel: a browser on the same network subscribes at ws://<hub>:PORT/live
+  // and gets a snapshot of the current registry, then a live push on every reading.
+  live = attachWebSocket(server, {
+    path: '/live',
+    onConnect: (send) => send({ type: 'snapshot', at: Date.now(), nodes: [...nodes.values()] }),
+  });
+  console.log(`[hub] ingest listening on :${PORT} (POST ${INGEST_PATH}, GET /nodes, WS /live)`);
   const bonjour = await startMdns();
 
   if (hubToken) console.log(`  Already paired (hub ${state.hubId}, account ${accountId}). Heartbeating + syncing.\n`);
@@ -320,6 +403,8 @@ async function main() {
   const shutdown = () => {
     console.log('\n[hub] shutting down…');
     clearInterval(syncTimer);
+    if (syncDebounce) clearTimeout(syncDebounce);
+    if (live) live.close();
     if (bonjour) bonjour.unpublishAll(() => bonjour.destroy());
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500);

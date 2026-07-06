@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import nodemailer, { type Transporter } from 'nodemailer';
 
-import { getTablestore, tsDeleteRow, tsGetRow, tsPutRow, tsUpdatePut } from './tablestore';
+import { ensureTable, getTablestore, tsDeleteRow, tsGetRow, tsPutRow, tsUpdatePut } from './tablestore';
 
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
 const MAX_ATTEMPTS = 5;
@@ -79,9 +79,11 @@ const OTP_TABLE = 'auth_otp';
  *  visible across FC instances (request-otp and verify-otp may hit different ones). */
 class TablestoreOtpStore implements OtpStore {
   async put(email: string, rec: OtpRecord): Promise<void> {
+    await ensureAuthTables();
     await tsPutRow(OTP_TABLE, { email }, { codeHash: rec.codeHash, expiresAt: rec.expiresAt, attempts: rec.attempts });
   }
   async get(email: string): Promise<OtpRecord | null> {
+    await ensureAuthTables();
     const row = await tsGetRow(OTP_TABLE, { email });
     if (!row) return null;
     const rec: OtpRecord = {
@@ -211,6 +213,20 @@ export class FileAccountStore implements AccountStore {
 const ACCOUNTS_TABLE = 'accounts'; // PK [id:STRING] → email, createdAt, lastLoginAt
 const ACCOUNT_EMAIL_TABLE = 'account_email'; // PK [email:STRING] → id  (email→id lookup)
 
+// Auto-create the three auth tables on first Tablestore use (idempotent), so flipping
+// HEARTH_ACCOUNT_STORE/HEARTH_OTP_STORE to `tablestore` can't fail on a missing table.
+let authTablesReady: Promise<void> | null = null;
+function ensureAuthTables(): Promise<void> {
+  if (!authTablesReady) {
+    authTablesReady = Promise.all([
+      ensureTable(ACCOUNTS_TABLE, ['id']),
+      ensureTable(ACCOUNT_EMAIL_TABLE, ['email']),
+      ensureTable(OTP_TABLE, ['email']),
+    ]).then(() => undefined);
+  }
+  return authTablesReady;
+}
+
 /**
  * Tablestore-backed account store — the production home for signups. Two tables so
  * both access patterns are single-row gets (no scans): `accounts` keyed by id (the
@@ -222,6 +238,7 @@ const ACCOUNT_EMAIL_TABLE = 'account_email'; // PK [email:STRING] → id  (email
  */
 export class TablestoreAccountStore implements AccountStore {
   async upsertByEmail(email: string): Promise<Account> {
+    await ensureAuthTables();
     const now = Date.now();
     const idx = await tsGetRow(ACCOUNT_EMAIL_TABLE, { email });
     if (idx?.id) {
@@ -239,6 +256,7 @@ export class TablestoreAccountStore implements AccountStore {
     return { id, email, createdAt: now, lastLoginAt: now };
   }
   async getById(id: string): Promise<Account | null> {
+    await ensureAuthTables();
     const row = await tsGetRow(ACCOUNTS_TABLE, { id });
     if (!row) return null;
     return { id, email: String(row.email), createdAt: Number(row.createdAt), lastLoginAt: Number(row.lastLoginAt) };
@@ -322,8 +340,10 @@ function safeEqualHex(a: string, b: string): boolean {
 const JWT_ISS = 'hearth';
 const JWT_AUD = 'hearth-app';
 const JWT_AUD_HUB = 'hearth-hub'; // audience for hub (edge-agent) tokens — a distinct identity
+const JWT_AUD_WS = 'hearth-ws'; // audience for realtime WebSocket register tickets
 const JWT_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
 const HUB_TOKEN_TTL_SEC = 180 * 24 * 60 * 60; // 180 days; revocation is via the hub-record check on heartbeat
+const WS_TICKET_TTL_SEC = 90; // realtime tickets are single-use-ish and short — just long enough to connect + register
 
 interface SessionPayload {
   sub: string; // account id
@@ -421,6 +441,31 @@ export function verifyHubToken(token: string | undefined): HubTokenPayload | nul
 /** Keyed HMAC-SHA256 (hex) over an arbitrary string — used to store enrollment-token hashes. */
 export function hmacHex(input: string): string {
   return createHmac('sha256', sessionSecret()).update(input).digest('hex');
+}
+
+/**
+ * Signing key for realtime WebSocket tickets. Distinct from the session secret so the relay
+ * (which verifies these tickets) holds only a scoped, relay-specific key rather than the key
+ * that signs user sessions. Falls back to the session secret for local dev where RELAY_* is
+ * unset. Keep RELAY_TICKET_SECRET identical on the backend deploy env and the relay.
+ */
+function wsTicketSecret(): string {
+  return process.env.RELAY_TICKET_SECRET || sessionSecret();
+}
+
+/**
+ * A short-lived (90s) ticket the browser presents to the relay when opening its WebSocket
+ * (as the `?ticket=` query param). The relay verifies it with the same RELAY_TICKET_SECRET
+ * and joins the socket to `sub`'s channel — so no long-lived credential ever reaches the
+ * browser. Bound to a specific hub for clarity/auditing.
+ */
+export function issueWsTicket(accountId: string, hubId: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64urlJson(JWT_HEADER);
+  const payload = b64urlJson({ iss: JWT_ISS, sub: accountId, hub: hubId, aud: JWT_AUD_WS, iat: now, exp: now + WS_TICKET_TTL_SEC });
+  const signingInput = `${header}.${payload}`;
+  const sig = createHmac('sha256', wsTicketSecret()).update(signingInput).digest('base64url');
+  return `${signingInput}.${sig}`;
 }
 
 /* --------------------------------------------------------------- email (Zepto) */

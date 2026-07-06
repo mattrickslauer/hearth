@@ -98,6 +98,10 @@ export interface HomeStore {
   putHubDevices(snap: HubDeviceSnapshot): Promise<void>;
   /** All paired hubs' latest device snapshots. */
   listHubDevices(): Promise<HubDeviceSnapshot[]>;
+  /** The desired per-sensor sample cadence (input id "<node>.<key>" → ms) the account requested. */
+  getCadences(): Promise<Record<string, number>>;
+  /** Set (or clear, when ms is null) one sensor's desired sample cadence in milliseconds. */
+  setCadence(input: string, intervalMs: number | null): Promise<void>;
 }
 
 /** Compute an aggregate over a window ending at `now` (numbers only for mean/min/max). */
@@ -123,6 +127,7 @@ interface StoreSnapshot {
   events: RunEventRow[];
   readings: [string, Reading[]][];
   hubDevices: HubDeviceSnapshot[];
+  cadences: [string, number][];
 }
 
 const emptyModel = (): HomeModel => ({ zones: [], nodes: [], capabilities: [] });
@@ -134,6 +139,9 @@ export class MemoryStore implements HomeStore {
   protected records = new Map<string, RecordPolicy>();
   protected events: RunEventRow[] = [];
   protected hubDevices = new Map<string, HubDeviceSnapshot>();
+  // Per-sensor desired sample cadence in ms (input id "<node>.<key>" → ms). Relayed to the
+  // owning hub on its next device sync, which in turn tells the node on its next ingest POST.
+  protected cadences = new Map<string, number>();
 
   /**
    * A new home is EMPTY — no zones, devices, watches, or readings. Pass seed=true
@@ -159,6 +167,7 @@ export class MemoryStore implements HomeStore {
       events: this.events,
       readings: [...this.readings.entries()],
       hubDevices: [...this.hubDevices.values()],
+      cadences: [...this.cadences.entries()],
     };
   }
   protected restore(s: Partial<StoreSnapshot>): void {
@@ -168,6 +177,7 @@ export class MemoryStore implements HomeStore {
     this.events = s.events ?? [];
     this.readings = new Map(s.readings ?? []);
     this.hubDevices = new Map((s.hubDevices ?? []).map((h) => [h.hubId, h]));
+    this.cadences = new Map(s.cadences ?? []);
   }
 
   /** Capabilities derived from every paired hub's real nodes (merged into the model). */
@@ -276,6 +286,14 @@ export class MemoryStore implements HomeStore {
   }
   async listHubDevices(): Promise<HubDeviceSnapshot[]> {
     return [...this.hubDevices.values()];
+  }
+  async getCadences(): Promise<Record<string, number>> {
+    return Object.fromEntries(this.cadences);
+  }
+  async setCadence(input: string, intervalMs: number | null): Promise<void> {
+    if (intervalMs == null) this.cadences.delete(input);
+    else this.cadences.set(input, intervalMs);
+    this.persist();
   }
 }
 
@@ -438,6 +456,99 @@ class TablestoreStore extends MemoryStore {
       start = res.next_start_primary_key ?? null;
     }
     return out;
+  }
+
+  /* ---- durable device registry + cadences (per-account rows in the shared table) ----
+   * Watches persist above; these keep the paired-hub device LIST and the user's per-sensor
+   * cadences across a redeploy too, so the dashboard fills in immediately instead of waiting
+   * for the hub's next sync. Live readings stay transient (in-memory) by design. */
+  private hydrated = false;
+  private hubSigs = new Map<string, string>();
+
+  private async putBlob(sk: string, obj: unknown): Promise<void> {
+    await this.client.putRow({
+      tableName: TS_TABLE,
+      condition: this.ignore(),
+      primaryKey: this.pk(sk),
+      attributeColumns: [{ data: JSON.stringify(obj) }],
+    });
+  }
+  private async getBlob(sk: string): Promise<string | null> {
+    const res = await this.client.getRow({ tableName: TS_TABLE, primaryKey: this.pk(sk), maxVersions: 1 });
+    return this.dataOf(res.row?.attributes);
+  }
+  private async scanBlobs(skStart: string, skEnd: string): Promise<string[]> {
+    const out: string[] = [];
+    let start: unknown[] | null = [{ account: this.account }, { sk: skStart }];
+    const end = [{ account: this.account }, { sk: skEnd }];
+    while (start) {
+      const res = await this.client.getRange({
+        tableName: TS_TABLE,
+        direction: this.ts.Direction.FORWARD,
+        inclusiveStartPrimaryKey: start,
+        exclusiveEndPrimaryKey: end,
+        limit: 200,
+      });
+      for (const row of res.rows ?? []) {
+        const d = this.dataOf(row.attributes);
+        if (d) out.push(d);
+      }
+      start = res.next_start_primary_key ?? null;
+    }
+    return out;
+  }
+  // Identity signature — node ids + their sensor keys. Values change every reading; identity
+  // (which nodes/sensors exist) rarely does, so we only re-persist the snapshot when it shifts.
+  private static sig(snap: HubDeviceSnapshot): string {
+    return JSON.stringify(snap.nodes.map((n) => [n.id, n.sensors.map((s) => s.key).sort()]).sort());
+  }
+  private async hydrate(): Promise<void> {
+    if (this.hydrated) return;
+    this.hydrated = true;
+    try {
+      for (const d of await this.scanBlobs('hd#', 'hd$')) {
+        const snap = JSON.parse(d) as HubDeviceSnapshot;
+        this.hubDevices.set(snap.hubId, snap);
+        this.hubSigs.set(snap.hubId, TablestoreStore.sig(snap));
+      }
+    } catch {
+      /* first run for this account → no rows yet */
+    }
+  }
+
+  async describeHome(): Promise<HomeModel> {
+    await this.hydrate();
+    return super.describeHome();
+  }
+  async listInputs(filter?: 'sensor' | 'actuator'): Promise<Capability[]> {
+    await this.hydrate();
+    return super.listInputs(filter);
+  }
+  async listHubDevices(): Promise<HubDeviceSnapshot[]> {
+    await this.hydrate();
+    return super.listHubDevices();
+  }
+  async putHubDevices(snap: HubDeviceSnapshot): Promise<void> {
+    await super.putHubDevices(snap); // in-memory: fresh readings for this instance
+    const sig = TablestoreStore.sig(snap);
+    if (this.hubSigs.get(snap.hubId) !== sig) {
+      this.hubSigs.set(snap.hubId, sig);
+      await this.putBlob(`hd#${snap.hubId}`, snap); // persist only when device identity changes
+    }
+  }
+  async getCadences(): Promise<Record<string, number>> {
+    // Read through so a cadence set on another FC instance is seen on the hub's next sync.
+    const d = await this.getBlob('cadences');
+    if (!d) return {};
+    try {
+      return JSON.parse(d) as Record<string, number>;
+    } catch {
+      return {};
+    }
+  }
+  async setCadence(input: string, intervalMs: number | null): Promise<void> {
+    await super.setCadence(input, intervalMs); // in-memory
+    await this.putBlob('cadences', Object.fromEntries(this.cadences));
   }
 }
 

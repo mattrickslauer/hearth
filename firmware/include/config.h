@@ -21,7 +21,14 @@
 #define DHT_PIN 4
 #define DHT_TYPE DHT11
 
-// How often to sample and report, in milliseconds.
+// HC-SR04 ultrasonic distance sensor (optional). TRIG drives the pulse, ECHO times the
+// return. Set DIST_TRIG_PIN to -1 to disable — unwired, it simply reports null.
+#define DIST_TRIG_PIN 18
+#define DIST_ECHO_PIN 19
+
+// Default sample-and-report interval, in milliseconds. This is only the STARTING cadence:
+// once the node reaches a hub, the dashboard can retune it at runtime (the hub hands the
+// node a new interval in each ingest response — see applyCadence in main.cpp).
 #define SAMPLE_INTERVAL_MS 5000
 
 // ─── Actuator (what this node can DO, not just sense) ──────────────────────
