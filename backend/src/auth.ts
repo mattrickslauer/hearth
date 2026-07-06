@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname, join } from 'node:path';
 import nodemailer, { type Transporter } from 'nodemailer';
 
-import { getTablestore, tsDeleteRow, tsGetRow, tsPutRow, tsUpdatePut } from './tablestore';
+import { ensureTable, getTablestore, tsDeleteRow, tsGetRow, tsPutRow, tsUpdatePut } from './tablestore';
 
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
 const MAX_ATTEMPTS = 5;
@@ -79,9 +79,11 @@ const OTP_TABLE = 'auth_otp';
  *  visible across FC instances (request-otp and verify-otp may hit different ones). */
 class TablestoreOtpStore implements OtpStore {
   async put(email: string, rec: OtpRecord): Promise<void> {
+    await ensureAuthTables();
     await tsPutRow(OTP_TABLE, { email }, { codeHash: rec.codeHash, expiresAt: rec.expiresAt, attempts: rec.attempts });
   }
   async get(email: string): Promise<OtpRecord | null> {
+    await ensureAuthTables();
     const row = await tsGetRow(OTP_TABLE, { email });
     if (!row) return null;
     const rec: OtpRecord = {
@@ -211,6 +213,20 @@ export class FileAccountStore implements AccountStore {
 const ACCOUNTS_TABLE = 'accounts'; // PK [id:STRING] → email, createdAt, lastLoginAt
 const ACCOUNT_EMAIL_TABLE = 'account_email'; // PK [email:STRING] → id  (email→id lookup)
 
+// Auto-create the three auth tables on first Tablestore use (idempotent), so flipping
+// HEARTH_ACCOUNT_STORE/HEARTH_OTP_STORE to `tablestore` can't fail on a missing table.
+let authTablesReady: Promise<void> | null = null;
+function ensureAuthTables(): Promise<void> {
+  if (!authTablesReady) {
+    authTablesReady = Promise.all([
+      ensureTable(ACCOUNTS_TABLE, ['id']),
+      ensureTable(ACCOUNT_EMAIL_TABLE, ['email']),
+      ensureTable(OTP_TABLE, ['email']),
+    ]).then(() => undefined);
+  }
+  return authTablesReady;
+}
+
 /**
  * Tablestore-backed account store — the production home for signups. Two tables so
  * both access patterns are single-row gets (no scans): `accounts` keyed by id (the
@@ -222,6 +238,7 @@ const ACCOUNT_EMAIL_TABLE = 'account_email'; // PK [email:STRING] → id  (email
  */
 export class TablestoreAccountStore implements AccountStore {
   async upsertByEmail(email: string): Promise<Account> {
+    await ensureAuthTables();
     const now = Date.now();
     const idx = await tsGetRow(ACCOUNT_EMAIL_TABLE, { email });
     if (idx?.id) {
@@ -239,6 +256,7 @@ export class TablestoreAccountStore implements AccountStore {
     return { id, email, createdAt: now, lastLoginAt: now };
   }
   async getById(id: string): Promise<Account | null> {
+    await ensureAuthTables();
     const row = await tsGetRow(ACCOUNTS_TABLE, { id });
     if (!row) return null;
     return { id, email: String(row.email), createdAt: Number(row.createdAt), lastLoginAt: Number(row.lastLoginAt) };

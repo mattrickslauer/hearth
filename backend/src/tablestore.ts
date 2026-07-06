@@ -18,6 +18,11 @@
 
 export type TsScalar = number | string | boolean;
 
+/** The one shared table: PK [account:STRING, sk:STRING], attr `data`:STRING (JSON blob).
+ *  Per-account rows use the accountId as partition; global registries use a reserved
+ *  partition (e.g. "_hubs"). Auto-created by ensureHomeTable() on first use. */
+export const HOME_TABLE = 'hearth_home';
+
 export interface TablestoreConfig {
   endpoint: string;
   instance: string;
@@ -153,6 +158,80 @@ export async function tsUpdatePut(
       (err: unknown) => (err ? reject(err) : resolve()),
     );
   });
+}
+
+/** A row read back from a range scan: its primary key and attribute columns as plain maps. */
+export interface TsRangeRow {
+  pk: Record<string, TsScalar>;
+  attrs: Record<string, TsScalar>;
+}
+
+/**
+ * Scan rows in [start, end) primary-key order, paging until exhausted. `start`/`end` are
+ * ordered PK maps (same shape as the single-row ops), e.g. { account: '_hubs', sk: 'h#' } →
+ * { account: '_hubs', sk: 'h$' } to sweep one partition's `h#…` rows. Small collections only.
+ */
+export async function tsGetRange(
+  tableName: string,
+  start: Record<string, TsScalar>,
+  end: Record<string, TsScalar>,
+  limit = 500,
+): Promise<TsRangeRow[]> {
+  const { TableStore, client } = await getTablestore();
+  const out: TsRangeRow[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let startPk: any = kv(TableStore, start);
+  const endPk = kv(TableStore, end);
+  while (startPk) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: any = await new Promise((resolve, reject) => {
+      client.getRange(
+        {
+          tableName,
+          direction: TableStore.Direction.FORWARD,
+          inclusiveStartPrimaryKey: startPk,
+          exclusiveEndPrimaryKey: endPk,
+          limit,
+        },
+        (err: unknown, d: unknown) => (err ? reject(err) : resolve(d)),
+      );
+    });
+    for (const row of data?.rows ?? []) {
+      const pk: Record<string, TsScalar> = {};
+      const attrs: Record<string, TsScalar> = {};
+      for (const p of row.primaryKey ?? []) pk[p.name] = fromCell(p.value);
+      for (const a of row.attributes ?? []) attrs[a.columnName] = fromCell(a.columnValue);
+      out.push({ pk, attrs });
+    }
+    startPk = data?.next_start_primary_key ?? null;
+  }
+  return out;
+}
+
+/** Create a table if it doesn't already exist (idempotent). Reserved-CU=0, single version. */
+export async function ensureTable(tableName: string, pkNames: string[]): Promise<void> {
+  const { TableStore, client } = await getTablestore();
+  await new Promise<void>((resolve, reject) => {
+    client.createTable(
+      {
+        tableMeta: { tableName, primaryKey: pkNames.map((name) => ({ name, type: 'STRING' })) },
+        reservedThroughput: { capacityUnit: { read: 0, write: 0 } },
+        tableOptions: { timeToLive: -1, maxVersions: 1 },
+      },
+      (err: unknown) => {
+        const msg = (err as { message?: string })?.message || String(err ?? '');
+        if (err && !/already exist/i.test(msg)) reject(err);
+        else resolve();
+      },
+    );
+  });
+}
+
+/** Ensure the shared home table exists. Cheap + idempotent; call before first use. */
+let homeTableReady: Promise<void> | null = null;
+export function ensureHomeTable(): Promise<void> {
+  if (!homeTableReady) homeTableReady = ensureTable(HOME_TABLE, ['account', 'sk']);
+  return homeTableReady;
 }
 
 /** Delete a row (no-op if absent). */
