@@ -133,6 +133,19 @@ const runtime = createRuntime({ nodes });
 // Node hands back IPv4-mapped IPv6 for LAN peers (::ffff:192.168.x.y) — strip it.
 const cleanAddr = (a) => (typeof a === 'string' ? a.replace(/^::ffff:/, '') : a);
 
+// Bound the registry so a flood of distinct node IDs can't grow it (and every
+// /hub/devices payload) without limit. Re-inserting keeps the Map in LRU order;
+// past the cap we evict the least-recently-seen node. Far above any real home.
+const MAX_NODES = Number(process.env.HUB_MAX_NODES || 1000);
+function admit(id, entry) {
+  nodes.delete(id); // move-to-end so recency == Map order
+  nodes.set(id, entry);
+  if (nodes.size > MAX_NODES) {
+    const oldest = nodes.keys().next().value;
+    if (oldest !== undefined && oldest !== id) nodes.delete(oldest);
+  }
+}
+
 // Fold a node's document into the registry. DESCRIBE registers identity + capabilities;
 // READING updates the latest values. Either way we learn the node exists — no node is
 // ever configured on the hub by hand. `addr` is the node's source IP (for actuation).
@@ -163,14 +176,14 @@ function ingest(doc, addr) {
     // And nudge a cloud sync so remote (cloud-brokered) dashboards update promptly too,
     // coalescing bursts instead of waiting out the 15s timer.
     scheduleSync();
-    nodes.set(id, entry); // ensure the registry has this node before the runtime resolves its address
+    admit(id, entry); // ensure the registry has this node before the runtime resolves its address
     runtime.onReading(doc); // feed the engine + fire watches on this fresh reading
     return true;
   } else {
     return false;
   }
 
-  nodes.set(id, entry);
+  admit(id, entry);
   return true;
 }
 
