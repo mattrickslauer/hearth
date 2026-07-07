@@ -6,6 +6,12 @@ movements, one peak. We run a single lived scenario, build to the hardware fire 
 **cheap + the Qwen wiring AI + open** into the close as the punchline (never explain after the peak). The dashboard IS
 the story; the hardware is the payoff; the "platform you build on" is the last word.
 
+> **Two hero examples now that the vision stack is real (PRs #39/#45/#46, deployed):** the **temperature/actuation** cut
+> below (local, offline, real hardware fire), and the **🆕 Vision flagship — "Who's at my door?"** (Qwen-VL tells family
+> from strangers off real reference photos on OSS — see the spelled-out beat sheet under the Script table). Shoot **one
+> concrete example end-to-end**; the vision flagship is the strongest single story for the two 30% buckets. Pick per what
+> films cleanest, or run temp as the spine and the vision flagship as a 60–75s second act.
+
 **Legend:** `[CAM]` you to camera · `[SCREEN]` dashboard capture (the visual spine) · `[SHOOT]` real hardware in frame ·
 `[VO]` voiceover.
 
@@ -32,6 +38,45 @@ silences: ~1.5s after *"there's my phone"*, and a full stop before *"Clone it."*
 
 **Total: ~2:40 with the pauses** (~275 spoken words; the silences + the board-warming beat carry the rest). Buffer if long:
 trim the cadence-slider drag in Movement 2 (~4s) or the wiring flash in Movement 5 (~3s). Don't cut the two golden silences.
+
+---
+
+## 🆕 Vision flagship — "Who's at my door?" (the one concrete example, spelled out)
+
+The temperature cut above proves the **local/actuation** half. This is the **cloud-reasoning** half — the Qwen-VL beat the
+whole EdgeAgent thesis rests on — and it is now **real and deployed** (PRs #39/#45/#46): a persistent, named, **tagged
+reference memory** on **Alibaba OSS**, **Qwen-VL** reading a real doorway frame and telling **family from strangers with no
+face-recognition model**, and the raw video **never leaving the house**. Shoot this as the vision half of the film, or as
+its own 60–75s short. One scenario, spelled out beat-by-beat so it can be captured clean.
+
+**The one sentence:** *"Tell me if someone who isn't family is at the front door."*
+
+**Pre-shoot setup (all real):**
+- **Reference memory** — in **`/memory`**, upload 2–3 photos of household members; **name** each (Alex, Sam) and **tag** them
+  **`family`**. They persist to OSS (`hearth-vision-c11d45`); the grid shows their faces + tag chips. This is the "face cloud."
+- **Doorway camera** — OBS streams the door to the hub (`HEARTH_CAM=1 node hub/hub.mjs` on `192.168.1.27`, OBS → Custom →
+  `rtmp://127.0.0.1:1935/live`); the dashboard **Camera tile** shows a frame snapped on a cadence. (A phone/webcam works too.)
+- Sign in on a clean demo account; pre-author nothing you'll type on camera.
+
+| # · Beat | Time | Visual | Audio |
+|---|---|---|---|
+| **V1 · The memory** | 0:00–0:12 | `[SCREEN]` Open **`/memory`** — a grid of family faces, each tagged **`family`**. Slow pan. | `[VO]` "First I tell my house who belongs — a few photos of my family, named and tagged *family*. That's it. No training, no model." |
+| **V2 · The ask** | 0:12–0:34 | `[SCREEN]` Dashboard **Describe** card → type *"Tell me if someone who isn't family is at the front door."* → **Author →**. New watch card, tags **`cloud`** **`vision`**. | `[VO]` "Then I just say it. Qwen compiles it into a watch — and tags it **vision**, because this one has to actually *look*." |
+| **V3 · Qwen asks for context** | 0:34–0:50 | `[SCREEN]` The **✨ "To make this work well, Qwen suggests"** card: **🖼️ Upload photos of household members · 🎯 aim at the doorway · 💡 good lighting**. | `[VO]` "And here's the part I love — Qwen tells *me* what it needs: reference photos, where to aim, good light. The agent knows how to do its own job." |
+| **V4 · Family → CLEAR** | 0:50–1:10 | `[SHOOT]`+`[SCREEN]` A **household member** steps into the door camera; **Camera tile** shows the live frame. Activity: verdict **`CLEAR`** + reasoning + a **privacy** line. No push. | `[VO]` "My partner walks up. Qwen-VL looks, compares against my family photos… *that's Alex — a household member.* No alert. And notice — only a cropped frame ever left the house." |
+| **V5 · Stranger → FIRED** *(peak)* | 1:10–1:34 | `[SHOOT]`+`[SCREEN]` A **stranger** at the door. Camera tile updates; watch card **flashes ember**; Activity streams **`🔥 Fired · 📨 Notified`** + the reasoning; **phone buzzes** — hold ~1.5s. | `[VO]` "Now a stranger. *[beat]* Qwen-VL: *someone at the door who isn't in your household.* The watch fires… *[buzz]* …there's my phone. Real camera, real reasoning — family knows family, and a script never could." |
+| **V6 · Close** | 1:34–1:55 | `[CAM]` to camera over the end card. Full stop before the last line. | "No face-recognition model. No cloud lock-in. A few photos, one sentence, and Qwen-VL reasons about who's *really* at my door — raw video staying home. Open, camera to cloud. Clone it… and go build." |
+
+**Why it scores:** sophisticated **Qwen-VL** + multi-image reference reasoning + **MCP tools** + **OSS** = both 30% buckets;
+raw-stays-home + on-demand frames + graceful degradation = the EdgeAgent brief verbatim (**Impact + Presentation**).
+
+**Honesty guardrail — read before shooting V4/V5.** The Qwen-VL judge, the reference memory, and OSS are all real and
+**verified** (`backend/ npm run household-check`, `npm run oss-check` — Qwen-VL reads the OSS presigned URL and distinguishes
+same-subject from a stranger). The one piece **not yet auto-wired** is the hub *automatically* invoking the judge the instant
+a person appears (that's **B1**, the runtime wiring on the TODO). To capture V4/V5 as a clean live beat today, either **(a)**
+land B1 first, or **(b)** trigger the judge **on cue** against the live OBS frame + the family references — a *real* Qwen-VL
+call, just hand-triggered for a clean take (same idea as the "Test fire" button in the temperature cut). Nothing narrated
+claims a capability the stack doesn't have.
 
 ---
 
@@ -64,6 +109,12 @@ Verified against `frontend/src/app/dashboard.tsx`. Match the spoken word to the 
 - Watch card: line **`when <trigger> → <action>`**, tags **`local`** / `cloud` / `vision`, buttons `Edit` / `Delete` (+ **`Test →`** once #2 ships). Edit mode button: **`Re-compile →`**.
 - Activity: **`✍️ Authored`** · **`🔥 Fired`** · **`⚡ Actuated`** · **`📨 Notified`** (+ `⏳ Held`, `📡 Offline`, `🔌 Reconnected`), each with a `· <model>` and a `5m ago` timestamp.
 
+**Vision-flagship strings (real, shipped in PRs #39/#45/#46):**
+- Dashboard header: **`◆ Memory`** button (next to `↻ Refresh`); the camera lives in a **`Camera`** section — tile titled **`Doorway camera`**, tags **`vision`** + **`OBS`**/`test source`, a **`snapped HH:MM:SS · every 5s`** stamp, and **`Snap rate`** + **`Quality`** sliders. Placeholder before a stream: **`Waiting for a frame — start OBS streaming to the hub`**.
+- Context-suggestion card (after authoring a vision watch): **`✨ To make "<title>" work well, Qwen suggests`** with rows **🖼️ Upload photos of household members · 🎯 Point the camera at the doorway · ⏱️ Snap every ~2s · ✨ higher quality · 💡 lighting**, and a **`＋ Add reference photos →`** button that opens `/memory`.
+- **`/memory`** ("Reference memory"): H1 **`Who and what your home knows`**; **`＋ Choose a photo`** drop-zone, a **name** field, tag chips **`family` `pet` `vehicle` `package` `allowed` `watch`** (+ custom), **`Add to memory →`**; the grid shows each object's thumbnail + name + tag chips + **`Remove`**.
+- Vision watch card: tags **`cloud`** **`vision`**; Activity verdict lines carry the Qwen-VL **reasoning** ("that's Alex — a household member") and a **privacy** note ("only a cropped frame left the home").
+
 **Do NOT show on camera:** the account-menu **`🔥 Live demo`** item or the `/demo` route — this cut is the real dashboard only.
 
 ---
@@ -76,6 +127,7 @@ Verified against `frontend/src/app/dashboard.tsx`. Match the spoken word to the 
 | 3 · The ask — Describe → Author → watch card (`local` tag) | **Innovation + Tech**: plain words → a running rule via Qwen, fires locally/offline |
 | 4 · The proof *(peak)* — hand → tile climbs → feed streams → phone buzzes | **Tech**: the whole chain fires on real hardware, on-screen |
 | 5 · The close — $5 chip + Qwen wiring AI + open + "platform you build on" | **Impact + Innovation**: cheap, buildable baseline infra; self-hostable, offline, model-swappable |
+| 🆕 Vision flagship — memory → author → context → CLEAR/FIRED | **Innovation + Tech (both 30%)**: sophisticated Qwen-VL, multi-image reference memory, MCP tools, OSS; **Impact + Presentation**: privacy-aware, raw video stays home, family-from-strangers with no face model |
 
 ## Shot list
 - `[CAM]` host takes: hook (0:00), close (1:48 → to camera over the end card).
