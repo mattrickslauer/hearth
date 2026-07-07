@@ -43,8 +43,14 @@ function encodeFrame(payload, opcode = OP_TEXT) {
   return Buffer.concat([header, data]);
 }
 
+// Largest client frame we'll accept. Without this cap a client can declare a
+// multi-GB frame length and we'd buffer it all before rejecting → OOM.
+const MAX_FRAME_BYTES = 1024 * 1024;
+
 // Pull every complete frame out of an accumulating buffer, unmasking client payloads
 // (browser → server frames are always masked). Returns leftover bytes for the next chunk.
+// `overflow` is set when a client declares a frame larger than MAX_FRAME_BYTES — the
+// caller must destroy the socket rather than keep accumulating.
 function decodeFrames(buf) {
   const frames = [];
   let offset = 0;
@@ -63,6 +69,7 @@ function decodeFrames(buf) {
       len = Number(buf.readBigUInt64BE(p));
       p += 8;
     }
+    if (len > MAX_FRAME_BYTES) return { frames, rest: buf.subarray(offset), overflow: true };
     let maskKey;
     if (masked) {
       if (p + 4 > buf.length) break;
@@ -120,7 +127,11 @@ export function attachWebSocket(server, { path = '/live', onConnect } = {}) {
     let buf = Buffer.alloc(0);
     socket.on('data', (chunk) => {
       buf = Buffer.concat([buf, chunk]);
-      const { frames, rest } = decodeFrames(buf);
+      const { frames, rest, overflow } = decodeFrames(buf);
+      if (overflow) {
+        socket.destroy();
+        return;
+      }
       buf = rest;
       for (const f of frames) {
         if (f.opcode === OP_CLOSE) {

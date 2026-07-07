@@ -94,6 +94,10 @@ function encodeFrame(payload, opcode = OP_TEXT) {
   return Buffer.concat([header, data]);
 }
 
+// Largest client frame we'll accept. Without this cap a single ticket-holder can
+// declare a multi-GB frame length and we'd buffer it all before rejecting → OOM.
+const MAX_FRAME_BYTES = 1024 * 1024;
+
 function decodeFrames(buf) {
   const frames = [];
   let offset = 0;
@@ -112,6 +116,7 @@ function decodeFrames(buf) {
       len = Number(buf.readBigUInt64BE(p));
       p += 8;
     }
+    if (len > MAX_FRAME_BYTES) return { frames, rest: buf.subarray(offset), overflow: true };
     let mask;
     if (masked) {
       if (p + 4 > buf.length) break;
@@ -253,7 +258,11 @@ server.on('upgrade', (req, socket) => {
   let buf = Buffer.alloc(0);
   socket.on('data', (chunk) => {
     buf = Buffer.concat([buf, chunk]);
-    const { frames, rest } = decodeFrames(buf);
+    const { frames, rest, overflow } = decodeFrames(buf);
+    if (overflow) {
+      socket.destroy();
+      return;
+    }
     buf = rest;
     for (const f of frames) {
       if (f.opcode === OP_CLOSE) {

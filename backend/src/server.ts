@@ -99,9 +99,24 @@ async function pushReadingsToAccount(accountId: string, body: Record<string, unk
   await publishToRelay(accountId, message);
 }
 
+// Cap every request body so an unauthenticated POST (e.g. /hub/enroll, /auth/*)
+// can't stream an unbounded payload and OOM the Function Compute instance.
+const MAX_BODY_BYTES = 256 * 1024;
+const tooLarge = () => Object.assign(new Error('request body too large'), { statusCode: 413 });
+
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge();
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let total = 0;
+  for await (const c of req) {
+    total += (c as Buffer).length;
+    if (total > MAX_BODY_BYTES) {
+      req.destroy();
+      throw tooLarge();
+    }
+    chunks.push(c as Buffer);
+  }
   if (!chunks.length) return {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -307,7 +322,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 
     return send(res, 404, { error: `not found: ${method} ${path}` });
   } catch (e) {
-    return send(res, 500, { error: (e as Error).message });
+    const status = (e as { statusCode?: number }).statusCode ?? 500;
+    return send(res, status, { error: (e as Error).message });
   }
 }
 
