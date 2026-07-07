@@ -17,7 +17,12 @@ const wishes = [
 for (const wish of wishes) {
   const { question: q, engine } = await author(wish);
   console.log(`author  [${engine}]  "${wish}"`);
-  console.log(`   → ${q.title} | ${q.compiledTo} | vision=${q.usesVision} | spec=${JSON.stringify(q.compiledSpec)}\n`);
+  console.log(`   → ${q.title} | ${q.compiledTo} | vision=${q.usesVision} | spec=${JSON.stringify(q.compiledSpec)}`);
+  if (q.contextSuggestions?.length) {
+    console.log(`   context Qwen suggests to solve it well:`);
+    for (const s of q.contextSuggestions) console.log(`     · [${s.kind}] ${s.title} — ${s.why}`);
+  }
+  console.log();
 }
 
 const { judgment, engine } = await judge({

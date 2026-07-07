@@ -31,6 +31,7 @@ import {
   setCadence,
   updateWatch,
   type Cadences,
+  type ContextSuggestion,
   type HomeCapability,
   type HomeModel,
   type Reading,
@@ -44,6 +45,17 @@ import { useHubLive, type LiveStatus } from '@/lib/live';
 // camera tile that pulls the hub's latest snapped frame on demand. Frames are LAN-direct (the
 // hub holds the pixels); the hosted/judge path surfaces them via the cloud in a follow-up.
 const HUB_URL = process.env.EXPO_PUBLIC_HUB_URL?.replace(/\/$/, '') || '';
+
+// Icon per context-suggestion kind (what Qwen recommends adding for a vision watch).
+const SUGGEST_ICON: Record<string, string> = {
+  reference_images: '🖼️',
+  aim: '🎯',
+  cadence: '⏱️',
+  quality: '✨',
+  lighting: '💡',
+  placement: '📐',
+  other: '•',
+};
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 // Give the scroll frame a bounded height on web so the ScrollView actually scrolls
@@ -119,6 +131,9 @@ export default function DashboardScreen() {
 
   const [wish, setWish] = useState('');
   const [authoring, setAuthoring] = useState(false);
+  // When Qwen compiles a vision wish it recommends the context that would make it work well
+  // (reference photos of household members, aim, cadence…). We surface that right after authoring.
+  const [suggestions, setSuggestions] = useState<{ title: string; items: ContextSuggestion[] } | null>(null);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
@@ -180,7 +195,12 @@ export default function DashboardScreen() {
     setAuthoring(true);
     setError(null);
     try {
-      await authorWatch(wish.trim(), token);
+      const { question } = await authorWatch(wish.trim(), token);
+      setSuggestions(
+        question.contextSuggestions?.length
+          ? { title: question.title, items: question.contextSuggestions }
+          : null,
+      );
       setWish('');
       await load();
     } catch (err) {
@@ -470,6 +490,29 @@ export default function DashboardScreen() {
               </Pressable>
             </View>
           </Card>
+
+          {/* Qwen's context suggestions — the agent telling you what it needs to solve the wish well */}
+          {suggestions ? (
+            <Card glow style={{ gap: Spacing.two, borderColor: theme.emberDeep }}>
+              <View style={styles.suggestHead}>
+                <Text style={[styles.cardTitle, { color: theme.text }]}>
+                  ✨ To make “{suggestions.title}” work well, Qwen suggests
+                </Text>
+                <Pressable onPress={() => setSuggestions(null)} hitSlop={8}>
+                  <Text style={[styles.suggestDismiss, { color: theme.textMuted }]}>Dismiss</Text>
+                </Pressable>
+              </View>
+              {suggestions.items.map((s, i) => (
+                <View key={i} style={styles.suggestRow}>
+                  <Text style={styles.suggestIcon}>{SUGGEST_ICON[s.kind] ?? '•'}</Text>
+                  <View style={{ flex: 1, gap: 1 }}>
+                    <Text style={[styles.suggestTitle, { color: theme.text }]}>{s.title}</Text>
+                    <Text style={[styles.suggestWhy, { color: theme.textSecondary }]}>{s.why}</Text>
+                  </View>
+                </View>
+              ))}
+            </Card>
+          ) : null}
 
           {/* camera — a sensor that snaps a frame on a cadence (shown when a hub URL is set) */}
           {HUB_URL ? (
@@ -1104,6 +1147,14 @@ const styles = StyleSheet.create({
   sliderFill: { position: 'absolute', height: 4, borderRadius: 2, left: 0 },
   sliderThumb: { position: 'absolute', width: 14, height: 14, borderRadius: 7, borderWidth: 2, marginLeft: -7 },
   sliderVal: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700', minWidth: 34, textAlign: 'right' },
+
+  // Qwen context-suggestion card — the agent telling you what it needs
+  suggestHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.two },
+  suggestDismiss: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+  suggestRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.two, paddingVertical: 3 },
+  suggestIcon: { fontSize: 16, width: 24, textAlign: 'center' },
+  suggestTitle: { fontFamily: Fonts?.sans, fontSize: 14, fontWeight: '700' },
+  suggestWhy: { fontFamily: Fonts?.sans, fontSize: 13, lineHeight: 19 },
 
   // camera tile — a frame snapped on a cadence, plus rate + quality knobs
   camHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
