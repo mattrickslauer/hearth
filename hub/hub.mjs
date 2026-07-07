@@ -39,6 +39,7 @@ import { dirname, join } from 'node:path';
 import { attachWebSocket } from './ws.mjs';
 
 import { createRuntime } from './runtime.mjs';
+import { createCamera } from './camera.mjs';
 
 // ── config ──────────────────────────────────────────────────────────────────
 const DEFAULT_BACKEND = 'https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run';
@@ -103,6 +104,11 @@ function cadencesForNode(nodeId) {
 // LAN realtime channel (browser dashboards on the same network). Set in main() once the
 // HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
 let live = null;
+
+// Optional camera sensor (HEARTH_CAM=1). A camera is just another node to the registry;
+// this handle only exists so GET /frame can serve its latest JPEG and the cloud can retune
+// its snap cadence. Null when disabled — every use is guarded.
+let camera = null;
 
 // The watch runtime: evaluates compiled watches against live node readings and fires
 // (actuate a node + push a phone notification) on a rising edge. It shares the `nodes`
@@ -171,6 +177,9 @@ function applyCadences(cadences) {
     }
   }
   fastestCadenceMs = Number.isFinite(fastest) ? fastest : 0;
+  // The camera is just another sensor: if the account set a cadence for its frame input,
+  // retune the snap rate through the very same downlink the ESP nodes use.
+  if (camera) camera.setCadence(desiredCadence.get(`${camera.id}.cam.frame`));
 }
 
 function readJson(req) {
@@ -349,6 +358,26 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify([...nodes.values()], null, 2));
     return;
   }
+  // The camera's latest snapped frame, pulled on demand (never streamed). This is
+  // what the dashboard tile and the Qwen-VL judge fetch — the pixels stay on the hub
+  // until something actually asks for a frame.
+  if (req.method === 'GET' && (req.url === '/frame' || req.url?.startsWith('/frame?'))) {
+    const f = camera?.getFrame();
+    if (!f) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'no frame yet' }));
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'image/jpeg',
+      'content-length': f.bytes,
+      'cache-control': 'no-store',
+      'x-frame-at': String(f.at),
+      'access-control-allow-origin': '*',
+    });
+    res.end(f.buf);
+    return;
+  }
   if (req.method === 'POST' && req.url === INGEST_PATH) {
     const doc = await readJson(req);
     const ok = ingest(doc, req.socket?.remoteAddress);
@@ -391,6 +420,14 @@ async function main() {
   console.log(`[hub] ingest listening on :${PORT} (POST ${INGEST_PATH}, GET /nodes, WS /live)`);
   const bonjour = await startMdns();
 
+  // Optional camera sensor. Enabled with HEARTH_CAM=1 — it registers itself as a node via the
+  // same ingest path, so it flows to the registry, /live, and the cloud like any ESP node.
+  if (process.env.HEARTH_CAM === '1') {
+    camera = createCamera({ ingest });
+    camera.start();
+    console.log(`[hub] camera enabled — latest frame at GET http://<hub>:${PORT}/frame`);
+  }
+
   if (hubToken) console.log(`  Already paired (hub ${state.hubId}, account ${accountId}). Heartbeating + syncing.\n`);
 
   // Device sync runs on its own timer regardless of pairing state (no-op until paired).
@@ -404,6 +441,7 @@ async function main() {
     console.log('\n[hub] shutting down…');
     clearInterval(syncTimer);
     if (syncDebounce) clearTimeout(syncDebounce);
+    if (camera) camera.stop();
     if (live) live.close();
     if (bonjour) bonjour.unpublishAll(() => bonjour.destroy());
     server.close(() => process.exit(0));
