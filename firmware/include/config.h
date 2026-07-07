@@ -32,11 +32,25 @@
 #define SAMPLE_INTERVAL_MS 5000
 
 // ─── Actuator (what this node can DO, not just sense) ──────────────────────
-// A single on/off output the hub can drive when a watch fires. The default is
-// GPIO2, the built-in LED on most ESP32 dev boards — so a bare board can light
-// up on command with nothing wired. Point it at a relay/MOSFET GPIO to switch a
-// real load (heater, lamp). Set ACTUATOR_PIN to -1 to disable actuation.
+// A single on/off output the cloud/hub can drive. The default is GPIO2, the
+// built-in LED on most ESP32 dev boards — so a bare board can light up on command
+// with nothing wired. Point it at a relay/MOSFET GPIO to switch a real load
+// (motor, heater, lamp). Set ACTUATOR_PIN to -1 to disable actuation.
+//
+// A MOTOR NODE is just this actuator pointed at a relay. Two ways to command it:
+//   • a hub-local watch fires  → the hub POSTs /actuate to the node (instant, offline)
+//   • the cloud `actuate` tool  → desired state rides the ingest reply, the node
+//     converges to it (a device shadow — see applyDesired in main.cpp)
+//
+// Wiring a bare 12V-coil relay (e.g. Hongfa HKVF4-4C12-B): you CANNOT drive a 12V
+// coil from a 3.3V pin. Use an NPN transistor / logic-level MOSFET as a low-side
+// switch with a flyback diode across the coil — details in firmware/README.md.
+// With that transistor, GPIO HIGH energizes the coil → keep ACTUATOR_ACTIVE_HIGH 1.
 #define ACTUATOR_PIN 2
-#define ACTUATOR_ACTIVE_HIGH 1  // 1: HIGH = on (built-in LED). 0: for active-low relays.
-#define ACTUATOR_KEY "led"      // the name this output advertises to the hub
+#define ACTUATOR_ACTIVE_HIGH 1  // 1: HIGH = on (built-in LED / transistor-driven coil). 0: active-low relay modules.
+#define ACTUATOR_KEY "led"      // the name this output advertises to the hub ("motor" for a motor node)
 #define ACTUATOR_PORT 8080      // the node listens here for POST /actuate
+// Node-side safety veto: force the output OFF after this many ms of continuous ON, no matter
+// what the cloud last commanded, and IGNORE further "on" until it is commanded off (an explicit
+// re-arm). A motor you can't see shouldn't run forever on a stuck command. 0 = no limit.
+#define ACTUATOR_MAX_ON_MS 0

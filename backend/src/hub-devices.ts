@@ -10,7 +10,7 @@
  *                           lastReading: {<key>: number|null}, lastSeen } ] }
  */
 
-import type { HomeStore, HubDeviceSnapshot, HubNodeReport, HubSensorReport } from './store';
+import type { HomeStore, HubActuatorReport, HubDeviceSnapshot, HubNodeReport, HubSensorReport } from './store';
 
 interface HubMeta {
   hubId: string;
@@ -45,6 +45,10 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
       .map(asObj)
       .filter((s) => typeof s.key === 'string')
       .map((s) => ({ key: s.key as string, kind: asStr(s.kind), unit: asStr(s.unit) }));
+    const actuators: HubActuatorReport[] = asArray(describe.actuators)
+      .map(asObj)
+      .filter((a) => typeof a.key === 'string')
+      .map((a) => ({ key: a.key as string, kind: asStr(a.kind) }));
 
     const readings = asObj(entry.lastReading);
     const cleaned: Record<string, number | null> = {};
@@ -66,6 +70,7 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
       online: true, // the hub just heard from it
       lastSeen: now,
       sensors,
+      actuators,
       readings: cleaned,
     });
   }

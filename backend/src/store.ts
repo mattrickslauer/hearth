@@ -46,6 +46,11 @@ export interface HubSensorReport {
   kind?: string; // 'temperature' | 'humidity' | ...
   unit?: string;
 }
+/** One actuator a real hub-reported node exposes — something the cloud can command. */
+export interface HubActuatorReport {
+  key: string; // e.g. 'led', 'motor'
+  kind?: string; // 'switch' | 'relay' | ...
+}
 /** A real ESP32 node as reported by a paired on-prem hub. */
 export interface HubNodeReport {
   id: string;
@@ -54,6 +59,7 @@ export interface HubNodeReport {
   online: boolean;
   lastSeen: number;
   sensors: HubSensorReport[];
+  actuators?: HubActuatorReport[];
   readings: Record<string, number | null>;
 }
 /** A paired hub's live device snapshot, pushed up by the hub agent. */
@@ -69,6 +75,10 @@ export interface HubDeviceSnapshot {
 /** Emoji marker for a sensor kind — mirrors the demo Capability.icon convention. */
 const iconFor = (kind?: string): string =>
   kind === 'temperature' ? '🌡️' : kind === 'humidity' ? '💧' : kind === 'distance' ? '📏' : kind === 'motion' ? '🚶' : '📟';
+
+/** Emoji marker for an actuator kind. */
+const actuatorIconFor = (kind?: string): string =>
+  kind === 'relay' ? '🔌' : kind === 'motor' ? '🌀' : kind === 'servo' ? '⚙️' : '🎛️';
 
 export interface RunEventRow {
   id: string;
@@ -102,6 +112,10 @@ export interface HomeStore {
   getCadences(): Promise<Record<string, number>>;
   /** Set (or clear, when ms is null) one sensor's desired sample cadence in milliseconds. */
   setCadence(input: string, intervalMs: number | null): Promise<void>;
+  /** The desired actuator states (input id "<node>.<key>" → on/off) — the device shadow. */
+  getDesired(): Promise<Record<string, boolean>>;
+  /** Set (or clear, when on is null) one actuator's desired state — the cloud→node command. */
+  setDesired(input: string, on: boolean | null): Promise<void>;
 }
 
 /** Compute an aggregate over a window ending at `now` (numbers only for mean/min/max). */
@@ -128,6 +142,7 @@ interface StoreSnapshot {
   readings: [string, Reading[]][];
   hubDevices: HubDeviceSnapshot[];
   cadences: [string, number][];
+  desired: [string, boolean][];
 }
 
 const emptyModel = (): HomeModel => ({ zones: [], nodes: [], capabilities: [] });
@@ -142,6 +157,10 @@ export class MemoryStore implements HomeStore {
   // Per-sensor desired sample cadence in ms (input id "<node>.<key>" → ms). Relayed to the
   // owning hub on its next device sync, which in turn tells the node on its next ingest POST.
   protected cadences = new Map<string, number>();
+  // Desired actuator state (input id "<node>.<key>" → on/off) — the "desired" half of the
+  // device shadow. Set by the actuate tool; delivered to the node the same way cadences are
+  // (hub device sync → node ingest response), where the node converges its output to match.
+  protected desired = new Map<string, boolean>();
 
   /**
    * A new home is EMPTY — no zones, devices, watches, or readings. Pass seed=true
@@ -168,6 +187,7 @@ export class MemoryStore implements HomeStore {
       readings: [...this.readings.entries()],
       hubDevices: [...this.hubDevices.values()],
       cadences: [...this.cadences.entries()],
+      desired: [...this.desired.entries()],
     };
   }
   protected restore(s: Partial<StoreSnapshot>): void {
@@ -178,13 +198,14 @@ export class MemoryStore implements HomeStore {
     this.readings = new Map(s.readings ?? []);
     this.hubDevices = new Map((s.hubDevices ?? []).map((h) => [h.hubId, h]));
     this.cadences = new Map(s.cadences ?? []);
+    this.desired = new Map(s.desired ?? []);
   }
 
   /** Capabilities derived from every paired hub's real nodes (merged into the model). */
   private hubCapabilities(): Capability[] {
     const caps: Capability[] = [];
     for (const snap of this.hubDevices.values())
-      for (const n of snap.nodes)
+      for (const n of snap.nodes) {
         for (const s of n.sensors)
           caps.push({
             id: `${n.id}.${s.key}`,
@@ -194,6 +215,15 @@ export class MemoryStore implements HomeStore {
             unit: s.unit,
             describes: `live ${s.kind ?? 'sensor'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''}`,
           });
+        for (const a of n.actuators ?? [])
+          caps.push({
+            id: `${n.id}.${a.key}`,
+            label: `${n.id} · ${a.key}`,
+            kind: 'actuator',
+            icon: actuatorIconFor(a.kind),
+            describes: `commandable ${a.kind ?? 'actuator'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''} — drive it with the actuate tool`,
+          });
+      }
     return caps;
   }
   /** Home-Model nodes derived from paired hubs' real ESP32 nodes. */
@@ -207,14 +237,23 @@ export class MemoryStore implements HomeStore {
           // Real hub nodes aren't bound to the demo zones; label the zone by hub.
           zone: snap.hubName ?? snap.hubId,
           hardware: n.board ?? 'esp32',
-          capabilities: n.sensors.map((s) => ({
-            id: `${n.id}.${s.key}`,
-            label: `${n.id} · ${s.key}`,
-            kind: 'sensor' as const,
-            icon: iconFor(s.kind),
-            unit: s.unit,
-            describes: `live ${s.kind ?? 'sensor'} on ${n.id}`,
-          })),
+          capabilities: [
+            ...n.sensors.map((s) => ({
+              id: `${n.id}.${s.key}`,
+              label: `${n.id} · ${s.key}`,
+              kind: 'sensor' as const,
+              icon: iconFor(s.kind),
+              unit: s.unit,
+              describes: `live ${s.kind ?? 'sensor'} on ${n.id}`,
+            })),
+            ...(n.actuators ?? []).map((a) => ({
+              id: `${n.id}.${a.key}`,
+              label: `${n.id} · ${a.key}`,
+              kind: 'actuator' as const,
+              icon: actuatorIconFor(a.kind),
+              describes: `commandable ${a.kind ?? 'actuator'} on ${n.id}`,
+            })),
+          ],
         } as HomeNode);
     return out;
   }
@@ -293,6 +332,14 @@ export class MemoryStore implements HomeStore {
   async setCadence(input: string, intervalMs: number | null): Promise<void> {
     if (intervalMs == null) this.cadences.delete(input);
     else this.cadences.set(input, intervalMs);
+    this.persist();
+  }
+  async getDesired(): Promise<Record<string, boolean>> {
+    return Object.fromEntries(this.desired);
+  }
+  async setDesired(input: string, on: boolean | null): Promise<void> {
+    if (on == null) this.desired.delete(input);
+    else this.desired.set(input, on);
     this.persist();
   }
 }
@@ -549,6 +596,20 @@ class TablestoreStore extends MemoryStore {
   async setCadence(input: string, intervalMs: number | null): Promise<void> {
     await super.setCadence(input, intervalMs); // in-memory
     await this.putBlob('cadences', Object.fromEntries(this.cadences));
+  }
+  async getDesired(): Promise<Record<string, boolean>> {
+    // Read through so a command set on another FC instance is seen on the hub's next sync.
+    const d = await this.getBlob('desired');
+    if (!d) return {};
+    try {
+      return JSON.parse(d) as Record<string, boolean>;
+    } catch {
+      return {};
+    }
+  }
+  async setDesired(input: string, on: boolean | null): Promise<void> {
+    await super.setDesired(input, on); // in-memory
+    await this.putBlob('desired', Object.fromEntries(this.desired));
   }
 }
 
