@@ -44,7 +44,7 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
     const sensors: HubSensorReport[] = asArray(describe.sensors)
       .map(asObj)
       .filter((s) => typeof s.key === 'string')
-      .map((s) => ({ key: s.key as string, kind: asStr(s.kind), unit: asStr(s.unit) }));
+      .map((s) => ({ key: s.key as string, kind: asStr(s.kind), unit: asStr(s.unit), vision: s.vision === true }));
     const actuators: HubActuatorReport[] = asArray(describe.actuators)
       .map(asObj)
       .filter((a) => typeof a.key === 'string')

@@ -106,6 +106,18 @@ export const listEvents = (limit = 20, token?: string | null) =>
   call<RunEvent[]>('list_events', { limit }, token);
 export const readInput = (input: string, token?: string | null) =>
   call<Reading | null>('read_input', { input, agg: 'latest' }, token);
+
+/** Latest camera frame for a vision input — a short-lived presigned OSS GET URL the hub pushed
+ *  up (via /hub/frame). `ossUrl` is null until a frame has actually been stored, or if OSS is off. */
+export interface Snapshot {
+  input: string;
+  ts: number;
+  ossUrl: string | null;
+  mime: string;
+  provisioned: boolean;
+}
+export const getSnapshot = (input: string, token?: string | null) =>
+  call<Snapshot>('get_snapshot', { input }, token);
 export const authorWatch = (wish: string, token?: string | null) =>
   call<{ questionId: string; question: Watch; engine: string }>('author_question', { wish }, token);
 /** Edit a watch: re-compiles the new wording into a fresh Question, keeping its id. */

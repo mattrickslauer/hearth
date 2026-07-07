@@ -31,6 +31,7 @@ import {
 import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore, hubView } from './hubs';
 import { syncHubDevices } from './hub-devices';
 import { relayConfig, relayEnabled, publishToRelay } from './relay';
+import { putFrame, ossProvisioned } from './oss';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
@@ -257,6 +258,32 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       // states. The hub relays each to its node on the node's next ingest POST — the only
       // downlink path. `desired` is the "desired" half of the device shadow the node converges to.
       return send(res, 200, { ...result, cadences: await store.getCadences(), desired: await store.getDesired() });
+    }
+
+    // A paired hub pushes its latest camera frame (a data: URI) for one vision input. The bytes
+    // land in OSS as that input's `latest.jpg`; get_snapshot then presigns them for the dashboard
+    // and the Qwen-VL judge — so frames reach the cloud like any reading, no LAN reach-in needed.
+    // Same token + revocation checkpoint as /hub/devices, plus an ownership guard so a hub can
+    // only overwrite frames for a node it actually reports.
+    if (path === '/hub/frame' && method === 'POST') {
+      const claims = verifyHubToken(bearer(req));
+      if (!claims) return send(res, 401, { error: 'invalid hub token' });
+      const hub = await getHubStore().getById(claims.sub);
+      if (!hub || hub.accountId !== claims.acc || hub.status !== 'claimed') {
+        return send(res, 403, { error: 'hub no longer paired' });
+      }
+      const body = await readBody(req);
+      const input = typeof body.input === 'string' ? body.input : '';
+      const image = typeof body.image === 'string' ? body.image : '';
+      if (!input || !image) return send(res, 400, { error: 'input and image (data: URI) required' });
+      if (!ossProvisioned()) return send(res, 200, { ok: true, provisioned: false, note: 'OSS not configured; frame not stored.' });
+      const store = await getStoreFor(claims.acc);
+      const owns = (await store.listHubDevices()).some((s) => s.nodes.some((n) => input.startsWith(`${n.id}.`)));
+      if (!owns) return send(res, 404, { error: 'unknown input' });
+      const key = await putFrame(input, image).catch(() => null);
+      hub.lastSeenAt = Date.now();
+      await getHubStore().save(hub);
+      return send(res, key ? 200 : 400, key ? { ok: true, provisioned: true, input, key } : { error: 'image must be a data: URI' });
     }
 
     /* --- per-sensor sample cadence (frontend → backend → hub → node downlink) --- */

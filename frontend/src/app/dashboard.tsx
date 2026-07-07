@@ -24,6 +24,7 @@ import {
   authorWatch,
   deleteWatch,
   describeHome,
+  getSnapshot,
   listCadences,
   listEvents,
   listWatches,
@@ -36,6 +37,7 @@ import {
   type HomeModel,
   type Reading,
   type RunEvent,
+  type Snapshot,
   type Watch,
 } from '@/lib/home';
 import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
@@ -310,7 +312,10 @@ export default function DashboardScreen() {
   }
   if (status === 'signedOut') return <Redirect href="/signin" />;
 
-  const sensors = home?.capabilities.filter((c) => c.kind === 'sensor') ?? [];
+  const allSensors = home?.capabilities.filter((c) => c.kind === 'sensor') ?? [];
+  // Camera (vision) sensors render as their own frame card, not a generic value tile.
+  const visionSensors = allSensors.filter((c) => c.vision);
+  const sensors = allSensors.filter((c) => !c.vision);
   const devices = home?.nodes.length ?? 0;
   const pad = { paddingHorizontal: gutter };
 
@@ -526,8 +531,18 @@ export default function DashboardScreen() {
             </Card>
           ) : null}
 
-          {/* camera — a sensor that snaps a frame on a cadence (shown when a hub URL is set) */}
-          {HUB_URL ? (
+          {/* camera — a vision sensor. The hub snaps a frame on a cadence and pushes it to the
+              cloud (→ OSS); we pull the latest by presigned URL, so it works on any network with
+              no per-hub address to configure. Falls back to the LAN hub URL only if no cloud
+              vision sensor is present and EXPO_PUBLIC_HUB_URL is set (local dev / direct LAN). */}
+          {visionSensors.length ? (
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>Camera</Text>
+              {visionSensors.map((c) => (
+                <CloudCameraCard key={c.id} theme={theme} cap={c} token={token} />
+              ))}
+            </View>
+          ) : HUB_URL ? (
             <View style={styles.section}>
               <Text style={[styles.sectionTitle, { color: theme.text }]}>Camera</Text>
               <CameraCard theme={theme} hubUrl={HUB_URL} />
@@ -709,6 +724,87 @@ interface CamConfig {
   cadenceMs: number;
   hasFrame: boolean;
   frameAt: number | null;
+}
+
+// Cloud-brokered camera: the hub pushed its latest frame up to OSS, and get_snapshot hands us a
+// short-lived presigned URL for it. No hub address to configure — this works wherever the
+// dashboard runs, for any number of hubs, just like every other sensor. We re-pull on a cadence
+// (each call mints a fresh URL, so the browser never serves a stale cached frame).
+function CloudCameraCard({
+  theme,
+  cap,
+  token,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  cap: HomeCapability;
+  token: string | null;
+}) {
+  const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [frameOk, setFrameOk] = useState(false);
+  const [loadedAt, setLoadedAt] = useState<number | null>(null);
+
+  const refresh = useCallback(() => {
+    getSnapshot(cap.id, token)
+      .then(setSnap)
+      .catch(() => setSnap(null));
+  }, [cap.id, token]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+  // Re-pull on the snap cadence — a photo every few seconds, faithful to "sampled, not streamed".
+  useEffect(() => {
+    const id = setInterval(refresh, DEFAULT_CADENCE_MS);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const uri = snap?.ossUrl ?? null;
+  const waiting =
+    snap?.provisioned === false
+      ? 'Cloud image store (OSS) isn’t configured on the backend yet.'
+      : 'Waiting for a frame — the hub pushes one every few seconds once its camera is running.';
+
+  return (
+    <Card style={{ gap: Spacing.three }}>
+      <View style={styles.camHead}>
+        <Text style={[styles.cardTitle, { color: theme.text }]}>{cap.label || 'Camera'}</Text>
+        <View style={styles.watchTags}>
+          <Tag theme={theme} on text="vision" />
+          <Tag theme={theme} on={!!uri} text={uri ? 'live' : 'no frame'} />
+        </View>
+      </View>
+
+      <View style={[styles.camBox, { backgroundColor: theme.codeBg, borderColor: theme.border }]}>
+        {uri ? (
+          <Image
+            source={{ uri }}
+            style={styles.camImg}
+            resizeMode="cover"
+            onLoad={() => {
+              setFrameOk(true);
+              setLoadedAt(Date.now());
+            }}
+            onError={() => setFrameOk(false)}
+          />
+        ) : null}
+        {frameOk && uri ? (
+          <View style={styles.camStamp}>
+            <View style={[styles.camStampDot, { backgroundColor: theme.ember }]} />
+            <Text style={styles.camStampText}>snapped {loadedAt ? new Date(loadedAt).toLocaleTimeString() : ''}</Text>
+          </View>
+        ) : (
+          <View style={styles.camPlaceholder}>
+            <Text style={[styles.camPlaceholderText, { color: theme.textMuted }]}>{waiting}</Text>
+          </View>
+        )}
+      </View>
+
+      <Text style={[styles.camCaption, { color: theme.textMuted }]}>
+        The hub samples a frame and pushes it to the cloud; Qwen-VL reads it only when a vision watch
+        needs it — no video stream leaves the home.
+      </Text>
+    </Card>
+  );
 }
 
 // The camera is just another sensor: it snaps a frame on a cadence. This tile pulls the hub's

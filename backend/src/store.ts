@@ -45,6 +45,7 @@ export interface HubSensorReport {
   key: string; // e.g. 'board.temp'
   kind?: string; // 'temperature' | 'humidity' | ...
   unit?: string;
+  vision?: boolean; // true for a camera frame sensor (cam.frame) — enables the Qwen-VL path + camera card
 }
 /** One actuator a real hub-reported node exposes — something the cloud can command. */
 export interface HubActuatorReport {
@@ -74,7 +75,17 @@ export interface HubDeviceSnapshot {
 
 /** Emoji marker for a sensor kind — mirrors the demo Capability.icon convention. */
 const iconFor = (kind?: string): string =>
-  kind === 'temperature' ? '🌡️' : kind === 'humidity' ? '💧' : kind === 'distance' ? '📏' : kind === 'motion' ? '🚶' : '📟';
+  kind === 'temperature'
+    ? '🌡️'
+    : kind === 'humidity'
+      ? '💧'
+      : kind === 'distance'
+        ? '📏'
+        : kind === 'motion'
+          ? '🚶'
+          : kind === 'camera'
+            ? '📷'
+            : '📟';
 
 /** Emoji marker for an actuator kind. */
 const actuatorIconFor = (kind?: string): string =>
@@ -235,9 +246,10 @@ export class MemoryStore implements HomeStore {
             id: `${n.id}.${s.key}`,
             label: `${n.id} · ${s.key}`,
             kind: 'sensor',
-            icon: iconFor(s.kind),
+            icon: iconFor(s.vision ? 'camera' : s.kind),
             unit: s.unit,
-            describes: `live ${s.kind ?? 'sensor'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''}`,
+            describes: `live ${s.vision ? 'camera' : (s.kind ?? 'sensor')} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''}`,
+            vision: s.vision,
           });
         for (const a of n.actuators ?? [])
           caps.push({
@@ -266,9 +278,10 @@ export class MemoryStore implements HomeStore {
               id: `${n.id}.${s.key}`,
               label: `${n.id} · ${s.key}`,
               kind: 'sensor' as const,
-              icon: iconFor(s.kind),
+              icon: iconFor(s.vision ? 'camera' : s.kind),
               unit: s.unit,
-              describes: `live ${s.kind ?? 'sensor'} on ${n.id}`,
+              describes: `live ${s.vision ? 'camera' : (s.kind ?? 'sensor')} on ${n.id}`,
+              vision: s.vision,
             })),
             ...(n.actuators ?? []).map((a) => ({
               id: `${n.id}.${a.key}`,

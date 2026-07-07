@@ -566,9 +566,21 @@ async function main() {
   // Optional camera sensor. Enabled with HEARTH_CAM=1 — it registers itself as a node via the
   // same ingest path, so it flows to the registry, /live, and the cloud like any ESP node.
   if (process.env.HEARTH_CAM === '1') {
-    camera = createCamera({ ingest });
+    // Push each snapped frame up to the cloud (→ OSS) so any dashboard, on any network, and the
+    // Qwen-VL judge pull it by presigned URL — the scalable path, no per-hub URL to hardcode.
+    // No-op until paired (the LAN GET /frame still serves it); errors are logged, never fatal.
+    const pushFrame = async (input, dataUri) => {
+      if (!hubToken) return;
+      try {
+        const { ok, status, data } = await api('/hub/frame', { input, image: dataUri }, hubToken);
+        if (!ok) console.log(`[cam→cloud] frame push rejected ${status}: ${data.error || 'unknown'}`);
+      } catch (e) {
+        console.log(`[cam→cloud] frame push failed: ${e.message}`);
+      }
+    };
+    camera = createCamera({ ingest, onFrame: pushFrame });
     camera.start();
-    console.log(`[hub] camera enabled — latest frame at GET http://<hub>:${PORT}/frame`);
+    console.log(`[hub] camera enabled — frames pushed to cloud + served locally at GET http://<hub>:${PORT}/frame`);
   }
 
   if (hubToken) console.log(`  Already paired (hub ${state.hubId}, account ${accountId}). Heartbeating + syncing.\n`);
