@@ -21,6 +21,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const tablestoreVersion = require('tablestore/package.json').version;
+const aliOssVersion = require('ali-oss/package.json').version;
 
 await build({
   entryPoints: ['src/server.ts'],
@@ -37,8 +38,12 @@ await build({
 // resolves it at runtime and it runs unbundled, in non-strict CommonJS.
 writeFileSync(
   'dist/package.json',
-  JSON.stringify({ private: true, dependencies: { tablestore: tablestoreVersion } }, null, 2) + '\n',
+  JSON.stringify(
+    { private: true, dependencies: { tablestore: tablestoreVersion, 'ali-oss': aliOssVersion } },
+    null,
+    2,
+  ) + '\n',
 );
 execSync('npm install --omit=dev --no-audit --no-fund --no-package-lock', { cwd: 'dist', stdio: 'inherit' });
 
-console.log('built dist/server.cjs + dist/node_modules (tablestore)');
+console.log('built dist/server.cjs + dist/node_modules (tablestore + ali-oss)');

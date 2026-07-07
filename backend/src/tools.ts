@@ -14,6 +14,7 @@
 import { author as qwenAuthor, hasKey, validateQuestion } from './qwen';
 import { parseDuration, defaultRecord, type Question, type RecordPolicy } from './domain';
 import type { Agg, HomeStore, Scalar } from './store';
+import { ossProvisioned, putImage, putFrame, presignKey, frameKey, resolveImage } from './oss';
 
 export interface ToolCtx {
   store: HomeStore;
@@ -100,15 +101,44 @@ export const TOOLS: Tool[] = [
       required: ['input'],
       additionalProperties: false,
     },
-    // OSS not provisioned yet — return the shape with a clear marker.
-    handler: async (a) => ({
-      input: str(a.input),
-      ts: num(a.at, Date.now()),
-      ossUrl: null,
-      mime: 'image/jpeg',
-      provisioned: false,
-      note: 'OSS presigned URLs land here once the Alibaba account + bucket exist (backend/README.md).',
-    }),
+    handler: async (a) => {
+      const input = str(a.input);
+      if (!ossProvisioned()) {
+        return {
+          input,
+          ts: num(a.at, Date.now()),
+          ossUrl: null,
+          mime: 'image/jpeg',
+          provisioned: false,
+          note: 'OSS not configured (set OSS_BUCKET). Frames travel inline as base64 until then.',
+        };
+      }
+      // Presigned GET for the latest stored frame of this input (populated by put_snapshot /
+      // the hub frame push). The URL 404s until a frame has actually been stored.
+      const ossUrl = await presignKey(frameKey(input), 600).catch(() => null);
+      return { input, ts: num(a.at, Date.now()), ossUrl, mime: 'image/jpeg', provisioned: true };
+    },
+  },
+  {
+    name: 'put_snapshot',
+    description:
+      'Store a camera frame (a data: URI) to OSS as the latest frame for an input, so get_snapshot and the Qwen-VL judge can fetch it by presigned URL instead of shipping base64. Raw frame stays out of the store; only OSS holds it.',
+    mode: ['runtime'],
+    parameters: {
+      type: 'object',
+      properties: { input: { type: 'string' }, image: { type: 'string', description: 'data: URI (base64 JPEG/PNG)' } },
+      required: ['input', 'image'],
+      additionalProperties: false,
+    },
+    handler: async (a) => {
+      const input = str(a.input);
+      const image = str(a.image);
+      if (!input || !image) throw new Error('input and image (data: URI) required');
+      if (!ossProvisioned()) return { provisioned: false, note: 'OSS not configured; frame not stored.' };
+      const handle = await putFrame(input, image);
+      if (!handle) throw new Error('image must be a data: URI');
+      return { provisioned: true, input, key: handle, ts: Date.now() };
+    },
   },
   {
     name: 'list_hub_devices',
@@ -241,9 +271,21 @@ export const TOOLS: Tool[] = [
       if (!label) throw new Error('label required');
       if (!image) throw new Error('image required (data: URI or URL)');
       const member = { id: nextHmId(), label, image, addedAt: Date.now() };
+      // Durable storage: push the reference photo to OSS and keep only the `oss://` handle in
+      // the store (small + durable). Falls back to inline when OSS isn't configured or the
+      // value is already a URL.
+      if (ossProvisioned()) {
+        const handle = await putImage('household', member.id, image).catch(() => null);
+        if (handle) member.image = handle;
+      }
       await store.putHouseholdMember(member);
       // Don't echo the (large) image back — just the record.
-      return { id: member.id, label: member.label, addedAt: member.addedAt };
+      return {
+        id: member.id,
+        label: member.label,
+        addedAt: member.addedAt,
+        storage: member.image.startsWith('oss://') ? 'oss' : 'inline',
+      };
     },
   },
   {
@@ -251,7 +293,15 @@ export const TOOLS: Tool[] = [
     description: 'List household members and their reference photos (used to recognise family on the doorway camera).',
     mode: ['authoring', 'runtime'],
     parameters: { type: 'object', properties: {}, additionalProperties: false },
-    handler: (_a, { store }) => store.listHousehold(),
+    handler: async (_a, { store }) => {
+      const members = await store.listHousehold();
+      if (!ossProvisioned()) return members;
+      // Resolve `oss://` handles to short-lived presigned GET URLs (local signing, no network)
+      // so both the dashboard and Qwen-VL can fetch each reference photo.
+      return Promise.all(
+        members.map(async (m) => ({ ...m, image: await resolveImage(m.image, 3600).catch(() => m.image) })),
+      );
+    },
   },
   {
     name: 'remove_household_member',
