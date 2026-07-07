@@ -537,8 +537,10 @@ class RateLimiter {
     const now = Date.now();
     const cutoff = now - this.windowMs;
     const arr = (this.hits.get(key) ?? []).filter((t) => t > cutoff);
-    // bound memory: drop the map wholesale if it grows pathologically (per-instance)
-    if (this.hits.size > 50_000) this.hits.clear();
+    // Bound memory by evicting only fully-expired keys — never wipe live counters.
+    // A wholesale clear() could be forced (spoof 50k distinct keys) to reset everyone's
+    // limit at once, briefly nullifying OTP/enroll throttles.
+    if (this.hits.size > 50_000) this.sweep(cutoff);
     if (arr.length >= this.max) {
       this.hits.set(key, arr);
       return false;
@@ -546,6 +548,13 @@ class RateLimiter {
     arr.push(now);
     this.hits.set(key, arr);
     return true;
+  }
+
+  /** Delete only keys whose most recent hit is already outside the window. */
+  private sweep(cutoff: number): void {
+    for (const [k, times] of this.hits) {
+      if (times.length === 0 || times[times.length - 1] <= cutoff) this.hits.delete(k);
+    }
   }
 }
 
