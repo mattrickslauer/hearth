@@ -43,9 +43,11 @@ const isCompleteJpeg = (buf) => buf.length > 3 && buf[buf.length - 2] === 0xff &
  * (to fold DESCRIBE/READING into the registry like any node). Returns handles
  * the hub uses for GET /frame and live cadence retuning.
  *
- * @param {{ ingest: (doc:object)=>void }} deps
+ * @param {{ ingest: (doc:object)=>void, onFrame?: (input:string, dataUri:string)=>void }} deps
+ *   onFrame — called with the full-frame data: URI each time a fresh JPEG is captured, so the
+ *   hub can push the bytes up to Hearth Cloud (→ OSS) where the dashboard and Qwen-VL read them.
  */
-export function createCamera({ ingest }) {
+export function createCamera({ ingest, onFrame }) {
   const id = process.env.HEARTH_CAM_ID || 'hub-cam';
   const source = process.env.HEARTH_CAM_SOURCE || 'rtmp';
   const rtmpUrl = process.env.HEARTH_CAM_RTMP || 'rtmp://0.0.0.0:1935/live';
@@ -67,6 +69,7 @@ export function createCamera({ ingest }) {
     sensors: [
       {
         key: 'cam.frame',
+        kind: 'camera',
         label: 'Doorway camera',
         vision: true,
         describes: 'a live camera frame of the doorway, sampled at a cadence for Qwen-VL to read',
@@ -140,6 +143,10 @@ export function createCamera({ ingest }) {
             type: 'hearth.node.reading',
             readings: { 'cam.frame': `q${quality} ${width}px ${(buf.length / 1024).toFixed(0)}KB @${hhmmss()}` },
           });
+          // Push the actual pixels up to the cloud (→ OSS) so any dashboard, anywhere, and the
+          // Qwen-VL judge can pull this frame by presigned URL — no reach-in to the LAN. Sampled,
+          // not streamed: one JPEG per snap, overwriting a single latest-frame key.
+          if (onFrame) onFrame(`${id}.cam.frame`, `data:image/jpeg;base64,${buf.toString('base64')}`);
         }
       }
     } catch {
