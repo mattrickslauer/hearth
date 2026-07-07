@@ -82,6 +82,8 @@ export interface Watch {
   push?: boolean;
   /** What Qwen recommends adding to make this (vision) watch work optimally. */
   contextSuggestions?: ContextSuggestion[];
+  /** Reference-memory objects (household member ids) attached to this watch. */
+  memoryIds?: string[];
 }
 
 export interface RunEvent {
@@ -125,6 +127,9 @@ export const updateWatch = (id: string, wish: string, token?: string | null) =>
   call<{ questionId: string; question: Watch; engine: string }>('update_question', { id, wish }, token);
 export const deleteWatch = (id: string, token?: string | null) =>
   call<{ ok: boolean; questionId: string }>('delete_question', { id }, token);
+/** Attach reference-memory objects to a watch (replaces its links; [] clears them). */
+export const linkWatchMemory = (id: string, memoryIds: string[], token?: string | null) =>
+  call<{ questionId: string; question: Watch }>('set_question_memory', { id, memoryIds }, token);
 export const suggestRuns = (token?: string | null) =>
   call<{ suggestions: string[]; brain: string }>('suggest_runs', {}, token);
 
