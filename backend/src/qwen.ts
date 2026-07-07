@@ -24,6 +24,8 @@ import {
 const ENDPOINT =
   process.env.QWEN_BASE_URL ?? 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions';
 const TEXT_MODEL = process.env.QWEN_MODEL ?? 'qwen-plus';
+// Vision model for the runtime "reasoning about a real frame" role (Qwen-VL).
+const VISION_MODEL = process.env.QWEN_VL_MODEL ?? 'qwen-vl-plus';
 
 const CAPS: CapabilityLite[] = CAPABILITIES.map((c) => ({
   id: c.id,
@@ -40,6 +42,12 @@ export interface JudgeInput {
   questions: string[];
   scene: string;
   visitor: { label: string; household: boolean; rfid: string | null } | null;
+  /**
+   * Real camera frames for the Qwen-VL path — each an http(s) URL or a
+   * `data:image/...;base64,...` URI. When present (and a key is set) the judge
+   * routes to the vision model and actually LOOKS instead of reading `scene`.
+   */
+  images?: string[];
 }
 
 async function chatJSON(key: string, system: string, user: string): Promise<Record<string, unknown>> {
@@ -61,11 +69,63 @@ async function chatJSON(key: string, system: string, user: string): Promise<Reco
   return extractJSON(data.choices?.[0]?.message?.content ?? '');
 }
 
+/**
+ * Multimodal call — the runtime Qwen-VL path. Same OpenAI-compatible endpoint,
+ * but the user turn carries the text prompt plus one or more images (URL or
+ * base64 data URI). We deliberately do NOT set response_format here: the VL
+ * models don't reliably honour json_object, so we let the prompt ask for JSON
+ * and lean on extractJSON. Falls through to the caller's mock on throw.
+ */
+async function chatVisionJSON(
+  key: string,
+  system: string,
+  user: string,
+  images: string[],
+): Promise<Record<string, unknown>> {
+  const content: unknown[] = [{ type: 'text', text: user }];
+  for (const url of images) content.push({ type: 'image_url', image_url: { url } });
+  const res = await fetch(ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+    body: JSON.stringify({
+      model: VISION_MODEL,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content },
+      ],
+      temperature: 0.2,
+    }),
+  });
+  if (!res.ok) throw new Error(`qwen-vl ${res.status}: ${await res.text()}`);
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  return extractJSON(data.choices?.[0]?.message?.content ?? '');
+}
+
 function extractJSON(text: string): Record<string, unknown> {
   const start = text.indexOf('{');
   const end = text.lastIndexOf('}');
   if (start === -1 || end === -1) throw new Error('no JSON in reply');
   return JSON.parse(text.slice(start, end + 1));
+}
+
+/**
+ * Bare Qwen-VL probe — asks a free-form question about one or more images and
+ * returns the model's JSON answer verbatim. Used by the vision self-check and
+ * handy for debugging the frame pipeline in isolation of the judge grammar.
+ */
+export async function probeVision(
+  images: string[],
+  question: string,
+): Promise<{ answer: Record<string, unknown>; engine: 'qwen' | 'mock' }> {
+  const key = process.env.QWEN_API_KEY;
+  if (!key) return { answer: { note: 'no key — vision unavailable' }, engine: 'mock' };
+  const answer = await chatVisionJSON(
+    key,
+    'You are a precise vision system. Answer only about what is actually visible in the image(s). Reply with ONLY a JSON object.',
+    `${question}\nReturn JSON only.`,
+    images,
+  );
+  return { answer, engine: 'qwen' };
 }
 
 /** Collect every inputId a compiledSpec references (grounding check). */
@@ -125,8 +185,11 @@ export async function author(wish: string): Promise<{ question: AuthoredQuestion
 export async function judge(input: JudgeInput): Promise<{ judgment: Judgment; engine: 'qwen' | 'mock' }> {
   const key = process.env.QWEN_API_KEY;
   if (key) {
+    const useVision = !!input.images?.length;
     try {
-      const raw = await chatJSON(key, judgeSystemPrompt(), judgeUserPrompt(input));
+      const raw = useVision
+        ? await chatVisionJSON(key, judgeSystemPrompt(), judgeUserPrompt(input), input.images!)
+        : await chatJSON(key, judgeSystemPrompt(), judgeUserPrompt(input));
       if (typeof raw.fired !== 'boolean' || !raw.verdict) throw new Error('malformed judgment');
       return {
         judgment: {
@@ -139,7 +202,7 @@ export async function judge(input: JudgeInput): Promise<{ judgment: Judgment; en
         engine: 'qwen',
       };
     } catch (e) {
-      console.warn('[qwen] judge fell back to mock:', (e as Error).message);
+      console.warn(`[qwen] judge (${useVision ? 'vision' : 'text'}) fell back to mock:`, (e as Error).message);
     }
   }
   const judgment = mockJudge({
