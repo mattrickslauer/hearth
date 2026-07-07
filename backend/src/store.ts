@@ -80,6 +80,18 @@ export interface RunEventRow {
   evaluatedBy?: 'local' | 'qwen';
 }
 
+/**
+ * A household member the homeowner uploaded a reference photo of. At judge time these
+ * become reference images for Qwen-VL so it can tell family from strangers. `image` is a
+ * `data:` URI (base64) now; when OSS is provisioned it becomes a durable OSS URL instead.
+ */
+export interface HouseholdMember {
+  id: string;
+  label: string; // "Alex"
+  image: string; // data: URI or OSS URL
+  addedAt: number;
+}
+
 export interface HomeStore {
   describeHome(): Promise<HomeModel>;
   listInputs(filter?: 'sensor' | 'actuator'): Promise<Capability[]>;
@@ -102,6 +114,12 @@ export interface HomeStore {
   getCadences(): Promise<Record<string, number>>;
   /** Set (or clear, when ms is null) one sensor's desired sample cadence in milliseconds. */
   setCadence(input: string, intervalMs: number | null): Promise<void>;
+  /** Upsert a household member (reference photo Qwen-VL uses to recognise family). */
+  putHouseholdMember(m: HouseholdMember): Promise<void>;
+  /** All household members with their reference images. */
+  listHousehold(): Promise<HouseholdMember[]>;
+  /** Remove a household member; true if one was removed. */
+  deleteHouseholdMember(id: string): Promise<boolean>;
 }
 
 /** Compute an aggregate over a window ending at `now` (numbers only for mean/min/max). */
@@ -128,6 +146,7 @@ interface StoreSnapshot {
   readings: [string, Reading[]][];
   hubDevices: HubDeviceSnapshot[];
   cadences: [string, number][];
+  household: HouseholdMember[];
 }
 
 const emptyModel = (): HomeModel => ({ zones: [], nodes: [], capabilities: [] });
@@ -142,6 +161,8 @@ export class MemoryStore implements HomeStore {
   // Per-sensor desired sample cadence in ms (input id "<node>.<key>" → ms). Relayed to the
   // owning hub on its next device sync, which in turn tells the node on its next ingest POST.
   protected cadences = new Map<string, number>();
+  // Household members' reference photos — Qwen-VL's ground truth for "who is family".
+  protected household = new Map<string, HouseholdMember>();
 
   /**
    * A new home is EMPTY — no zones, devices, watches, or readings. Pass seed=true
@@ -168,6 +189,7 @@ export class MemoryStore implements HomeStore {
       readings: [...this.readings.entries()],
       hubDevices: [...this.hubDevices.values()],
       cadences: [...this.cadences.entries()],
+      household: [...this.household.values()],
     };
   }
   protected restore(s: Partial<StoreSnapshot>): void {
@@ -178,6 +200,7 @@ export class MemoryStore implements HomeStore {
     this.readings = new Map(s.readings ?? []);
     this.hubDevices = new Map((s.hubDevices ?? []).map((h) => [h.hubId, h]));
     this.cadences = new Map(s.cadences ?? []);
+    this.household = new Map((s.household ?? []).map((m) => [m.id, m]));
   }
 
   /** Capabilities derived from every paired hub's real nodes (merged into the model). */
@@ -294,6 +317,18 @@ export class MemoryStore implements HomeStore {
     if (intervalMs == null) this.cadences.delete(input);
     else this.cadences.set(input, intervalMs);
     this.persist();
+  }
+  async putHouseholdMember(m: HouseholdMember): Promise<void> {
+    this.household.set(m.id, m);
+    this.persist();
+  }
+  async listHousehold(): Promise<HouseholdMember[]> {
+    return [...this.household.values()].sort((a, b) => a.addedAt - b.addedAt);
+  }
+  async deleteHouseholdMember(id: string): Promise<boolean> {
+    const existed = this.household.delete(id);
+    if (existed) this.persist();
+    return existed;
   }
 }
 
@@ -549,6 +584,20 @@ class TablestoreStore extends MemoryStore {
   async setCadence(input: string, intervalMs: number | null): Promise<void> {
     await super.setCadence(input, intervalMs); // in-memory
     await this.putBlob('cadences', Object.fromEntries(this.cadences));
+  }
+
+  // Household members persist as per-account rows `hm#<id>` (read/write-through), like watches.
+  async putHouseholdMember(m: HouseholdMember): Promise<void> {
+    await this.putBlob(`hm#${m.id}`, m);
+  }
+  async listHousehold(): Promise<HouseholdMember[]> {
+    const rows = await this.scanBlobs('hm#', 'hm$');
+    return rows.map((d) => JSON.parse(d) as HouseholdMember).sort((a, b) => a.addedAt - b.addedAt);
+  }
+  async deleteHouseholdMember(id: string): Promise<boolean> {
+    if (!(await this.getBlob(`hm#${id}`))) return false;
+    await this.client.deleteRow({ tableName: TS_TABLE, condition: this.ignore(), primaryKey: this.pk(`hm#${id}`) });
+    return true;
   }
 }
 

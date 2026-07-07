@@ -48,6 +48,12 @@ export interface JudgeInput {
    * routes to the vision model and actually LOOKS instead of reading `scene`.
    */
   images?: string[];
+  /**
+   * Household reference photos (label + image). Sent to Qwen-VL BEFORE the live
+   * frame so it can tell family from strangers by comparison — the "facial
+   * recognition" without a face-embedding model, done by the VLM itself.
+   */
+  references?: { label: string; image: string }[];
 }
 
 async function chatJSON(key: string, system: string, user: string): Promise<Record<string, unknown>> {
@@ -185,11 +191,19 @@ export async function author(wish: string): Promise<{ question: AuthoredQuestion
 export async function judge(input: JudgeInput): Promise<{ judgment: Judgment; engine: 'qwen' | 'mock' }> {
   const key = process.env.QWEN_API_KEY;
   if (key) {
-    const useVision = !!input.images?.length;
+    // Reference photos go FIRST, the live frame(s) LAST, so the model compares against family.
+    const refs = input.references ?? [];
+    const visionImages = [...refs.map((r) => r.image), ...(input.images ?? [])];
+    const useVision = visionImages.length > 0;
+    let user = judgeUserPrompt(input);
+    if (refs.length) {
+      const list = refs.map((r, i) => `  image ${i + 1} = ${r.label}`).join('\n');
+      user += `\n\nReference images of known household members, in order:\n${list}\nThe FINAL image is the LIVE camera frame. Decide whether the person in the live frame is one of these household members (say which), or someone who is not in the household.`;
+    }
     try {
       const raw = useVision
-        ? await chatVisionJSON(key, judgeSystemPrompt(), judgeUserPrompt(input), input.images!)
-        : await chatJSON(key, judgeSystemPrompt(), judgeUserPrompt(input));
+        ? await chatVisionJSON(key, judgeSystemPrompt(), user, visionImages)
+        : await chatJSON(key, judgeSystemPrompt(), user);
       if (typeof raw.fired !== 'boolean' || !raw.verdict) throw new Error('malformed judgment');
       return {
         judgment: {

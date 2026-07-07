@@ -76,7 +76,7 @@ export function authorUserPrompt(wish: string): string {
 }
 
 export function judgeSystemPrompt(): string {
-  return `You are Hearth's runtime reasoning agent. A Question's cheap local gate is already met; now judge whether it should actually fire, reasoning about the real situation like a thoughtful person — not a dumb threshold. If a camera frame is provided you are Qwen-VL reading the doorway scene. Household members must never be flagged as intruders. Be concise and explain yourself.
+  return `You are Hearth's runtime reasoning agent. A Question's cheap local gate is already met; now judge whether it should actually fire, reasoning about the real situation like a thoughtful person — not a dumb threshold. If a camera frame is provided you are Qwen-VL reading the doorway scene. When reference images of household members are provided, compare the person in the live frame against them and treat a match as family. Household members must never be flagged as intruders. Be concise and explain yourself.
 
 Respond with ONLY a JSON object:
 {

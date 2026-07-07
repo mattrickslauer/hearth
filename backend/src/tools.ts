@@ -29,6 +29,8 @@ export interface Tool {
 
 let qseq = 0;
 const nextQid = () => `q-${Date.now().toString(36)}-${(qseq += 1)}`;
+let hmseq = 0;
+const nextHmId = () => `hm-${Date.now().toString(36)}-${(hmseq += 1)}`;
 
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d);
 const num = (v: unknown, d = 0): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
@@ -213,6 +215,52 @@ export const TOOLS: Tool[] = [
       const q = { ...(spec as unknown as Question), id: nextQid() };
       await store.putQuestion(q);
       return { questionId: q.id };
+    },
+  },
+  {
+    name: 'add_household_member',
+    description:
+      'Register a household member from a reference photo. Qwen-VL uses these at runtime to tell family from strangers (the "family upload"). image is a data: URI or an image URL.',
+    mode: ['authoring'],
+    parameters: {
+      type: 'object',
+      properties: { label: { type: 'string' }, image: { type: 'string' } },
+      required: ['label', 'image'],
+      additionalProperties: false,
+    },
+    handler: async (a, { store }) => {
+      const label = str(a.label).trim();
+      const image = str(a.image).trim();
+      if (!label) throw new Error('label required');
+      if (!image) throw new Error('image required (data: URI or URL)');
+      const member = { id: nextHmId(), label, image, addedAt: Date.now() };
+      await store.putHouseholdMember(member);
+      // Don't echo the (large) image back — just the record.
+      return { id: member.id, label: member.label, addedAt: member.addedAt };
+    },
+  },
+  {
+    name: 'list_household',
+    description: 'List household members and their reference photos (used to recognise family on the doorway camera).',
+    mode: ['authoring', 'runtime'],
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    handler: (_a, { store }) => store.listHousehold(),
+  },
+  {
+    name: 'remove_household_member',
+    description: 'Remove a household member (and their reference photo) by id.',
+    mode: ['authoring'],
+    parameters: {
+      type: 'object',
+      properties: { id: { type: 'string' } },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (a, { store }) => {
+      const id = str(a.id);
+      const existed = await store.deleteHouseholdMember(id);
+      if (!existed) throw new Error(`unknown household member: ${id}`);
+      return { ok: true, id };
     },
   },
   {
