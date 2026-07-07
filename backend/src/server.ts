@@ -128,8 +128,10 @@ async function pushReadingsToAccount(accountId: string, body: Record<string, unk
 }
 
 // Cap every request body so an unauthenticated POST (e.g. /hub/enroll, /auth/*)
-// can't stream an unbounded payload and OOM the Function Compute instance.
-const MAX_BODY_BYTES = 256 * 1024;
+// can't stream an unbounded payload and OOM the Function Compute instance. 1 MiB
+// leaves room for a downscaled reference photo / frame (base64 through /mcp/call)
+// while still bounding memory well under the 512 MB instance.
+const MAX_BODY_BYTES = 1024 * 1024;
 const tooLarge = () => Object.assign(new Error('request body too large'), { statusCode: 413 });
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {

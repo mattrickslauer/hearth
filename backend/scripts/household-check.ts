@@ -25,8 +25,8 @@ const OTHER = uri('../../frontend/assets/images/react-logo.png', 'image/png'); /
 
 // ── A) store CRUD ────────────────────────────────────────────────────────────
 const store = await makeStore();
-await store.putHouseholdMember({ id: 'hm-a', label: 'Alex', image: REF, addedAt: 1 });
-await store.putHouseholdMember({ id: 'hm-b', label: 'Sam', image: OTHER, addedAt: 2 });
+await store.putHouseholdMember({ id: 'hm-a', label: 'Alex', tags: ['family'], image: REF, addedAt: 1 });
+await store.putHouseholdMember({ id: 'hm-b', label: 'Sam', tags: ['family'], image: OTHER, addedAt: 2 });
 const two = await store.listHousehold();
 await store.deleteHouseholdMember('hm-b');
 const one = await store.listHousehold();

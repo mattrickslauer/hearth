@@ -116,6 +116,35 @@ export const deleteWatch = (id: string, token?: string | null) =>
 export const suggestRuns = (token?: string | null) =>
   call<{ suggestions: string[]; brain: string }>('suggest_runs', {}, token);
 
+/* --- reference memory: named, tagged objects Qwen-VL reasons over (family, pets, vehicles…) --- */
+
+export interface MemoryObject {
+  id: string;
+  label: string;
+  tags?: string[];
+  image: string; // presigned URL (from list) or a data: URI
+  addedAt: number;
+}
+
+/** All reference objects, images resolved to fetchable URLs (backed by OSS when provisioned). */
+export const listMemory = (token?: string | null) => call<MemoryObject[]>('list_household', {}, token);
+
+/** Add a named, tagged reference object. `image` is a data: URI; it's persisted (to OSS) server-side. */
+export const addMemoryObject = (
+  label: string,
+  image: string,
+  tags: string[],
+  token?: string | null,
+) =>
+  call<{ id: string; label: string; tags: string[]; addedAt: number; storage: string }>(
+    'add_household_member',
+    { label, image, tags },
+    token,
+  );
+
+export const removeMemoryObject = (id: string, token?: string | null) =>
+  call<{ ok: boolean; id: string }>('remove_household_member', { id }, token);
+
 /* --- per-sensor sample cadence (REST, not an MCP tool) ------------------------- */
 
 /** How fast each sensor is asked to sample, keyed by input id "<node>.<key>" → interval in ms. */
