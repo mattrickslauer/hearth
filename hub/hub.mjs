@@ -32,7 +32,7 @@
  */
 
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { homedir, hostname, platform } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -50,8 +50,29 @@ const STATE_FILE = process.env.HUB_STATE_FILE || join(STATE_DIR, 'hub-state.json
 // The installer surfaces the claim code from here; we write it on enroll, clear it on claim.
 const CLAIM_FILE = process.env.HUB_CLAIM_FILE || join(STATE_DIR, 'claim-code.txt');
 const PORT = Number(process.env.HUB_PORT || 8899);
+// Which interface the LAN server binds. Defaults to 0.0.0.0 (nodes/dashboard live on
+// other LAN hosts, so loopback-only would break them); set HUB_BIND to a specific
+// interface to narrow exposure.
+const BIND = process.env.HUB_BIND || '0.0.0.0';
+// Optional shared secret. When set, /ingest, /nodes and the /live WS require it
+// (header `x-hearth-token` or `?token=`), closing the unauthenticated LAN surface.
+// Unset = open (backward compatible with nodes that don't present a token).
+const INGEST_TOKEN = process.env.HUB_INGEST_TOKEN || '';
 const SERVICE_TYPE = 'hearth'; // advertised as _hearth._tcp.local
 const INGEST_PATH = '/ingest';
+
+// Constant-time credential check. In open mode (no token configured) everything passes.
+const constEq = (a, b) => {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+};
+function tokenOk(req) {
+  if (!INGEST_TOKEN) return true;
+  const url = new URL(req.url || '/', 'http://localhost');
+  const provided = req.headers['x-hearth-token'] || url.searchParams.get('token') || '';
+  return constEq(provided, INGEST_TOKEN);
+}
 const POLL_MS = 3000;
 const HEARTBEAT_MS = 30_000;
 const SYNC_MS = Number(process.env.HUB_SYNC_MS || 15000);
@@ -357,6 +378,11 @@ async function heartbeatLoop() {
 
 // ── LAN server + mDNS ─────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
+  if (!tokenOk(req)) {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'unauthorized' }));
+    return;
+  }
   if (req.method === 'GET' && (req.url === '/nodes' || req.url === '/')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify([...nodes.values()], null, 2));
@@ -394,14 +420,17 @@ async function startMdns() {
 async function main() {
   console.log(`[hearth-hub] backend ${BACKEND_URL}  name "${HUB_NAME}"  state ${STATE_DIR}`);
 
-  await new Promise((resolve) => server.listen(PORT, '0.0.0.0', resolve));
+  await new Promise((resolve) => server.listen(PORT, BIND, resolve));
   // Realtime LAN channel: a browser on the same network subscribes at ws://<hub>:PORT/live
   // and gets a snapshot of the current registry, then a live push on every reading.
   live = attachWebSocket(server, {
     path: '/live',
+    authorize: tokenOk, // shares the ingest token; browser passes it as ?token=
     onConnect: (send) => send({ type: 'snapshot', at: Date.now(), nodes: [...nodes.values()] }),
   });
-  console.log(`[hub] ingest listening on :${PORT} (POST ${INGEST_PATH}, GET /nodes, WS /live)`);
+  console.log(`[hub] ingest listening on ${BIND}:${PORT} (POST ${INGEST_PATH}, GET /nodes, WS /live)`);
+  if (!INGEST_TOKEN)
+    console.log('[hub] WARNING: HUB_INGEST_TOKEN unset — /ingest, /nodes and /live are open to the LAN. Set it to require a token.');
   const bonjour = await startMdns();
 
   if (hubToken) console.log(`  Already paired (hub ${state.hubId}, account ${accountId}). Heartbeating + syncing.\n`);
