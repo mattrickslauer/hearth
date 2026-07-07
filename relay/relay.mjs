@@ -156,6 +156,9 @@ function leave(socket) {
     if (!set.size) byAccount.delete(socket._accountId);
   }
 }
+// A stalled reader whose send buffer grows past this is a slow consumer we cut,
+// rather than let Node's write queue grow unbounded under a reading burst.
+const MAX_BUFFERED = 4 * 1024 * 1024;
 function publish(accountId, message) {
   const set = byAccount.get(accountId);
   if (!set || !set.size) return 0;
@@ -165,6 +168,7 @@ function publish(accountId, message) {
     try {
       s.write(frame);
       n++;
+      if (s.writableLength > MAX_BUFFERED) s.destroy(); // slow consumer — close via drop handler
     } catch {
       /* drop handler cleans up */
     }

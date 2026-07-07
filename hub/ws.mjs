@@ -17,6 +17,9 @@ const OP_TEXT = 0x1;
 const OP_CLOSE = 0x8;
 const OP_PING = 0x9;
 const OP_PONG = 0xa;
+// A stalled reader whose kernel send buffer grows past this is a slow consumer we
+// disconnect, rather than let Node's write queue grow unbounded (a memory leak).
+const MAX_BUFFERED = 4 * 1024 * 1024;
 
 function acceptKey(key) {
   return createHash('sha1').update(key + GUID).digest('base64');
@@ -185,6 +188,10 @@ export function attachWebSocket(server, { path = '/live', onConnect, authorize }
     for (const socket of clients) {
       try {
         socket.write(frame);
+        if (socket.writableLength > MAX_BUFFERED) {
+          clients.delete(socket);
+          socket.destroy(); // slow consumer — cut it instead of buffering forever
+        }
       } catch {
         clients.delete(socket);
       }

@@ -34,12 +34,23 @@ import { relayConfig, relayEnabled, publishToRelay } from './relay';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
+// Bounded LRU: a long-lived FC instance would otherwise cache one store per distinct
+// account forever. Re-inserting on access keeps the Map in LRU order; we evict the
+// oldest past the cap. Durable stores (file/Tablestore) just re-open on next access.
+const STORE_CACHE_MAX = Number(process.env.STORE_CACHE_MAX ?? 500);
 const stores = new Map<string, Promise<HomeStore>>();
 const getStoreFor = (accountId: string): Promise<HomeStore> => {
-  let s = stores.get(accountId);
-  if (!s) {
-    s = makeStore(accountId);
-    stores.set(accountId, s);
+  const existing = stores.get(accountId);
+  if (existing) {
+    stores.delete(accountId);
+    stores.set(accountId, existing);
+    return existing;
+  }
+  const s = makeStore(accountId);
+  stores.set(accountId, s);
+  if (stores.size > STORE_CACHE_MAX) {
+    const oldest = stores.keys().next().value;
+    if (oldest !== undefined) stores.delete(oldest);
   }
   return s;
 };

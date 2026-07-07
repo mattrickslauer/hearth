@@ -304,6 +304,9 @@ export class MemoryStore implements HomeStore {
  * Tablestore adapter (or a hosted DB) for production durability.
  */
 export class FileStore extends MemoryStore {
+  private dirty = false;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+
   private constructor(private readonly file: string) {
     super(false);
   }
@@ -317,10 +320,29 @@ export class FileStore extends MemoryStore {
         /* corrupt/empty file → start fresh */
       }
     }
+    // Flush any pending write on clean shutdown so a debounced burst isn't lost.
+    const onExit = () => s.flush();
+    process.once('exit', onExit);
+    process.once('beforeExit', onExit);
     return s;
   }
 
+  // Coalesce bursts (e.g. a hub sync writing K readings) into a single snapshot write
+  // instead of rewriting the whole file K times — previously O(n²) per sync.
   protected persist(): void {
+    this.dirty = true;
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => this.flush(), 50);
+    if (typeof this.flushTimer.unref === 'function') this.flushTimer.unref();
+  }
+
+  private flush(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (!this.dirty) return;
+    this.dirty = false;
     const dir = dirname(this.file);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const tmp = `${this.file}.tmp`;
