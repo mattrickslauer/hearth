@@ -83,10 +83,22 @@ async function syncToCloud() {
   }
 }
 
+// Cap the ingest body — /ingest is unauthenticated and LAN-facing, so an
+// unbounded string concat here is a trivial OOM vector.
+const MAX_BODY_BYTES = 256 * 1024;
 function readJson(req) {
   return new Promise((resolve) => {
     let data = '';
-    req.on('data', (c) => (data += c));
+    let bytes = 0;
+    req.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > MAX_BODY_BYTES) {
+        req.destroy();
+        resolve(null);
+        return;
+      }
+      data += c;
+    });
     req.on('end', () => {
       try {
         resolve(JSON.parse(data || '{}'));
