@@ -27,6 +27,46 @@ const ENDPOINT =
   'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions';
 const TEXT_MODEL = process.env.QWEN_MODEL ?? 'qwen-plus';
 
+// Backend that verifies session tokens. Only authenticated callers get to spend the
+// (metered, paid) Qwen key; everyone else is served the deterministic mock, so the
+// public demo keeps working while anonymous traffic can't run up the DashScope bill.
+const BACKEND =
+  process.env.EXPO_PUBLIC_BACKEND_URL?.replace(/\/$/, '') ||
+  'https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run';
+
+/** Resolve the caller's account id from their bearer token via the backend, or null. */
+async function authedAccountId(request: Request): Promise<string | null> {
+  const header = request.headers.get('authorization') ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  if (!token) return null;
+  try {
+    const res = await fetch(`${BACKEND}/auth/me`, { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { account?: { id?: string } };
+    return data.account?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Per-account rate limit (per serverless instance) to bound key spend even for a
+// signed-in caller. Best-effort — a shared store would be needed for hard global limits.
+const RL_MAX = 30;
+const RL_WINDOW_MS = 60_000;
+const rl = new Map<string, { count: number; resetAt: number }>();
+function allowSpend(accountId: string): boolean {
+  const now = Date.now();
+  if (rl.size > 10_000) for (const [k, v] of rl) if (now > v.resetAt) rl.delete(k);
+  const e = rl.get(accountId);
+  if (!e || now > e.resetAt) {
+    rl.set(accountId, { count: 1, resetAt: now + RL_WINDOW_MS });
+    return true;
+  }
+  if (e.count >= RL_MAX) return false;
+  e.count += 1;
+  return true;
+}
+
 const CAPS: CapabilityLite[] = CAPABILITIES.map((c) => ({
   id: c.id,
   label: c.label,
@@ -147,7 +187,10 @@ export async function POST(request: Request): Promise<Response> {
   } catch {
     return new Response('bad request', { status: 400 });
   }
-  const key = process.env.QWEN_API_KEY;
+  // Spend the real key only for an authenticated, under-quota caller. Otherwise the
+  // mock brain answers — identical shapes, zero cost, no abuse surface.
+  const accountId = await authedAccountId(request);
+  const key = accountId && allowSpend(accountId) ? process.env.QWEN_API_KEY : undefined;
 
   try {
     if (body?.task === 'author' && typeof body.wish === 'string') {

@@ -48,9 +48,26 @@ let authPromise: Promise<AuthDeps> | null = null;
 const accounts = makeAccountStore();
 const getAuth = (): Promise<AuthDeps> => (authPromise ??= makeOtpStore().then((otp) => ({ otp, accounts })));
 
-function send(res: ServerResponse, status: number, body: unknown) {
+// CORS: set CORS_ORIGINS (comma-separated) to reflect only known app origins instead
+// of the wildcard. Unset keeps '*' for backward compatibility with existing deploys.
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+function corsHeaders(req: IncomingMessage): Record<string, string> {
+  if (!ALLOWED_ORIGINS.length) return { 'access-control-allow-origin': '*' };
+  const origin = req.headers['origin'];
+  const allowed = typeof origin === 'string' && ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return { 'access-control-allow-origin': allowed, vary: 'Origin' };
+}
+
+function send(res: ServerResponse, status: number, body: unknown, req?: IncomingMessage) {
   const json = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+  res.writeHead(status, {
+    'content-type': 'application/json',
+    ...(req ? corsHeaders(req) : { 'access-control-allow-origin': ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS[0] : '*' }),
+  });
   res.end(json);
 }
 
@@ -132,7 +149,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 
   if (method === 'OPTIONS') {
     res.writeHead(204, {
-      'access-control-allow-origin': '*',
+      ...corsHeaders(req),
       'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
       'access-control-allow-headers': 'content-type, authorization',
     });

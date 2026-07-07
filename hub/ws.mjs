@@ -93,17 +93,19 @@ function decodeFrames(buf) {
  * Attach a broadcast WebSocket endpoint to an existing http.Server.
  *
  * @param {import('node:http').Server} server
- * @param {{ path?: string, onConnect?: (send: (msg: unknown) => void) => void }} opts
+ * @param {{ path?: string, onConnect?: (send: (msg: unknown) => void) => void,
+ *           authorize?: (req: import('node:http').IncomingMessage) => boolean }} opts
  *   onConnect fires per new client with a `send` fn — use it to push an initial snapshot.
+ *   authorize (optional) gates each upgrade; return false to reject before the handshake.
  * @returns {{ broadcast: (msg: unknown) => void, close: () => void, get size(): number }}
  */
-export function attachWebSocket(server, { path = '/live', onConnect } = {}) {
+export function attachWebSocket(server, { path = '/live', onConnect, authorize } = {}) {
   const clients = new Set();
 
   server.on('upgrade', (req, socket) => {
     const url = (req.url || '').split('?')[0];
     const key = req.headers['sec-websocket-key'];
-    if (url !== path || !key) {
+    if (url !== path || !key || (authorize && !authorize(req))) {
       socket.destroy();
       return;
     }
