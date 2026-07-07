@@ -75,6 +75,11 @@ resources:
         TABLESTORE_INSTANCE: ${env('TABLESTORE_INSTANCE')}
         ALI_ACCESS_KEY_ID: ${env('ALI_ACCESS_KEY_ID')}
         ALI_ACCESS_KEY_SECRET: ${env('ALI_ACCESS_KEY_SECRET')}
+        # Durable image storage on OSS (household reference photos + camera frames Qwen-VL
+        # reads). Not secret, so inline; auth uses the ALI keys above. Provisioned by
+        # `npm run oss-provision`. Unset OSS_BUCKET → images fall back to inline base64.
+        OSS_BUCKET: hearth-vision-c11d45
+        OSS_REGION: oss-ap-southeast-1
         # Auth control plane (accounts + OTP) AND the hub-pairing registry — all durable on
         # Tablestore so a redeploy no longer wipes accounts or unpairs hubs. The three auth
         # tables (accounts/account_email/auth_otp) auto-create on first use (ensureAuthTables);
