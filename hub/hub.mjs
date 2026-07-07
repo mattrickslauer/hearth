@@ -75,6 +75,7 @@ function tokenOk(req) {
 }
 const POLL_MS = 3000;
 const HEARTBEAT_MS = 30_000;
+const MAX_BACKOFF_MS = 60_000; // ceiling for exponential backoff on transient/rejected calls
 const SYNC_MS = Number(process.env.HUB_SYNC_MS || 15000);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -237,16 +238,22 @@ function readJson(req) {
 
 // ── cloud calls ───────────────────────────────────────────────────────────────
 async function api(path, body, token) {
-  const res = await fetch(`${BACKEND_URL}${path}`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
+  try {
+    const res = await fetch(`${BACKEND_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch (e) {
+    // Network error (DNS blip, backend down, TLS reset) → surface as a non-ok result with
+    // status 0 instead of rejecting, so the pairing/heartbeat loops back off, not crash.
+    return { ok: false, status: 0, data: { error: e.message || 'network error' } };
+  }
 }
 
 // Coalesce reading bursts into at most one cloud sync per debounce window, so remote
@@ -331,17 +338,24 @@ function clearClaim() {
 
 async function enroll() {
   state.enrollToken = state.enrollToken || randomBytes(32).toString('hex');
-  const { ok, data } = await api('/hub/enroll', { enrollToken: state.enrollToken, name: HUB_NAME, fw: FW });
-  if (!ok) throw new Error(`enroll failed: ${data.error || 'unknown error'}`);
+  const { ok, status, data } = await api('/hub/enroll', { enrollToken: state.enrollToken, name: HUB_NAME, fw: FW });
+  if (!ok) {
+    // Transient (network) or rate-limited (429) — log and let the caller back off/retry
+    // rather than throw, which would bubble to main() and kill the process.
+    console.log(`  enroll failed (${status || 'network'}): ${data.error || 'unknown'} — will retry.`);
+    return false;
+  }
   state.hubId = data.hubId;
   saveState(state);
   showClaim(data.claimCode, data.hubId);
+  return true;
 }
 
 async function waitForClaim() {
   console.log('  Waiting to be claimed…');
+  let backoff = POLL_MS;
   for (;;) {
-    const { ok, data } = await api('/hub/poll', { hubId: state.hubId, enrollToken: state.enrollToken });
+    const { ok, status, data } = await api('/hub/poll', { hubId: state.hubId, enrollToken: state.enrollToken });
     if (ok && data.status === 'claimed' && data.hubToken) {
       hubToken = data.hubToken;
       accountId = data.accountId;
@@ -352,14 +366,23 @@ async function waitForClaim() {
       console.log(`\n  ✓ Paired to account ${accountId}. Serving the LAN and syncing devices.\n`);
       return;
     }
-    if (!ok) {
-      // enrollment token rejected → our identity is stale; enroll fresh.
-      console.log(`  Poll rejected (${data.error || 'unknown'}) — re-enrolling.`);
+    if (ok) {
+      // Valid response, just not claimed yet → keep the steady poll cadence.
+      backoff = POLL_MS;
+    } else if (status === 0) {
+      // Network blip — do NOT wipe identity or re-enroll; just back off and retry the poll.
+      console.log(`  Poll unreachable (${data.error || 'network'}) — retry in ${Math.round(backoff / 1000)}s.`);
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+    } else {
+      // Real rejection (401) → our enrollment identity is stale; enroll fresh. Back off so a
+      // persistent backend-side rejection can't become a 3s re-enroll flood across a fleet.
+      console.log(`  Poll rejected (${status}: ${data.error || 'unknown'}) — re-enrolling.`);
       state.enrollToken = null;
       state.hubId = null;
       await enroll();
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
     }
-    await sleep(POLL_MS);
+    await sleep(backoff);
   }
 }
 

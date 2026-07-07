@@ -245,7 +245,9 @@ class RateLimiter {
     const now = Date.now();
     const cutoff = now - this.windowMs;
     const arr = (this.hits.get(key) ?? []).filter((t) => t > cutoff);
-    if (this.hits.size > 50_000) this.hits.clear();
+    // Evict only fully-expired keys — a wholesale clear() could be forced (spoof many
+    // distinct IPs) to reset everyone's enroll/claim limit at once.
+    if (this.hits.size > 50_000) this.sweep(cutoff);
     if (arr.length >= this.max) {
       this.hits.set(key, arr);
       return false;
@@ -253,6 +255,12 @@ class RateLimiter {
     arr.push(now);
     this.hits.set(key, arr);
     return true;
+  }
+
+  private sweep(cutoff: number): void {
+    for (const [k, times] of this.hits) {
+      if (times.length === 0 || times[times.length - 1] <= cutoff) this.hits.delete(k);
+    }
   }
 }
 
