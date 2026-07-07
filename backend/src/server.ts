@@ -34,12 +34,23 @@ import { relayConfig, relayEnabled, publishToRelay } from './relay';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
+// Bounded LRU: a long-lived FC instance would otherwise cache one store per distinct
+// account forever. Re-inserting on access keeps the Map in LRU order; we evict the
+// oldest past the cap. Durable stores (file/Tablestore) just re-open on next access.
+const STORE_CACHE_MAX = Number(process.env.STORE_CACHE_MAX ?? 500);
 const stores = new Map<string, Promise<HomeStore>>();
 const getStoreFor = (accountId: string): Promise<HomeStore> => {
-  let s = stores.get(accountId);
-  if (!s) {
-    s = makeStore(accountId);
-    stores.set(accountId, s);
+  const existing = stores.get(accountId);
+  if (existing) {
+    stores.delete(accountId);
+    stores.set(accountId, existing);
+    return existing;
+  }
+  const s = makeStore(accountId);
+  stores.set(accountId, s);
+  if (stores.size > STORE_CACHE_MAX) {
+    const oldest = stores.keys().next().value;
+    if (oldest !== undefined) stores.delete(oldest);
   }
   return s;
 };
@@ -48,9 +59,26 @@ let authPromise: Promise<AuthDeps> | null = null;
 const accounts = makeAccountStore();
 const getAuth = (): Promise<AuthDeps> => (authPromise ??= makeOtpStore().then((otp) => ({ otp, accounts })));
 
-function send(res: ServerResponse, status: number, body: unknown) {
+// CORS: set CORS_ORIGINS (comma-separated) to reflect only known app origins instead
+// of the wildcard. Unset keeps '*' for backward compatibility with existing deploys.
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+function corsHeaders(req: IncomingMessage): Record<string, string> {
+  if (!ALLOWED_ORIGINS.length) return { 'access-control-allow-origin': '*' };
+  const origin = req.headers['origin'];
+  const allowed = typeof origin === 'string' && ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return { 'access-control-allow-origin': allowed, vary: 'Origin' };
+}
+
+function send(res: ServerResponse, status: number, body: unknown, req?: IncomingMessage) {
   const json = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+  res.writeHead(status, {
+    'content-type': 'application/json',
+    ...(req ? corsHeaders(req) : { 'access-control-allow-origin': ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS[0] : '*' }),
+  });
   res.end(json);
 }
 
@@ -99,9 +127,24 @@ async function pushReadingsToAccount(accountId: string, body: Record<string, unk
   await publishToRelay(accountId, message);
 }
 
+// Cap every request body so an unauthenticated POST (e.g. /hub/enroll, /auth/*)
+// can't stream an unbounded payload and OOM the Function Compute instance.
+const MAX_BODY_BYTES = 256 * 1024;
+const tooLarge = () => Object.assign(new Error('request body too large'), { statusCode: 413 });
+
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const declared = Number(req.headers['content-length']);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge();
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let total = 0;
+  for await (const c of req) {
+    total += (c as Buffer).length;
+    if (total > MAX_BODY_BYTES) {
+      req.destroy();
+      throw tooLarge();
+    }
+    chunks.push(c as Buffer);
+  }
   if (!chunks.length) return {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -117,7 +160,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 
   if (method === 'OPTIONS') {
     res.writeHead(204, {
-      'access-control-allow-origin': '*',
+      ...corsHeaders(req),
       'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
       'access-control-allow-headers': 'content-type, authorization',
     });
@@ -208,9 +251,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       // Fan the fresh readings out to this account's live browsers over the gateway.
       // Awaited (not fire-and-forget) so it actually runs before FC may freeze the instance.
       await pushReadingsToAccount(claims.acc, body);
-      // Downlink: hand the hub the account's desired per-sensor sample cadences. The hub
-      // relays each to its node on the node's next ingest POST — the only downlink path.
-      return send(res, 200, { ...result, cadences: await store.getCadences() });
+      // Downlink: hand the hub the account's desired per-sensor cadences AND desired actuator
+      // states. The hub relays each to its node on the node's next ingest POST — the only
+      // downlink path. `desired` is the "desired" half of the device shadow the node converges to.
+      return send(res, 200, { ...result, cadences: await store.getCadences(), desired: await store.getDesired() });
     }
 
     /* --- per-sensor sample cadence (frontend → backend → hub → node downlink) --- */
@@ -241,6 +285,35 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const intervalMs = Math.round(clampCadence(raw));
       await store.setCadence(input, intervalMs);
       return send(res, 200, { ok: true, input, intervalMs });
+    }
+
+    /* --- actuator desired state (frontend/Qwen → backend → hub → node downlink) --- */
+
+    // Read the account's desired actuator states (input id "<node>.<key>" → on/off).
+    if (path === '/inputs/desired' && method === 'GET') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const store = await getStoreFor(session.sub);
+      return send(res, 200, { desired: await store.getDesired() });
+    }
+
+    // Command one actuator on/off. Takes effect within ~1 hub sync + 1 node cycle. The same
+    // device-shadow write the `actuate` MCP tool makes, exposed to the dashboard directly.
+    if (path === '/inputs/desired' && method === 'POST') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const body = await readBody(req);
+      const input = typeof body.input === 'string' ? body.input : '';
+      if (!input) return send(res, 400, { error: 'input required' });
+      const store = await getStoreFor(session.sub);
+      // Only accept a command for an ACTUATOR this account actually owns (via a paired hub).
+      const owns = (await store.listHubDevices()).some((s) =>
+        s.nodes.some((n) => (n.actuators ?? []).some((ac) => `${n.id}.${ac.key}` === input)),
+      );
+      if (!owns) return send(res, 404, { error: 'unknown actuator' });
+      const on = body.on === true || body.on === 'on' || body.on === 1;
+      await store.setDesired(input, on);
+      return send(res, 200, { ok: true, input, on });
     }
 
     /* --- realtime (cloud-brokered WebSocket via the relay) --- */
@@ -307,7 +380,8 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 
     return send(res, 404, { error: `not found: ${method} ${path}` });
   } catch (e) {
-    return send(res, 500, { error: (e as Error).message });
+    const status = (e as { statusCode?: number }).statusCode ?? 500;
+    return send(res, status, { error: (e as Error).message });
   }
 }
 

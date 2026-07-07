@@ -24,11 +24,21 @@ DESCRIBE {"type":"hearth.node.describe","id":"node-A1B2C3D4E5F6","fw":"0.1.0",
             {"key":"led","kind":"switch","port":8080,"path":"/actuate"}]}
 ```
 
-The `ip` + `actuators` tell the hub how to reach the node to switch it on. When a
-watch fires, the hub does `POST http://<ip>:8080/actuate {"actuator":"led","value":"on"}`
-and the node drives the pin — a real, physical on/off you can film. Point
-`ACTUATOR_PIN` at a relay/MOSFET GPIO (with `ACTUATOR_ACTIVE_HIGH 0` for active-low
-relays) to switch a real load; set it to `-1` to disable actuation entirely.
+The `ip` + `actuators` tell the hub how to reach the node to switch it on. There
+are **two ways the output gets commanded** — the node obeys both:
+
+1. **A hub-local watch fires** → the hub does `POST http://<ip>:8080/actuate
+   {"actuator":"led","value":"on"}` and the node drives the pin. Instant, and works
+   even if the internet is down (the rule runs on the hub).
+2. **The cloud `actuate` tool / dashboard commands it** → the desired state is stored
+   in the cloud as a **device shadow**, handed to the hub on its next device sync, and
+   handed to the node on the reply to its next reading POST as
+   `{"ok":true,"desired":{"led":"on"}}`. The node converges its output to match and
+   echoes `<key>.state` back up. This is how **Qwen** (or a remote phone) drives real
+   hardware — the node dials out, nothing has to reach *in* to it.
+
+Point `ACTUATOR_PIN` at a relay/MOSFET GPIO (with `ACTUATOR_ACTIVE_HIGH 0` for
+active-low relay modules) to switch a real load; set it to `-1` to disable actuation.
 
 Then, every few seconds — a reading (absent sensors report `null`, which is
 itself signal):
@@ -43,6 +53,37 @@ READING {"type":"hearth.node.reading","id":"node-A1B2C3D4E5F6","uptime_ms":5021,
 - **ESP32-WROOM-32** dev board + USB cable (a real reading needs nothing more).
 - Optional **DHT11**: data → GPIO4, `+` → 3V3, `-` → GND. A 4.7–10 kΩ pull-up
   between data and 3V3 improves reliability.
+
+## Make it a *motor node* (drive a real load)
+
+A motor node is just the actuator above pointed at a relay instead of the LED. In
+[`config.h`](include/config.h) set `ACTUATOR_KEY "motor"` and `ACTUATOR_PIN` to the
+GPIO that drives the relay. Both command paths above then switch your motor — a
+hub-local watch *and* a cloud/Qwen `actuate`.
+
+**Wiring a bare 12 V-coil relay** (e.g. Hongfa **HKVF4-4C12-B**, 12 V coil / 40 A
+contacts). A 12 V coil **cannot** be driven from a 3.3 V GPIO — use a low-side switch:
+
+```
+GPIO ──[1 kΩ]──┤ base        NPN transistor (2N2222 / BC547) — or a logic-level MOSFET gate
+               │
+     emitter ──┴── GND (shared with the ESP32 ground)
+   collector ───── relay coil (−)
+ relay coil (+) ── +12 V
+                   └──►|── FLYBACK DIODE (1N4001) across the coil, band (cathode) to +12 V.
+                        NOT OPTIONAL — the coil's collapse spike will otherwise destroy
+                        the transistor/GPIO.
+```
+
+With this NPN low-side switch, **GPIO HIGH energizes the coil** → keep
+`ACTUATOR_ACTIVE_HIGH 1`. The motor + its own power supply go on the relay's switched
+contacts (COM/NO), fully isolated from the ESP32. A pre-built opto-isolated **blue
+relay module** can instead be driven straight from the GPIO — those are usually
+active-LOW, so set `ACTUATOR_ACTIVE_HIGH 0`.
+
+**Safety veto.** `ACTUATOR_MAX_ON_MS` forces the output off after N ms of continuous
+ON — regardless of the cloud — and latches off until an explicit off command re-arms
+it. A motor you can't see shouldn't run forever on a stuck command. `0` = no limit.
 
 ## Configure
 

@@ -132,6 +132,8 @@ hub                          cloud                         user (dashboard)
 - `HUB_NAME` — display name shown on the dashboard (default: the machine's hostname)
 - `HEARTH_HOME` — where the hub, identity, logs, and PID live (default `~/.hearth`)
 - `HUB_PORT` — LAN ingest port (default `8899`)
+- `HUB_BIND` — interface the LAN server binds (default `0.0.0.0`; narrow to a specific interface to reduce exposure)
+- `HUB_INGEST_TOKEN` — when set, `/ingest`, `/nodes` and the `/live` WS require it (header `x-hearth-token`, or `?token=` for the browser WS). Unset = open to the LAN (back-compat)
 - `HUB_SYNC_MS` — device sync cadence (default `15000`)
 - `HUB_FW` — reported firmware string
 - `HEARTH_NO_MDNS=1` — install/run without mDNS

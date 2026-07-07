@@ -77,6 +77,8 @@ export interface HubStore {
   listByAccount(accountId: string): Promise<Hub[]>;
   save(hub: Hub): Promise<void>;
   remove(id: string): Promise<void>;
+  /** Drop unclaimed hubs whose claim code has expired. Returns how many were removed. */
+  purgeExpiredUnclaimed(now: number): Promise<number>;
 }
 
 class MemoryHubStore implements HubStore {
@@ -106,6 +108,17 @@ class MemoryHubStore implements HubStore {
   async remove(id: string) {
     this.byId.delete(id);
     this.persist();
+  }
+  async purgeExpiredUnclaimed(now: number): Promise<number> {
+    let removed = 0;
+    for (const [id, h] of this.byId) {
+      if (h.status === 'unclaimed' && (h.claimExpiresAt ?? 0) <= now) {
+        this.byId.delete(id);
+        removed += 1;
+      }
+    }
+    if (removed) this.persist();
+    return removed;
   }
 
   protected persist(): void {}
@@ -195,6 +208,16 @@ class TablestoreHubStore implements HubStore {
   async remove(id: string): Promise<void> {
     await tsDeleteRow(HOME_TABLE, { account: HUBS_PARTITION, sk: hubSk(id) });
   }
+  async purgeExpiredUnclaimed(now: number): Promise<number> {
+    let removed = 0;
+    for (const h of await this.all()) {
+      if (h.status === 'unclaimed' && (h.claimExpiresAt ?? 0) <= now) {
+        await tsDeleteRow(HOME_TABLE, { account: HUBS_PARTITION, sk: hubSk(h.id) });
+        removed += 1;
+      }
+    }
+    return removed;
+  }
 }
 
 let hubStore: HubStore | null = null;
@@ -222,7 +245,9 @@ class RateLimiter {
     const now = Date.now();
     const cutoff = now - this.windowMs;
     const arr = (this.hits.get(key) ?? []).filter((t) => t > cutoff);
-    if (this.hits.size > 50_000) this.hits.clear();
+    // Evict only fully-expired keys — a wholesale clear() could be forced (spoof many
+    // distinct IPs) to reset everyone's enroll/claim limit at once.
+    if (this.hits.size > 50_000) this.sweep(cutoff);
     if (arr.length >= this.max) {
       this.hits.set(key, arr);
       return false;
@@ -231,11 +256,22 @@ class RateLimiter {
     this.hits.set(key, arr);
     return true;
   }
+
+  private sweep(cutoff: number): void {
+    for (const [k, times] of this.hits) {
+      if (times.length === 0 || times[times.length - 1] <= cutoff) this.hits.delete(k);
+    }
+  }
 }
 
 // Blunt enroll spam per IP, and claim-code guessing per account.
 const enrollLimiter = new RateLimiter(20, 15 * 60_000);
 const claimLimiter = new RateLimiter(10, 15 * 60_000);
+
+// Opportunistic GC so never-claimed hubs (each /hub/enroll persists one) don't
+// accumulate forever. Throttled so a burst of enrolls triggers at most one sweep/min.
+let lastPurgeAt = 0;
+const PURGE_INTERVAL_MS = 60_000;
 
 /* ---------------------------------------------------------------------- helpers */
 
@@ -281,6 +317,12 @@ export async function enrollHub(
   if (enrollToken.length < 16) return { ok: false, error: 'enrollToken required (>=16 chars)' };
 
   const now = Date.now();
+  if (now - lastPurgeAt > PURGE_INTERVAL_MS) {
+    lastPurgeAt = now;
+    void getHubStore()
+      .purgeExpiredUnclaimed(now)
+      .catch(() => {});
+  }
   const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 60) : 'Hearth hub';
   const hub: Hub = {
     id: newHubId(),

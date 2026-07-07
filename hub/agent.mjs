@@ -23,14 +23,31 @@
  */
 
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Bonjour } from 'bonjour-service';
 
 const PORT = Number(process.env.HUB_PORT || 8899);
+const BIND = process.env.HUB_BIND || '0.0.0.0';
+// Optional shared secret; when set, /ingest and /nodes require header `x-hearth-token`
+// (or `?token=`). Unset = open (backward compatible). See hub.mjs for the same switch.
+const INGEST_TOKEN = process.env.HUB_INGEST_TOKEN || '';
 const SERVICE_TYPE = 'hearth'; // advertised as _hearth._tcp.local
 const INGEST_PATH = '/ingest';
+
+const constEq = (a, b) => {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+};
+function tokenOk(req) {
+  if (!INGEST_TOKEN) return true;
+  const url = new URL(req.url || '/', 'http://localhost');
+  const provided = req.headers['x-hearth-token'] || url.searchParams.get('token') || '';
+  return constEq(provided, INGEST_TOKEN);
+}
 
 // Cloud sync: push the node registry up to Hearth Cloud so it's stored per-account
 // and exposed to Qwen/MCP. Authenticated with the hub token that the pairing client
@@ -83,10 +100,22 @@ async function syncToCloud() {
   }
 }
 
+// Cap the ingest body — /ingest is unauthenticated and LAN-facing, so an
+// unbounded string concat here is a trivial OOM vector.
+const MAX_BODY_BYTES = 256 * 1024;
 function readJson(req) {
   return new Promise((resolve) => {
     let data = '';
-    req.on('data', (c) => (data += c));
+    let bytes = 0;
+    req.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > MAX_BODY_BYTES) {
+        req.destroy();
+        resolve(null);
+        return;
+      }
+      data += c;
+    });
     req.on('end', () => {
       try {
         resolve(JSON.parse(data || '{}'));
@@ -126,6 +155,11 @@ function ingest(doc) {
 }
 
 const server = http.createServer(async (req, res) => {
+  if (!tokenOk(req)) {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'unauthorized' }));
+    return;
+  }
   // Inspection endpoint — the current registry as JSON.
   if (req.method === 'GET' && (req.url === '/nodes' || req.url === '/')) {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -144,8 +178,10 @@ const server = http.createServer(async (req, res) => {
   res.end(JSON.stringify({ error: 'not found' }));
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[hub] ingest listening on :${PORT} (POST ${INGEST_PATH}, GET /nodes)`);
+server.listen(PORT, BIND, () => {
+  console.log(`[hub] ingest listening on ${BIND}:${PORT} (POST ${INGEST_PATH}, GET /nodes)`);
+  if (!INGEST_TOKEN)
+    console.log('[hub] WARNING: HUB_INGEST_TOKEN unset — /ingest and /nodes are open to the LAN. Set it to require a token.');
   const bonjour = new Bonjour();
   const service = bonjour.publish({
     name: 'Hearth Hub',

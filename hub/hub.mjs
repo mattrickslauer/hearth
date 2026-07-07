@@ -32,7 +32,7 @@
  */
 
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { homedir, hostname, platform } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -51,10 +51,32 @@ const STATE_FILE = process.env.HUB_STATE_FILE || join(STATE_DIR, 'hub-state.json
 // The installer surfaces the claim code from here; we write it on enroll, clear it on claim.
 const CLAIM_FILE = process.env.HUB_CLAIM_FILE || join(STATE_DIR, 'claim-code.txt');
 const PORT = Number(process.env.HUB_PORT || 8899);
+// Which interface the LAN server binds. Defaults to 0.0.0.0 (nodes/dashboard live on
+// other LAN hosts, so loopback-only would break them); set HUB_BIND to a specific
+// interface to narrow exposure.
+const BIND = process.env.HUB_BIND || '0.0.0.0';
+// Optional shared secret. When set, /ingest, /nodes and the /live WS require it
+// (header `x-hearth-token` or `?token=`), closing the unauthenticated LAN surface.
+// Unset = open (backward compatible with nodes that don't present a token).
+const INGEST_TOKEN = process.env.HUB_INGEST_TOKEN || '';
 const SERVICE_TYPE = 'hearth'; // advertised as _hearth._tcp.local
 const INGEST_PATH = '/ingest';
+
+// Constant-time credential check. In open mode (no token configured) everything passes.
+const constEq = (a, b) => {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+};
+function tokenOk(req) {
+  if (!INGEST_TOKEN) return true;
+  const url = new URL(req.url || '/', 'http://localhost');
+  const provided = req.headers['x-hearth-token'] || url.searchParams.get('token') || '';
+  return constEq(provided, INGEST_TOKEN);
+}
 const POLL_MS = 3000;
 const HEARTBEAT_MS = 30_000;
+const MAX_BACKOFF_MS = 60_000; // ceiling for exponential backoff on transient/rejected calls
 const SYNC_MS = Number(process.env.HUB_SYNC_MS || 15000);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -101,6 +123,31 @@ function cadencesForNode(nodeId) {
   }
   return out;
 }
+
+// Desired actuator state (input id "<node>.<key>" → on/off), learned from the cloud on each
+// device sync — the "desired" half of the device shadow. Same downlink carrier as cadences:
+// we hand each node its own actuators' desired states in the reply to its next ingest POST,
+// and the node converges its output to match. Keyed by full input id; handed to the node by key.
+const desiredState = new Map();
+
+// Replace our view of desired actuator states with the cloud's latest (input id → bool).
+function applyDesired(desired) {
+  if (!desired || typeof desired !== 'object') return;
+  desiredState.clear();
+  for (const [input, on] of Object.entries(desired)) desiredState.set(input, !!on);
+}
+
+// The desired actuator states for one node, keyed by bare actuator key ("on"/"off" strings the
+// node's forgiving parser understands). Empty = the cloud has commanded nothing for this node,
+// so the node leaves its output to whatever a local watch set.
+function desiredForNode(nodeId) {
+  const prefix = `${nodeId}.`;
+  const out = {};
+  for (const [input, on] of desiredState) {
+    if (input.startsWith(prefix)) out[input.slice(prefix.length)] = on ? 'on' : 'off';
+  }
+  return out;
+}
 // LAN realtime channel (browser dashboards on the same network). Set in main() once the
 // HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
 let live = null;
@@ -117,6 +164,19 @@ const runtime = createRuntime({ nodes });
 
 // Node hands back IPv4-mapped IPv6 for LAN peers (::ffff:192.168.x.y) — strip it.
 const cleanAddr = (a) => (typeof a === 'string' ? a.replace(/^::ffff:/, '') : a);
+
+// Bound the registry so a flood of distinct node IDs can't grow it (and every
+// /hub/devices payload) without limit. Re-inserting keeps the Map in LRU order;
+// past the cap we evict the least-recently-seen node. Far above any real home.
+const MAX_NODES = Number(process.env.HUB_MAX_NODES || 1000);
+function admit(id, entry) {
+  nodes.delete(id); // move-to-end so recency == Map order
+  nodes.set(id, entry);
+  if (nodes.size > MAX_NODES) {
+    const oldest = nodes.keys().next().value;
+    if (oldest !== undefined && oldest !== id) nodes.delete(oldest);
+  }
+}
 
 // Fold a node's document into the registry. DESCRIBE registers identity + capabilities;
 // READING updates the latest values. Either way we learn the node exists — no node is
@@ -148,14 +208,14 @@ function ingest(doc, addr) {
     // And nudge a cloud sync so remote (cloud-brokered) dashboards update promptly too,
     // coalescing bursts instead of waiting out the 15s timer.
     scheduleSync();
-    nodes.set(id, entry); // ensure the registry has this node before the runtime resolves its address
+    admit(id, entry); // ensure the registry has this node before the runtime resolves its address
     runtime.onReading(doc); // feed the engine + fire watches on this fresh reading
     return true;
   } else {
     return false;
   }
 
-  nodes.set(id, entry);
+  admit(id, entry);
   return true;
 }
 
@@ -182,10 +242,23 @@ function applyCadences(cadences) {
   if (camera) camera.setCadence(desiredCadence.get(`${camera.id}.cam.frame`));
 }
 
+// Cap the ingest body — /ingest is unauthenticated and LAN-facing, so an
+// unbounded string concat here is a trivial OOM vector. 256 KB is far above
+// any real DESCRIBE/READING document.
+const MAX_BODY_BYTES = 256 * 1024;
 function readJson(req) {
   return new Promise((resolve) => {
     let data = '';
-    req.on('data', (c) => (data += c));
+    let bytes = 0;
+    req.on('data', (c) => {
+      bytes += c.length;
+      if (bytes > MAX_BODY_BYTES) {
+        req.destroy();
+        resolve(null);
+        return;
+      }
+      data += c;
+    });
     req.on('end', () => {
       try {
         resolve(JSON.parse(data || '{}'));
@@ -199,16 +272,22 @@ function readJson(req) {
 
 // ── cloud calls ───────────────────────────────────────────────────────────────
 async function api(path, body, token) {
-  const res = await fetch(`${BACKEND_URL}${path}`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
+  try {
+    const res = await fetch(`${BACKEND_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch (e) {
+    // Network error (DNS blip, backend down, TLS reset) → surface as a non-ok result with
+    // status 0 instead of rejecting, so the pairing/heartbeat loops back off, not crash.
+    return { ok: false, status: 0, data: { error: e.message || 'network error' } };
+  }
 }
 
 // Coalesce reading bursts into at most one cloud sync per debounce window, so remote
@@ -244,8 +323,10 @@ async function syncToCloud() {
     const { ok, status, data } = await api('/hub/devices', { platform: platform(), nodes: [...nodes.values()] }, hubToken);
     if (ok) {
       console.log(`[hub→cloud] synced ${data.nodes ?? '?'} node(s), ${data.readings ?? 0} reading(s)`);
-      // Absorb the account's desired per-node cadences; each node picks its up on next ingest.
+      // Absorb the account's desired per-node cadences + actuator states; each node picks
+      // them up on its next ingest POST.
       applyCadences(data.cadences);
+      applyDesired(data.desired);
     } else if (status === 401 || status === 403) {
       // Token invalid or hub unpaired → drop it and re-pair. Re-enroll surfaces a fresh code.
       console.log(`[hub→cloud] rejected ${status}: ${data.error || 'unpaired'} — re-pairing.`);
@@ -293,17 +374,24 @@ function clearClaim() {
 
 async function enroll() {
   state.enrollToken = state.enrollToken || randomBytes(32).toString('hex');
-  const { ok, data } = await api('/hub/enroll', { enrollToken: state.enrollToken, name: HUB_NAME, fw: FW });
-  if (!ok) throw new Error(`enroll failed: ${data.error || 'unknown error'}`);
+  const { ok, status, data } = await api('/hub/enroll', { enrollToken: state.enrollToken, name: HUB_NAME, fw: FW });
+  if (!ok) {
+    // Transient (network) or rate-limited (429) — log and let the caller back off/retry
+    // rather than throw, which would bubble to main() and kill the process.
+    console.log(`  enroll failed (${status || 'network'}): ${data.error || 'unknown'} — will retry.`);
+    return false;
+  }
   state.hubId = data.hubId;
   saveState(state);
   showClaim(data.claimCode, data.hubId);
+  return true;
 }
 
 async function waitForClaim() {
   console.log('  Waiting to be claimed…');
+  let backoff = POLL_MS;
   for (;;) {
-    const { ok, data } = await api('/hub/poll', { hubId: state.hubId, enrollToken: state.enrollToken });
+    const { ok, status, data } = await api('/hub/poll', { hubId: state.hubId, enrollToken: state.enrollToken });
     if (ok && data.status === 'claimed' && data.hubToken) {
       hubToken = data.hubToken;
       accountId = data.accountId;
@@ -314,14 +402,23 @@ async function waitForClaim() {
       console.log(`\n  ✓ Paired to account ${accountId}. Serving the LAN and syncing devices.\n`);
       return;
     }
-    if (!ok) {
-      // enrollment token rejected → our identity is stale; enroll fresh.
-      console.log(`  Poll rejected (${data.error || 'unknown'}) — re-enrolling.`);
+    if (ok) {
+      // Valid response, just not claimed yet → keep the steady poll cadence.
+      backoff = POLL_MS;
+    } else if (status === 0) {
+      // Network blip — do NOT wipe identity or re-enroll; just back off and retry the poll.
+      console.log(`  Poll unreachable (${data.error || 'network'}) — retry in ${Math.round(backoff / 1000)}s.`);
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+    } else {
+      // Real rejection (401) → our enrollment identity is stale; enroll fresh. Back off so a
+      // persistent backend-side rejection can't become a 3s re-enroll flood across a fleet.
+      console.log(`  Poll rejected (${status}: ${data.error || 'unknown'}) — re-enrolling.`);
       state.enrollToken = null;
       state.hubId = null;
       await enroll();
+      backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
     }
-    await sleep(POLL_MS);
+    await sleep(backoff);
   }
 }
 
@@ -354,15 +451,21 @@ async function heartbeatLoop() {
 // ── LAN server + mDNS ─────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   // A LAN dashboard (Expo web on another origin) reads /frame and controls the camera, so
-  // answer CORS preflight and allow cross-origin reads. Frames are LAN-only; no auth here.
+  // answer the CORS preflight BEFORE the auth gate — browser preflights carry no token.
+  // Frames are LAN-only.
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'access-control-allow-origin': '*',
       'access-control-allow-methods': 'GET, POST, OPTIONS',
-      'access-control-allow-headers': 'content-type',
+      'access-control-allow-headers': 'content-type, x-hearth-token',
       'access-control-max-age': '86400',
     });
     res.end();
+    return;
+  }
+  if (!tokenOk(req)) {
+    res.writeHead(401, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'unauthorized' }));
     return;
   }
   if (req.method === 'GET' && (req.url === '/nodes' || req.url === '/')) {
@@ -414,11 +517,15 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === INGEST_PATH) {
     const doc = await readJson(req);
     const ok = ingest(doc, req.socket?.remoteAddress);
-    // Downlink: hand this node the per-sensor cadences the account set for its inputs (keyed
-    // by bare sensor key). Always present (possibly {}) so the node can tell "cleared" from
-    // "unspoken" and revert cleared sensors to their default.
+    // Downlink: hand this node the per-sensor cadences AND desired actuator states the account
+    // set for its inputs (keyed by bare key). Always present (possibly {}) so the node can tell
+    // "cleared" from "unspoken" and revert cleared sensors to their default.
     res.writeHead(ok ? 200 : 400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(ok && doc && doc.id ? { ok, cadences: cadencesForNode(doc.id) } : { ok }));
+    res.end(
+      JSON.stringify(
+        ok && doc && doc.id ? { ok, cadences: cadencesForNode(doc.id), desired: desiredForNode(doc.id) } : { ok },
+      ),
+    );
     return;
   }
   res.writeHead(404, { 'content-type': 'application/json' });
@@ -443,14 +550,17 @@ async function startMdns() {
 async function main() {
   console.log(`[hearth-hub] backend ${BACKEND_URL}  name "${HUB_NAME}"  state ${STATE_DIR}`);
 
-  await new Promise((resolve) => server.listen(PORT, '0.0.0.0', resolve));
+  await new Promise((resolve) => server.listen(PORT, BIND, resolve));
   // Realtime LAN channel: a browser on the same network subscribes at ws://<hub>:PORT/live
   // and gets a snapshot of the current registry, then a live push on every reading.
   live = attachWebSocket(server, {
     path: '/live',
+    authorize: tokenOk, // shares the ingest token; browser passes it as ?token=
     onConnect: (send) => send({ type: 'snapshot', at: Date.now(), nodes: [...nodes.values()] }),
   });
-  console.log(`[hub] ingest listening on :${PORT} (POST ${INGEST_PATH}, GET /nodes, WS /live)`);
+  console.log(`[hub] ingest listening on ${BIND}:${PORT} (POST ${INGEST_PATH}, GET /nodes, WS /live)`);
+  if (!INGEST_TOKEN)
+    console.log('[hub] WARNING: HUB_INGEST_TOKEN unset — /ingest, /nodes and /live are open to the LAN. Set it to require a token.');
   const bonjour = await startMdns();
 
   // Optional camera sensor. Enabled with HEARTH_CAM=1 — it registers itself as a node via the

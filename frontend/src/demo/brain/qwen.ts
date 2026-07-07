@@ -7,11 +7,18 @@
 import type { AuthoredQuestion } from './mock';
 import { mockAuthor, mockJudge } from './mock';
 import type { Judgment, Question, Visitor } from '../types';
+import { loadToken } from '@/auth/storage';
 
 async function callRoute<T>(body: unknown): Promise<T> {
+  // Forward the session token when present so the route may spend the real Qwen key;
+  // anonymous callers still get the deterministic mock from /qwen.
+  const token = loadToken();
   const res = await fetch('/qwen', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`/qwen ${res.status}`);

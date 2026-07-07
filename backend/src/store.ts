@@ -46,6 +46,11 @@ export interface HubSensorReport {
   kind?: string; // 'temperature' | 'humidity' | ...
   unit?: string;
 }
+/** One actuator a real hub-reported node exposes — something the cloud can command. */
+export interface HubActuatorReport {
+  key: string; // e.g. 'led', 'motor'
+  kind?: string; // 'switch' | 'relay' | ...
+}
 /** A real ESP32 node as reported by a paired on-prem hub. */
 export interface HubNodeReport {
   id: string;
@@ -54,6 +59,7 @@ export interface HubNodeReport {
   online: boolean;
   lastSeen: number;
   sensors: HubSensorReport[];
+  actuators?: HubActuatorReport[];
   readings: Record<string, number | null>;
 }
 /** A paired hub's live device snapshot, pushed up by the hub agent. */
@@ -69,6 +75,10 @@ export interface HubDeviceSnapshot {
 /** Emoji marker for a sensor kind — mirrors the demo Capability.icon convention. */
 const iconFor = (kind?: string): string =>
   kind === 'temperature' ? '🌡️' : kind === 'humidity' ? '💧' : kind === 'distance' ? '📏' : kind === 'motion' ? '🚶' : '📟';
+
+/** Emoji marker for an actuator kind. */
+const actuatorIconFor = (kind?: string): string =>
+  kind === 'relay' ? '🔌' : kind === 'motor' ? '🌀' : kind === 'servo' ? '⚙️' : '🎛️';
 
 export interface RunEventRow {
   id: string;
@@ -120,6 +130,10 @@ export interface HomeStore {
   listHousehold(): Promise<HouseholdMember[]>;
   /** Remove a household member; true if one was removed. */
   deleteHouseholdMember(id: string): Promise<boolean>;
+  /** The desired actuator states (input id "<node>.<key>" → on/off) — the device shadow. */
+  getDesired(): Promise<Record<string, boolean>>;
+  /** Set (or clear, when on is null) one actuator's desired state — the cloud→node command. */
+  setDesired(input: string, on: boolean | null): Promise<void>;
 }
 
 /** Compute an aggregate over a window ending at `now` (numbers only for mean/min/max). */
@@ -147,6 +161,7 @@ interface StoreSnapshot {
   hubDevices: HubDeviceSnapshot[];
   cadences: [string, number][];
   household: HouseholdMember[];
+  desired: [string, boolean][];
 }
 
 const emptyModel = (): HomeModel => ({ zones: [], nodes: [], capabilities: [] });
@@ -163,6 +178,10 @@ export class MemoryStore implements HomeStore {
   protected cadences = new Map<string, number>();
   // Household members' reference photos — Qwen-VL's ground truth for "who is family".
   protected household = new Map<string, HouseholdMember>();
+  // Desired actuator state (input id "<node>.<key>" → on/off) — the "desired" half of the
+  // device shadow. Set by the actuate tool; delivered to the node the same way cadences are
+  // (hub device sync → node ingest response), where the node converges its output to match.
+  protected desired = new Map<string, boolean>();
 
   /**
    * A new home is EMPTY — no zones, devices, watches, or readings. Pass seed=true
@@ -190,6 +209,7 @@ export class MemoryStore implements HomeStore {
       hubDevices: [...this.hubDevices.values()],
       cadences: [...this.cadences.entries()],
       household: [...this.household.values()],
+      desired: [...this.desired.entries()],
     };
   }
   protected restore(s: Partial<StoreSnapshot>): void {
@@ -201,13 +221,14 @@ export class MemoryStore implements HomeStore {
     this.hubDevices = new Map((s.hubDevices ?? []).map((h) => [h.hubId, h]));
     this.cadences = new Map(s.cadences ?? []);
     this.household = new Map((s.household ?? []).map((m) => [m.id, m]));
+    this.desired = new Map(s.desired ?? []);
   }
 
   /** Capabilities derived from every paired hub's real nodes (merged into the model). */
   private hubCapabilities(): Capability[] {
     const caps: Capability[] = [];
     for (const snap of this.hubDevices.values())
-      for (const n of snap.nodes)
+      for (const n of snap.nodes) {
         for (const s of n.sensors)
           caps.push({
             id: `${n.id}.${s.key}`,
@@ -217,6 +238,15 @@ export class MemoryStore implements HomeStore {
             unit: s.unit,
             describes: `live ${s.kind ?? 'sensor'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''}`,
           });
+        for (const a of n.actuators ?? [])
+          caps.push({
+            id: `${n.id}.${a.key}`,
+            label: `${n.id} · ${a.key}`,
+            kind: 'actuator',
+            icon: actuatorIconFor(a.kind),
+            describes: `commandable ${a.kind ?? 'actuator'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''} — drive it with the actuate tool`,
+          });
+      }
     return caps;
   }
   /** Home-Model nodes derived from paired hubs' real ESP32 nodes. */
@@ -230,14 +260,23 @@ export class MemoryStore implements HomeStore {
           // Real hub nodes aren't bound to the demo zones; label the zone by hub.
           zone: snap.hubName ?? snap.hubId,
           hardware: n.board ?? 'esp32',
-          capabilities: n.sensors.map((s) => ({
-            id: `${n.id}.${s.key}`,
-            label: `${n.id} · ${s.key}`,
-            kind: 'sensor' as const,
-            icon: iconFor(s.kind),
-            unit: s.unit,
-            describes: `live ${s.kind ?? 'sensor'} on ${n.id}`,
-          })),
+          capabilities: [
+            ...n.sensors.map((s) => ({
+              id: `${n.id}.${s.key}`,
+              label: `${n.id} · ${s.key}`,
+              kind: 'sensor' as const,
+              icon: iconFor(s.kind),
+              unit: s.unit,
+              describes: `live ${s.kind ?? 'sensor'} on ${n.id}`,
+            })),
+            ...(n.actuators ?? []).map((a) => ({
+              id: `${n.id}.${a.key}`,
+              label: `${n.id} · ${a.key}`,
+              kind: 'actuator' as const,
+              icon: actuatorIconFor(a.kind),
+              describes: `commandable ${a.kind ?? 'actuator'} on ${n.id}`,
+            })),
+          ],
         } as HomeNode);
     return out;
   }
@@ -330,6 +369,14 @@ export class MemoryStore implements HomeStore {
     if (existed) this.persist();
     return existed;
   }
+  async getDesired(): Promise<Record<string, boolean>> {
+    return Object.fromEntries(this.desired);
+  }
+  async setDesired(input: string, on: boolean | null): Promise<void> {
+    if (on == null) this.desired.delete(input);
+    else this.desired.set(input, on);
+    this.persist();
+  }
 }
 
 /**
@@ -339,6 +386,9 @@ export class MemoryStore implements HomeStore {
  * Tablestore adapter (or a hosted DB) for production durability.
  */
 export class FileStore extends MemoryStore {
+  private dirty = false;
+  private flushTimer: ReturnType<typeof setTimeout> | null = null;
+
   private constructor(private readonly file: string) {
     super(false);
   }
@@ -352,10 +402,29 @@ export class FileStore extends MemoryStore {
         /* corrupt/empty file → start fresh */
       }
     }
+    // Flush any pending write on clean shutdown so a debounced burst isn't lost.
+    const onExit = () => s.flush();
+    process.once('exit', onExit);
+    process.once('beforeExit', onExit);
     return s;
   }
 
+  // Coalesce bursts (e.g. a hub sync writing K readings) into a single snapshot write
+  // instead of rewriting the whole file K times — previously O(n²) per sync.
   protected persist(): void {
+    this.dirty = true;
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => this.flush(), 50);
+    if (typeof this.flushTimer.unref === 'function') this.flushTimer.unref();
+  }
+
+  private flush(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (!this.dirty) return;
+    this.dirty = false;
     const dir = dirname(this.file);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const tmp = `${this.file}.tmp`;
@@ -585,7 +654,6 @@ class TablestoreStore extends MemoryStore {
     await super.setCadence(input, intervalMs); // in-memory
     await this.putBlob('cadences', Object.fromEntries(this.cadences));
   }
-
   // Household members persist as per-account rows `hm#<id>` (read/write-through), like watches.
   async putHouseholdMember(m: HouseholdMember): Promise<void> {
     await this.putBlob(`hm#${m.id}`, m);
@@ -598,6 +666,20 @@ class TablestoreStore extends MemoryStore {
     if (!(await this.getBlob(`hm#${id}`))) return false;
     await this.client.deleteRow({ tableName: TS_TABLE, condition: this.ignore(), primaryKey: this.pk(`hm#${id}`) });
     return true;
+  }
+  async getDesired(): Promise<Record<string, boolean>> {
+    // Read through so a command set on another FC instance is seen on the hub's next sync.
+    const d = await this.getBlob('desired');
+    if (!d) return {};
+    try {
+      return JSON.parse(d) as Record<string, boolean>;
+    } catch {
+      return {};
+    }
+  }
+  async setDesired(input: string, on: boolean | null): Promise<void> {
+    await super.setDesired(input, on); // in-memory
+    await this.putBlob('desired', Object.fromEntries(this.desired));
   }
 }
 

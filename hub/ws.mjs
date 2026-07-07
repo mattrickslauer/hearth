@@ -17,6 +17,9 @@ const OP_TEXT = 0x1;
 const OP_CLOSE = 0x8;
 const OP_PING = 0x9;
 const OP_PONG = 0xa;
+// A stalled reader whose kernel send buffer grows past this is a slow consumer we
+// disconnect, rather than let Node's write queue grow unbounded (a memory leak).
+const MAX_BUFFERED = 4 * 1024 * 1024;
 
 function acceptKey(key) {
   return createHash('sha1').update(key + GUID).digest('base64');
@@ -43,8 +46,14 @@ function encodeFrame(payload, opcode = OP_TEXT) {
   return Buffer.concat([header, data]);
 }
 
+// Largest client frame we'll accept. Without this cap a client can declare a
+// multi-GB frame length and we'd buffer it all before rejecting → OOM.
+const MAX_FRAME_BYTES = 1024 * 1024;
+
 // Pull every complete frame out of an accumulating buffer, unmasking client payloads
 // (browser → server frames are always masked). Returns leftover bytes for the next chunk.
+// `overflow` is set when a client declares a frame larger than MAX_FRAME_BYTES — the
+// caller must destroy the socket rather than keep accumulating.
 function decodeFrames(buf) {
   const frames = [];
   let offset = 0;
@@ -63,6 +72,7 @@ function decodeFrames(buf) {
       len = Number(buf.readBigUInt64BE(p));
       p += 8;
     }
+    if (len > MAX_FRAME_BYTES) return { frames, rest: buf.subarray(offset), overflow: true };
     let maskKey;
     if (masked) {
       if (p + 4 > buf.length) break;
@@ -86,17 +96,19 @@ function decodeFrames(buf) {
  * Attach a broadcast WebSocket endpoint to an existing http.Server.
  *
  * @param {import('node:http').Server} server
- * @param {{ path?: string, onConnect?: (send: (msg: unknown) => void) => void }} opts
+ * @param {{ path?: string, onConnect?: (send: (msg: unknown) => void) => void,
+ *           authorize?: (req: import('node:http').IncomingMessage) => boolean }} opts
  *   onConnect fires per new client with a `send` fn — use it to push an initial snapshot.
+ *   authorize (optional) gates each upgrade; return false to reject before the handshake.
  * @returns {{ broadcast: (msg: unknown) => void, close: () => void, get size(): number }}
  */
-export function attachWebSocket(server, { path = '/live', onConnect } = {}) {
+export function attachWebSocket(server, { path = '/live', onConnect, authorize } = {}) {
   const clients = new Set();
 
   server.on('upgrade', (req, socket) => {
     const url = (req.url || '').split('?')[0];
     const key = req.headers['sec-websocket-key'];
-    if (url !== path || !key) {
+    if (url !== path || !key || (authorize && !authorize(req))) {
       socket.destroy();
       return;
     }
@@ -120,7 +132,11 @@ export function attachWebSocket(server, { path = '/live', onConnect } = {}) {
     let buf = Buffer.alloc(0);
     socket.on('data', (chunk) => {
       buf = Buffer.concat([buf, chunk]);
-      const { frames, rest } = decodeFrames(buf);
+      const { frames, rest, overflow } = decodeFrames(buf);
+      if (overflow) {
+        socket.destroy();
+        return;
+      }
       buf = rest;
       for (const f of frames) {
         if (f.opcode === OP_CLOSE) {
@@ -172,6 +188,10 @@ export function attachWebSocket(server, { path = '/live', onConnect } = {}) {
     for (const socket of clients) {
       try {
         socket.write(frame);
+        if (socket.writableLength > MAX_BUFFERED) {
+          clients.delete(socket);
+          socket.destroy(); // slow consumer — cut it instead of buffering forever
+        }
       } catch {
         clients.delete(socket);
       }
