@@ -97,8 +97,9 @@ export interface RunEventRow {
  */
 export interface HouseholdMember {
   id: string;
-  label: string; // "Alex"
-  image: string; // data: URI or OSS URL
+  label: string; // name, e.g. "Alex", "the grey Honda", "Rex"
+  tags: string[]; // categories for AI reasoning, e.g. ["family"], ["vehicle","allowed"], ["pet"]
+  image: string; // data: URI or `oss://` handle
   addedAt: number;
 }
 

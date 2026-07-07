@@ -337,13 +337,20 @@ export default function DashboardScreen() {
               <Pill dotColor={theme.success}>Signed in · {account?.email ?? 'account'}</Pill>
               <Text style={[styles.h1, isNarrow && styles.h1Narrow, { color: theme.text }]}>Your home</Text>
             </View>
-            <Pressable
-              onPress={load}
-              style={[styles.refresh, { borderColor: theme.border, backgroundColor: theme.card }]}>
-              <Text style={[styles.refreshText, { color: theme.textSecondary }]}>
-                {loading ? '…' : '↻ Refresh'}
-              </Text>
-            </Pressable>
+            <View style={styles.headBtns}>
+              <Pressable
+                onPress={() => router.push('/memory')}
+                style={[styles.refresh, { borderColor: theme.border, backgroundColor: theme.card }]}>
+                <Text style={[styles.refreshText, { color: theme.textSecondary }]}>◆ Memory</Text>
+              </Pressable>
+              <Pressable
+                onPress={load}
+                style={[styles.refresh, { borderColor: theme.border, backgroundColor: theme.card }]}>
+                <Text style={[styles.refreshText, { color: theme.textSecondary }]}>
+                  {loading ? '…' : '↻ Refresh'}
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
           {/* summary chips */}
@@ -511,6 +518,11 @@ export default function DashboardScreen() {
                   </View>
                 </View>
               ))}
+              <Pressable
+                onPress={() => router.push('/memory')}
+                style={[styles.suggestCta, { borderColor: theme.emberDeep, backgroundColor: theme.emberGlow }]}>
+                <Text style={[styles.suggestCtaText, { color: theme.ember }]}>＋ Add reference photos →</Text>
+              </Pressable>
             </Card>
           ) : null}
 
@@ -1155,6 +1167,16 @@ const styles = StyleSheet.create({
   suggestIcon: { fontSize: 16, width: 24, textAlign: 'center' },
   suggestTitle: { fontFamily: Fonts?.sans, fontSize: 14, fontWeight: '700' },
   suggestWhy: { fontFamily: Fonts?.sans, fontSize: 13, lineHeight: 19 },
+  suggestCta: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+  },
+  suggestCtaText: { fontFamily: Fonts?.sans, fontSize: 13.5, fontWeight: '700' },
+  headBtns: { flexDirection: 'row', gap: Spacing.two, alignItems: 'center' },
 
   // camera tile — a frame snapped on a cadence, plus rate + quality knobs
   camHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },

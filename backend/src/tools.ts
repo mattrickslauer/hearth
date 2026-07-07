@@ -257,11 +257,15 @@ export const TOOLS: Tool[] = [
   {
     name: 'add_household_member',
     description:
-      'Register a household member from a reference photo. Qwen-VL uses these at runtime to tell family from strangers (the "family upload"). image is a data: URI or an image URL.',
+      "Add a named, tagged reference object to the home's persistent visual memory — a person, pet, vehicle, or thing Qwen-VL should recognise (tag \"family\" to tell household from strangers, or \"vehicle\"/\"allowed\"/\"pet\"/\"watch\"). image is a data: URI or an image URL.",
     mode: ['authoring'],
     parameters: {
       type: 'object',
-      properties: { label: { type: 'string' }, image: { type: 'string' } },
+      properties: {
+        label: { type: 'string', description: 'name, e.g. "Alex", "the grey Honda"' },
+        image: { type: 'string', description: 'data: URI or image URL' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'reasoning categories, e.g. ["family"]' },
+      },
       required: ['label', 'image'],
       additionalProperties: false,
     },
@@ -270,7 +274,8 @@ export const TOOLS: Tool[] = [
       const image = str(a.image).trim();
       if (!label) throw new Error('label required');
       if (!image) throw new Error('image required (data: URI or URL)');
-      const member = { id: nextHmId(), label, image, addedAt: Date.now() };
+      const tags = Array.isArray(a.tags) ? a.tags.map((t) => str(t).trim()).filter(Boolean) : [];
+      const member = { id: nextHmId(), label, tags, image, addedAt: Date.now() };
       // Durable storage: push the reference photo to OSS and keep only the `oss://` handle in
       // the store (small + durable). Falls back to inline when OSS isn't configured or the
       // value is already a URL.
@@ -283,6 +288,7 @@ export const TOOLS: Tool[] = [
       return {
         id: member.id,
         label: member.label,
+        tags: member.tags,
         addedAt: member.addedAt,
         storage: member.image.startsWith('oss://') ? 'oss' : 'inline',
       };
