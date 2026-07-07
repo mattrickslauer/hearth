@@ -161,6 +161,10 @@ export function createCamera({ ingest }) {
     getFrame() {
       return latest;
     },
+    /** Current sensor config — for GET /camera so the dashboard can seed its sliders. */
+    config() {
+      return { id, source, width, quality, cadenceMs, hasFrame: !!latest, frameAt: latest?.at ?? null };
+    },
     /** Retune the snap cadence live (from the cloud per-sensor cadence downlink). */
     setCadence(ms) {
       if (!ms || !Number.isFinite(ms) || ms === cadenceMs) return;

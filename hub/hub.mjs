@@ -353,6 +353,18 @@ async function heartbeatLoop() {
 
 // ── LAN server + mDNS ─────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
+  // A LAN dashboard (Expo web on another origin) reads /frame and controls the camera, so
+  // answer CORS preflight and allow cross-origin reads. Frames are LAN-only; no auth here.
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET, POST, OPTIONS',
+      'access-control-allow-headers': 'content-type',
+      'access-control-max-age': '86400',
+    });
+    res.end();
+    return;
+  }
   if (req.method === 'GET' && (req.url === '/nodes' || req.url === '/')) {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify([...nodes.values()], null, 2));
@@ -376,6 +388,27 @@ const server = http.createServer(async (req, res) => {
       'access-control-allow-origin': '*',
     });
     res.end(f.buf);
+    return;
+  }
+  // Camera config: GET seeds the dashboard's sliders; POST retunes quality/cadence live
+  // (LAN-direct control, complements the cloud cadence downlink).
+  if (req.url === '/camera') {
+    if (!camera) {
+      res.writeHead(404, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      res.end(JSON.stringify({ error: 'camera disabled' }));
+      return;
+    }
+    if (req.method === 'POST') {
+      const body = (await readJson(req)) || {};
+      if (body.quality != null) camera.setQuality(Number(body.quality));
+      if (body.cadenceMs != null) camera.setCadence(Number(body.cadenceMs));
+    } else if (req.method !== 'GET') {
+      res.writeHead(405, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+    res.end(JSON.stringify(camera.config()));
     return;
   }
   if (req.method === 'POST' && req.url === INGEST_PATH) {

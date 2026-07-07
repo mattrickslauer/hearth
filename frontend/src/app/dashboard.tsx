@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Linking,
   Platform,
   Pressable,
@@ -38,6 +39,11 @@ import {
 } from '@/lib/home';
 import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
 import { useHubLive, type LiveStatus } from '@/lib/live';
+
+// The hub's LAN address (e.g. http://192.168.1.27:8899). When set, the dashboard shows a live
+// camera tile that pulls the hub's latest snapped frame on demand. Frames are LAN-direct (the
+// hub holds the pixels); the hosted/judge path surfaces them via the cloud in a follow-up.
+const HUB_URL = process.env.EXPO_PUBLIC_HUB_URL?.replace(/\/$/, '') || '';
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 // Give the scroll frame a bounded height on web so the ScrollView actually scrolls
@@ -465,6 +471,14 @@ export default function DashboardScreen() {
             </View>
           </Card>
 
+          {/* camera — a sensor that snaps a frame on a cadence (shown when a hub URL is set) */}
+          {HUB_URL ? (
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>Camera</Text>
+              <CameraCard theme={theme} hubUrl={HUB_URL} />
+            </View>
+          ) : null}
+
           {/* sensors */}
           {sensors.length ? (
             <View style={styles.section}>
@@ -626,6 +640,198 @@ export default function DashboardScreen() {
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+// Quality snap points (JPEG %), low→high — the detail/token tradeoff the hub maps to ffmpeg -q:v.
+const QUALITY_STOPS = [30, 50, 70, 85, 95];
+
+interface CamConfig {
+  id: string;
+  source: string;
+  width: number;
+  quality: number;
+  cadenceMs: number;
+  hasFrame: boolean;
+  frameAt: number | null;
+}
+
+// The camera is just another sensor: it snaps a frame on a cadence. This tile pulls the hub's
+// latest frame on demand (never a stream) and exposes the two sensor knobs — snap rate + quality.
+function CameraCard({ theme, hubUrl }: { theme: ReturnType<typeof useTheme>; hubUrl: string }) {
+  const [cfg, setCfg] = useState<CamConfig | null>(null);
+  const [reachable, setReachable] = useState<boolean | null>(null);
+  const [tick, setTick] = useState(0);
+  const [frameOk, setFrameOk] = useState(false);
+  const [snappedAt, setSnappedAt] = useState<number | null>(null);
+
+  const cadenceMs = cfg?.cadenceMs ?? DEFAULT_CADENCE_MS;
+  const quality = cfg?.quality ?? 70;
+
+  const loadConfig = useCallback(() => {
+    fetch(`${hubUrl}/camera`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((c: CamConfig) => {
+        setCfg(c);
+        setReachable(true);
+      })
+      .catch(() => setReachable(false));
+  }, [hubUrl]);
+
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  // Re-pull the frame on the snap cadence — a photo every N seconds, faithful to "sampled, not streamed".
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), Math.max(1000, cadenceMs));
+    return () => clearInterval(id);
+  }, [cadenceMs]);
+
+  const post = useCallback(
+    (patch: Record<string, number>) => {
+      fetch(`${hubUrl}/camera`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+        .then((r) => r.json())
+        .then((c: CamConfig) => setCfg(c))
+        .catch(() => {});
+    },
+    [hubUrl],
+  );
+
+  const uri = `${hubUrl}/frame?t=${tick}`;
+  const sourceTag = reachable === false ? 'hub offline' : cfg?.source === 'test' ? 'test source' : 'OBS';
+
+  return (
+    <Card style={{ gap: Spacing.three }}>
+      <View style={styles.camHead}>
+        <Text style={[styles.cardTitle, { color: theme.text }]}>Doorway camera</Text>
+        <View style={styles.watchTags}>
+          <Tag theme={theme} on text="vision" />
+          <Tag theme={theme} on={reachable === true} text={sourceTag} />
+        </View>
+      </View>
+
+      <View style={[styles.camBox, { backgroundColor: theme.codeBg, borderColor: theme.border }]}>
+        {reachable !== false ? (
+          <Image
+            source={{ uri }}
+            style={styles.camImg}
+            resizeMode="cover"
+            onLoad={() => {
+              setFrameOk(true);
+              setSnappedAt(Date.now());
+            }}
+            onError={() => setFrameOk(false)}
+          />
+        ) : null}
+        {frameOk && reachable ? (
+          <View style={styles.camStamp}>
+            <View style={[styles.camStampDot, { backgroundColor: theme.ember }]} />
+            <Text style={styles.camStampText}>
+              snapped {snappedAt ? new Date(snappedAt).toLocaleTimeString() : ''} · every {fmtRate(cadenceMs)}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.camPlaceholder}>
+            <Text style={[styles.camPlaceholderText, { color: theme.textMuted }]}>
+              {reachable === false
+                ? `Can’t reach the hub at ${hubUrl}. Is it running with HEARTH_CAM=1?`
+                : 'Waiting for a frame — start OBS streaming to the hub, or run with HEARTH_CAM_SOURCE=test.'}
+            </Text>
+          </View>
+        )}
+      </View>
+
+      {reachable ? (
+        <View style={styles.camControls}>
+          <StepSlider
+            theme={theme}
+            label="Snap rate"
+            stops={CADENCE_STOPS}
+            value={cadenceMs}
+            format={fmtRate}
+            onCommit={(v) => post({ cadenceMs: v })}
+          />
+          <StepSlider
+            theme={theme}
+            label="Quality"
+            stops={QUALITY_STOPS}
+            value={quality}
+            format={(q) => `${q}%`}
+            onCommit={(v) => post({ quality: v })}
+          />
+        </View>
+      ) : null}
+
+      <Text style={[styles.camCaption, { color: theme.textMuted }]}>
+        Frames are pulled on demand from the hub and read by Qwen-VL only when a vision watch needs
+        them — no video stream leaves the home.
+      </Text>
+    </Card>
+  );
+}
+
+// Generic stepped slider (snap points) — used for the camera's rate + quality knobs. Same
+// interaction model as the per-sensor CadenceSlider, commits the chosen stop on release.
+function StepSlider({
+  theme,
+  label,
+  stops,
+  value,
+  format,
+  onCommit,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  label: string;
+  stops: number[];
+  value: number;
+  format: (n: number) => string;
+  onCommit: (v: number) => void;
+}) {
+  const [w, setW] = useState(0);
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+
+  const nearest = (v: number): number => {
+    let b = 0;
+    for (let i = 0; i < stops.length; i++) if (Math.abs(stops[i] - v) < Math.abs(stops[b] - v)) b = i;
+    return b;
+  };
+  const idx = dragIdx ?? nearest(value);
+  const frac = idx / (stops.length - 1);
+  const posToIdx = (x: number): number => {
+    if (w <= 0) return idx;
+    const f = Math.max(0, Math.min(1, x / w));
+    return Math.round(f * (stops.length - 1));
+  };
+
+  return (
+    <View style={styles.camSlider}>
+      <View style={styles.camSliderLabelRow}>
+        <Text style={[styles.camSliderLabel, { color: theme.textSecondary }]}>{label}</Text>
+        <Text style={[styles.sliderVal, { color: theme.ember }]}>{format(stops[idx])}</Text>
+      </View>
+      <View
+        style={styles.sliderTrackWrap}
+        onLayout={(ev) => setW(ev.nativeEvent.layout.width)}
+        onStartShouldSetResponder={() => true}
+        onMoveShouldSetResponder={() => true}
+        onResponderGrant={(e) => setDragIdx(posToIdx(e.nativeEvent.locationX))}
+        onResponderMove={(e) => setDragIdx(posToIdx(e.nativeEvent.locationX))}
+        onResponderRelease={(e) => {
+          const i = posToIdx(e.nativeEvent.locationX);
+          setDragIdx(null);
+          onCommit(stops[i]);
+        }}
+        onResponderTerminate={() => setDragIdx(null)}>
+        <View style={[styles.sliderTrack, { backgroundColor: theme.backgroundElement }]} />
+        <View style={[styles.sliderFill, { backgroundColor: theme.emberDeep, width: `${frac * 100}%` }]} />
+        <View style={[styles.sliderThumb, { backgroundColor: theme.ember, borderColor: theme.card, left: `${frac * 100}%` }]} />
+      </View>
+    </View>
   );
 }
 
@@ -898,6 +1104,40 @@ const styles = StyleSheet.create({
   sliderFill: { position: 'absolute', height: 4, borderRadius: 2, left: 0 },
   sliderThumb: { position: 'absolute', width: 14, height: 14, borderRadius: 7, borderWidth: 2, marginLeft: -7 },
   sliderVal: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700', minWidth: 34, textAlign: 'right' },
+
+  // camera tile — a frame snapped on a cadence, plus rate + quality knobs
+  camHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  camBox: {
+    width: '100%',
+    aspectRatio: 16 / 9,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  camImg: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' },
+  camPlaceholder: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', padding: Spacing.four },
+  camPlaceholderText: { fontFamily: Fonts?.mono, fontSize: 12.5, lineHeight: 19, textAlign: 'center' },
+  camStamp: {
+    position: 'absolute',
+    left: 10,
+    bottom: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 9,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  camStampDot: { width: 6, height: 6, borderRadius: 3 },
+  camStampText: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '700', color: '#fff', letterSpacing: 0.2 },
+  camControls: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.four },
+  camSlider: { flexGrow: 1, flexBasis: 200, gap: 5 },
+  camSliderLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.three },
+  camSliderLabel: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  camCaption: { fontFamily: Fonts?.sans, fontSize: 12.5, lineHeight: 18 },
 
   watchHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   watchTitle: { flex: 1, fontFamily: Fonts?.sans, fontSize: 16, fontWeight: '700' },
