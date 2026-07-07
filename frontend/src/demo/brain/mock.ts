@@ -174,6 +174,36 @@ export function mockAuthor(wish: string): AuthoredQuestion {
         'this needs judgement, so it reasons in the cloud with Qwen-VL',
         'a cheap local gate (someone present) precedes any cloud call',
       ],
+      contextSuggestions: nonFamily
+        ? [
+            {
+              kind: 'reference_images',
+              title: 'Upload photos of household members',
+              why: "so I can tell family from strangers instead of alerting on everyone who's at the door",
+            },
+            {
+              kind: 'cadence',
+              title: 'Snap every ~2s while someone is present',
+              why: 'enough to catch a clear face without spending tokens on an empty doorway',
+            },
+            {
+              kind: 'quality',
+              title: 'Use higher capture quality at the door',
+              why: 'face detail sharpens recognition, so fewer false alerts',
+            },
+          ]
+        : [
+            {
+              kind: 'aim',
+              title: 'Point the camera at the doorway',
+              why: 'a clear head-on view of arrivals is what I reason over',
+            },
+            {
+              kind: 'cadence',
+              title: 'Snap every ~3s when motion is present',
+              why: "catches someone arriving without streaming video you don't need",
+            },
+          ],
     };
   }
 

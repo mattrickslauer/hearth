@@ -9,6 +9,9 @@
  */
 
 import { backendBase } from '@/auth/client';
+import type { ContextSuggestion } from '@/demo/types';
+
+export type { ContextSuggestion };
 
 async function call<T>(
   tool: string,
@@ -77,6 +80,8 @@ export interface Watch {
   usesVision: boolean;
   cost: 'none' | 'cloud';
   push?: boolean;
+  /** What Qwen recommends adding to make this (vision) watch work optimally. */
+  contextSuggestions?: ContextSuggestion[];
 }
 
 export interface RunEvent {

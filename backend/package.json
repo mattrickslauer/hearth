@@ -9,6 +9,9 @@
     "start": "tsx src/server.ts",
     "smoke": "tsx scripts/smoke.ts",
     "qwen-check": "tsx scripts/qwen-check.ts",
+    "qwen-vl-check": "tsx scripts/qwen-vl-check.ts",
+    "oss-provision": "tsx scripts/oss-provision.ts",
+    "household-check": "tsx scripts/household-check.ts",
     "mail-check": "tsx scripts/mail-check.ts",
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs"

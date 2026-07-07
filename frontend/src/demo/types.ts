@@ -95,6 +95,20 @@ export interface Question {
   evalOn: 'event' | 'interval';
   fire: FirePolicy;
   authoring?: string[]; // the brain's authoring reasoning steps (shown once)
+  /** Context the agent recommends adding to solve this wish optimally (vision watches). */
+  contextSuggestions?: ContextSuggestion[];
+}
+
+/**
+ * A piece of context the authoring agent asks for so it can solve a (usually
+ * vision) wish optimally — e.g. reference photos of household members to tell
+ * family from strangers, where to aim, how often to snap, what quality. This is
+ * the agent telling you what it needs, rather than silently doing worse.
+ */
+export interface ContextSuggestion {
+  kind: 'reference_images' | 'aim' | 'cadence' | 'quality' | 'lighting' | 'placement' | 'other';
+  title: string; // short imperative, e.g. "Upload photos of household members"
+  why: string; // why it makes the watch work better
 }
 
 /** The result of the brain reasoning about a live situation. */

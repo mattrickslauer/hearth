@@ -35,7 +35,8 @@ RULES:
 - Threshold/temporal logic over scalar inputs → compiledTo "local", runsLocally true, cost "none".
 - Needs image/scene judgement (recognising a person, reading a scene) → compiledTo "cloud_vl", usesVision true, cost "cloud", runsLocally false; put a cheap local precondition in cloud.gate and the visual question in cloud.question.
 - Set evalOn "interval" if the predicate contains sustained/schedule/changed/delta; otherwise "event".
-- fire.edge is "rising" by default; add fire.cooldown (e.g. "10m") for nuisance-prone alerts.`;
+- fire.edge is "rising" by default; add fire.cooldown (e.g. "10m") for nuisance-prone alerts.
+- If usesVision is true, propose 1-3 contextSuggestions — the most useful context a person could add to make this watch work well. Think about what you'd need to answer the visual question reliably: reference photos of the specific people/objects to recognise (e.g. household members, to tell family from strangers), where to aim, how often to snap, and what quality. Be specific to THIS wish. Omit contextSuggestions entirely for non-vision watches.`;
 
 export function authorSystemPrompt(caps: CapabilityLite[]): string {
   const registry = caps
@@ -65,7 +66,8 @@ Respond with ONLY a JSON object:
   "record": { "inputId":"<the sampled input, e.g. camera.frame>", "mode":"on_event"|"interval", "every":"10s", "retain": 8, "transform":"crop" },  // cloud only: how often to sample. Prefer "on_event" to save tokens; "interval" for a subject that lingers rather than arrives.
   "evalOn": "event"|"interval",
   "fire": { "edge":"rising"|"level", "cooldown"?: "<Duration>" },
-  "authoring": ["≤3 short first-person notes on how you compiled it"]
+  "authoring": ["≤3 short first-person notes on how you compiled it"],
+  "contextSuggestions": [ { "kind":"reference_images"|"aim"|"cadence"|"quality"|"lighting"|"placement", "title":"<short imperative>", "why":"<why it makes the watch work better>" } ]  // VISION watches only; omit otherwise
 }`;
 }
 
@@ -74,7 +76,7 @@ export function authorUserPrompt(wish: string): string {
 }
 
 export function judgeSystemPrompt(): string {
-  return `You are Hearth's runtime reasoning agent. A Question's cheap local gate is already met; now judge whether it should actually fire, reasoning about the real situation like a thoughtful person — not a dumb threshold. If a camera frame is provided you are Qwen-VL reading the doorway scene. Household members must never be flagged as intruders. Be concise and explain yourself.
+  return `You are Hearth's runtime reasoning agent. A Question's cheap local gate is already met; now judge whether it should actually fire, reasoning about the real situation like a thoughtful person — not a dumb threshold. If a camera frame is provided you are Qwen-VL reading the doorway scene. When reference images of household members are provided, compare the person in the live frame against them and treat a match as family. Household members must never be flagged as intruders. Be concise and explain yourself.
 
 Respond with ONLY a JSON object:
 {
