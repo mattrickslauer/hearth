@@ -194,11 +194,23 @@ const payload = {
       },
       lastReading: { 'board.temp': 46.7, 'dht.temp': null },
     },
+    {
+      // A MOTOR NODE: self-describes an actuator the cloud can command (cloud→node).
+      id: 'node-MOTOR001',
+      describe: {
+        board: 'esp32-wroom-32',
+        fw: '0.1.0',
+        sensors: [{ key: 'board.temp', kind: 'temperature', unit: 'C' }],
+        actuators: [{ key: 'motor', kind: 'relay' }],
+      },
+      lastReading: { 'board.temp': 44.1, 'motor.state': 0 },
+    },
   ],
 };
-const sync = await syncHubDevices(hubStore, { hubId: 'hub-mr5m9h8j-1', hubName: 'Simulated Pi' }, payload);
-ok('syncHubDevices registers the node', sync.nodes === 1);
-ok('syncHubDevices writes numeric readings only (skips null)', sync.readings === 1);
+const HUB_ID = 'hub-mr5m9h8j-1';
+const sync = await syncHubDevices(hubStore, { hubId: HUB_ID, hubName: 'Simulated Pi' }, payload);
+ok('syncHubDevices registers both nodes', sync.nodes === 2);
+ok('syncHubDevices writes numeric readings only (skips null)', sync.readings === 3); // board.temp×2 + motor.state
 
 const hhome = (await hcall('describe_home')) as { nodes: { id: string }[]; capabilities: { id: string }[] };
 ok('describe_home surfaces the real node', hhome.nodes.some((n) => n.id === 'node-A442FB38BCD8'));
@@ -212,6 +224,32 @@ ok('read_input returns the live hardware reading', !!hread && hread.value === 46
 
 const hinputs = (await hcall('list_inputs', { filter: 'sensor' })) as { id: string }[];
 ok('list_inputs includes the hub sensor (bindable by Qwen)', hinputs.some((c) => c.id === 'node-A442FB38BCD8.board.temp'));
+
+// ---- cloud → node actuation: the actuate tool writes the device-shadow desired state --------
+const hact = (await hcall('list_inputs', { filter: 'actuator' })) as { id: string; kind: string }[];
+ok('list_inputs surfaces the motor actuator', hact.some((c) => c.id === 'node-MOTOR001.motor' && c.kind === 'actuator'));
+ok('describe_home carries the actuator capability', hhome.capabilities.some((c) => c.id === 'node-MOTOR001.motor'));
+
+// actuate a REAL hub actuator → sets desired state (not the unprovisioned stub)
+const on = (await hcall('actuate', { input: 'node-MOTOR001.motor', value: 'on', reason: 'demo: spin the fan' })) as {
+  status: string;
+  provisioned: boolean;
+  desired: string;
+};
+ok('actuate on a live actuator is provisioned + queued', on.status === 'queued' && on.provisioned === true && on.desired === 'on');
+ok('desired state is stored (the downlink the hub pulls)', (await hubStore.getDesired())['node-MOTOR001.motor'] === true);
+
+// commanding OFF upserts the same shadow entry (device-shadow semantics, not append)
+await hcall('actuate', { input: 'node-MOTOR001.motor', value: false, reason: 'demo: stop' });
+ok('actuate off upserts the desired state to false', (await hubStore.getDesired())['node-MOTOR001.motor'] === false);
+
+// actuating an input that is not a live hub actuator falls back to the recorded-intent stub
+const stub = (await hcall('actuate', { input: 'node-MOTOR001.nope', value: 'on', reason: 'no such actuator' })) as {
+  status: string;
+  provisioned: boolean;
+};
+ok('unknown actuator falls back to recorded intent', stub.status === 'sent' && stub.provisioned === false);
+ok('unknown actuator does not write a desired state', !('node-MOTOR001.nope' in (await hubStore.getDesired())));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

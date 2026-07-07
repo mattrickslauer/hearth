@@ -251,9 +251,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       // Fan the fresh readings out to this account's live browsers over the gateway.
       // Awaited (not fire-and-forget) so it actually runs before FC may freeze the instance.
       await pushReadingsToAccount(claims.acc, body);
-      // Downlink: hand the hub the account's desired per-sensor sample cadences. The hub
-      // relays each to its node on the node's next ingest POST — the only downlink path.
-      return send(res, 200, { ...result, cadences: await store.getCadences() });
+      // Downlink: hand the hub the account's desired per-sensor cadences AND desired actuator
+      // states. The hub relays each to its node on the node's next ingest POST — the only
+      // downlink path. `desired` is the "desired" half of the device shadow the node converges to.
+      return send(res, 200, { ...result, cadences: await store.getCadences(), desired: await store.getDesired() });
     }
 
     /* --- per-sensor sample cadence (frontend → backend → hub → node downlink) --- */
@@ -284,6 +285,35 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const intervalMs = Math.round(clampCadence(raw));
       await store.setCadence(input, intervalMs);
       return send(res, 200, { ok: true, input, intervalMs });
+    }
+
+    /* --- actuator desired state (frontend/Qwen → backend → hub → node downlink) --- */
+
+    // Read the account's desired actuator states (input id "<node>.<key>" → on/off).
+    if (path === '/inputs/desired' && method === 'GET') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const store = await getStoreFor(session.sub);
+      return send(res, 200, { desired: await store.getDesired() });
+    }
+
+    // Command one actuator on/off. Takes effect within ~1 hub sync + 1 node cycle. The same
+    // device-shadow write the `actuate` MCP tool makes, exposed to the dashboard directly.
+    if (path === '/inputs/desired' && method === 'POST') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const body = await readBody(req);
+      const input = typeof body.input === 'string' ? body.input : '';
+      if (!input) return send(res, 400, { error: 'input required' });
+      const store = await getStoreFor(session.sub);
+      // Only accept a command for an ACTUATOR this account actually owns (via a paired hub).
+      const owns = (await store.listHubDevices()).some((s) =>
+        s.nodes.some((n) => (n.actuators ?? []).some((ac) => `${n.id}.${ac.key}` === input)),
+      );
+      if (!owns) return send(res, 404, { error: 'unknown actuator' });
+      const on = body.on === true || body.on === 'on' || body.on === 1;
+      await store.setDesired(input, on);
+      return send(res, 200, { ok: true, input, on });
     }
 
     /* --- realtime (cloud-brokered WebSocket via the relay) --- */

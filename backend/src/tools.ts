@@ -32,6 +32,13 @@ const nextQid = () => `q-${Date.now().toString(36)}-${(qseq += 1)}`;
 
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d);
 const num = (v: unknown, d = 0): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+/** Coerce an actuate value (true/1/"on"/"open"/"high"…) to a boolean desired state. */
+const truthy = (v: unknown): boolean => {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') return ['on', 'open', 'true', '1', 'high', 'start'].includes(v.trim().toLowerCase());
+  return false;
+};
 
 export const TOOLS: Tool[] = [
   {
@@ -245,7 +252,8 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'actuate',
-    description: 'Command an actuator (→ IoT shadow desired state, node-side safety veto). Logged with rationale.',
+    description:
+      'Command an actuator by input id "<nodeId>.<key>" (e.g. a relay/motor node). Sets the device-shadow desired state; the owning hub relays it to the node on its next sync, and the node converges its output to match and echoes it back. Logged with rationale. Falls back to a recorded intent for inputs that are not a live hub actuator.',
     mode: ['runtime'],
     parameters: {
       type: 'object',
@@ -253,21 +261,38 @@ export const TOOLS: Tool[] = [
       required: ['input', 'value', 'reason'],
       additionalProperties: false,
     },
-    // IoT Platform shadow not provisioned — record intent + report the shape.
     handler: async (a, { store }) => {
+      const input = str(a.input);
+      const reason = str(a.reason);
+      const on = truthy(a.value);
+
+      // Resolve the input to a REAL actuator on a paired hub's node before committing a
+      // desired state — "<nodeId>.<key>" must match an actuator a node self-described.
+      const owns = (await store.listHubDevices()).some((s) =>
+        s.nodes.some((n) => (n.actuators ?? []).some((ac) => `${n.id}.${ac.key}` === input)),
+      );
+
       await store.appendEvent({
         id: `ev-act-${Date.now().toString(36)}`,
         ts: Date.now(),
         questionId: 'runtime',
         kind: 'actuate',
-        reasoning: `${str(a.input)} := ${JSON.stringify(a.value)} — ${str(a.reason)}`,
+        reasoning: `${input} := ${on ? 'on' : 'off'} — ${reason}`,
       });
+
+      if (owns) {
+        // Live hardware: write the desired shadow; the hub pulls it on its next device sync.
+        await store.setDesired(input, on);
+        return { input, desired: on ? 'on' : 'off', status: 'queued', provisioned: true };
+      }
+
+      // Not a live hub actuator (demo/unwired input) — record intent + report the shape.
       return {
-        input: str(a.input),
+        input,
         desired: a.value as Scalar,
         status: 'sent',
         provisioned: false,
-        note: 'Publishes to IoT Platform device shadow (desired) once the account + hub pairing exist.',
+        note: 'No live hub actuator matched this input; recorded intent. Pair a hub with a node that self-describes this actuator to command real hardware.',
       };
     },
   },

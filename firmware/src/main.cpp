@@ -52,22 +52,28 @@ static uint32_t gLastDiscover = 0;
 #if ACTUATOR_PIN >= 0
 static WebServer gCmdServer(ACTUATOR_PORT); // listens for POST /actuate from the hub
 static bool      gActuatorOn = false;
+static uint32_t  gActuatorOnSince = 0;      // millis() when it last went ON (for the safety veto)
+static bool      gVetoLatched = false;      // true after the veto tripped — ignore "on" until re-armed by "off"
 static bool      gCmdServerUp = false;
 
 // Drive the actuator output, honoring the board's active level.
 static void setActuator(bool on) {
+  if (on && !gActuatorOn) gActuatorOnSince = millis();
   gActuatorOn = on;
   digitalWrite(ACTUATOR_PIN, (on == !!ACTUATOR_ACTIVE_HIGH) ? HIGH : LOW);
   Serial.printf("[actuate] %s -> %s\n", ACTUATOR_KEY, on ? "ON" : "OFF");
 }
 
 // POST /actuate  { "actuator":"led", "value":"on"|"off"|true|false }
-// A watch firing on the hub calls this. Body parsing is deliberately forgiving.
+// A watch firing on the hub calls this. Body parsing is deliberately forgiving. Honors the
+// same safety-veto latch as the cloud desired path: an "off" re-arms; an "on" while vetoed is
+// ignored, so the veto holds no matter which side issued the command.
 static void handleActuate() {
   String body = gCmdServer.arg("plain");
   bool off = body.indexOf("\"off\"") >= 0 || body.indexOf("false") >= 0 ||
              body.indexOf(":0") >= 0 || body.indexOf("\"0\"") >= 0;
-  setActuator(!off);
+  if (off) gVetoLatched = false;
+  if (!(!off && gVetoLatched)) setActuator(!off);
   gCmdServer.send(200, "application/json",
                   String("{\"ok\":true,\"") + ACTUATOR_KEY + "\":" + (gActuatorOn ? "true" : "false") + "}");
 }
@@ -177,6 +183,12 @@ static void sampleDue() {
     any = true;
   }
   if (!any) return;
+#if ACTUATOR_PIN >= 0
+  // Echo the actuator's ACTUAL state (0/1) — the "reported" half of the device shadow, so the
+  // cloud can confirm a command landed and graph it. Rides along whenever a sensor is due.
+  body += ",\"" ACTUATOR_KEY ".state\":";
+  body += (gActuatorOn ? "1" : "0");
+#endif
   body += "}}";
   Serial.println("READING " + body);
   postJson(body);
@@ -231,6 +243,35 @@ static void applyCadence(const String& body) {
   }
 }
 
+#if ACTUATOR_PIN >= 0
+// Converge the actuator to the cloud's desired state, carried on the ingest reply, e.g.
+//   {"ok":true,"desired":{"led":"on"}}
+// This is the "desired" half of the device shadow: the cloud sets it, we reconcile our output
+// to it every ingest (so a reboot re-converges on the next POST). Hand-parsed, no JSON lib.
+// A response with no "desired" field, or one that omits our key, leaves the output alone — so a
+// node the cloud has never commanded is still free to be driven by a hub-local watch's /actuate.
+static void applyDesired(const String& body) {
+  int d = body.indexOf("\"desired\"");
+  if (d < 0) return;
+  String needle = String("\"" ACTUATOR_KEY "\"");   // literal concat: "\"led\""
+  int k = body.indexOf(needle, d);
+  if (k < 0) return;                      // our actuator isn't mentioned — don't touch it
+  int c = body.indexOf(':', k + needle.length());
+  if (c < 0) return;
+  String rest = body.substring(c + 1);
+  rest.trim();
+  // Forgiving, mirrors the node's /actuate parser: anything off-ish is off, else on.
+  bool wantOn = !(rest.startsWith("\"off\"") || rest.startsWith("false") ||
+                  rest.startsWith("0") || rest.startsWith("\"0\""));
+  if (!wantOn) gVetoLatched = false;      // an explicit "off" re-arms the safety veto
+  if (wantOn && gVetoLatched) return;     // vetoed until re-armed — ignore the desired "on"
+  if (wantOn != gActuatorOn) {
+    Serial.printf("[desired] cloud → %s %s\n", ACTUATOR_KEY, wantOn ? "on" : "off");
+    setActuator(wantOn);
+  }
+}
+#endif
+
 // Best-effort POST to the discovered hub. Returns true on a 2xx/3xx. Also reads the hub's
 // response body, which may carry a dashboard-set sample cadence for this node.
 static bool postJson(const String& body) {
@@ -244,7 +285,11 @@ static bool postJson(const String& body) {
   Serial.printf("[post] %s -> %d\n", gHubUrl.c_str(), code);
   bool ok = code >= 200 && code < 400;
   if (ok) {
-    applyCadence(http.getString());
+    String resp = http.getString();
+    applyCadence(resp);
+#if ACTUATOR_PIN >= 0
+    applyDesired(resp);   // converge the actuator to the cloud's desired state (device shadow)
+#endif
     gFailStreak = 0;
   } else if (++gFailStreak >= FAIL_REDISCOVER) {
     // The hub stopped answering (down, or moved to a new IP) — drop it and re-browse mDNS
@@ -319,6 +364,16 @@ void setup() {
 void loop() {
 #if ACTUATOR_PIN >= 0
   if (gCmdServerUp) gCmdServer.handleClient(); // service any actuator command from the hub
+#if ACTUATOR_MAX_ON_MS > 0
+  // Node-side safety veto: independent of the cloud. If the output has been ON longer than the
+  // limit, force it off and LATCH — a stuck/lost command can't run a motor forever. Requires an
+  // explicit "off" (which clears the latch) before it will turn on again.
+  if (gActuatorOn && millis() - gActuatorOnSince >= (uint32_t)ACTUATOR_MAX_ON_MS) {
+    Serial.println("[actuate] safety veto — max-on time exceeded, forcing OFF (re-arm with an off command)");
+    setActuator(false);
+    gVetoLatched = true;
+  }
+#endif
 #endif
 
   const bool online = WiFi.status() == WL_CONNECTED;

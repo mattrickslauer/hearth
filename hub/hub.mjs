@@ -122,6 +122,31 @@ function cadencesForNode(nodeId) {
   }
   return out;
 }
+
+// Desired actuator state (input id "<node>.<key>" → on/off), learned from the cloud on each
+// device sync — the "desired" half of the device shadow. Same downlink carrier as cadences:
+// we hand each node its own actuators' desired states in the reply to its next ingest POST,
+// and the node converges its output to match. Keyed by full input id; handed to the node by key.
+const desiredState = new Map();
+
+// Replace our view of desired actuator states with the cloud's latest (input id → bool).
+function applyDesired(desired) {
+  if (!desired || typeof desired !== 'object') return;
+  desiredState.clear();
+  for (const [input, on] of Object.entries(desired)) desiredState.set(input, !!on);
+}
+
+// The desired actuator states for one node, keyed by bare actuator key ("on"/"off" strings the
+// node's forgiving parser understands). Empty = the cloud has commanded nothing for this node,
+// so the node leaves its output to whatever a local watch set.
+function desiredForNode(nodeId) {
+  const prefix = `${nodeId}.`;
+  const out = {};
+  for (const [input, on] of desiredState) {
+    if (input.startsWith(prefix)) out[input.slice(prefix.length)] = on ? 'on' : 'off';
+  }
+  return out;
+}
 // LAN realtime channel (browser dashboards on the same network). Set in main() once the
 // HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
 let live = null;
@@ -289,8 +314,10 @@ async function syncToCloud() {
     const { ok, status, data } = await api('/hub/devices', { platform: platform(), nodes: [...nodes.values()] }, hubToken);
     if (ok) {
       console.log(`[hub→cloud] synced ${data.nodes ?? '?'} node(s), ${data.readings ?? 0} reading(s)`);
-      // Absorb the account's desired per-node cadences; each node picks its up on next ingest.
+      // Absorb the account's desired per-node cadences + actuator states; each node picks
+      // them up on its next ingest POST.
       applyCadences(data.cadences);
+      applyDesired(data.desired);
     } else if (status === 401 || status === 403) {
       // Token invalid or hub unpaired → drop it and re-pair. Re-enroll surfaces a fresh code.
       console.log(`[hub→cloud] rejected ${status}: ${data.error || 'unpaired'} — re-pairing.`);
@@ -427,11 +454,15 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === INGEST_PATH) {
     const doc = await readJson(req);
     const ok = ingest(doc, req.socket?.remoteAddress);
-    // Downlink: hand this node the per-sensor cadences the account set for its inputs (keyed
-    // by bare sensor key). Always present (possibly {}) so the node can tell "cleared" from
-    // "unspoken" and revert cleared sensors to their default.
+    // Downlink: hand this node the per-sensor cadences AND desired actuator states the account
+    // set for its inputs (keyed by bare key). Always present (possibly {}) so the node can tell
+    // "cleared" from "unspoken" and revert cleared sensors to their default.
     res.writeHead(ok ? 200 : 400, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(ok && doc && doc.id ? { ok, cadences: cadencesForNode(doc.id) } : { ok }));
+    res.end(
+      JSON.stringify(
+        ok && doc && doc.id ? { ok, cadences: cadencesForNode(doc.id), desired: desiredForNode(doc.id) } : { ok },
+      ),
+    );
     return;
   }
   res.writeHead(404, { 'content-type': 'application/json' });
