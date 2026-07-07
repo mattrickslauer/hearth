@@ -58,6 +58,15 @@ const SUGGEST_ICON: Record<string, string> = {
 };
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
+
+// Format a claim code as the user types (or pastes): strip anything that isn't alphanumeric —
+// including any dashes they typed or that came in a paste — uppercase, cap at 8 chars, then
+// re-insert a single dash after the 4th. So "abcd2345", "ABCD-2345", and "ab-cd-23-45" all
+// converge on "ABCD-2345", and there's never a duplicate dash. Matches the backend's XXXX-XXXX.
+const formatClaimCode = (raw: string): string => {
+  const c = raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  return c.length > 4 ? `${c.slice(0, 4)}-${c.slice(4)}` : c;
+};
 // Give the scroll frame a bounded height on web so the ScrollView actually scrolls
 // (matches the pattern in demo.tsx). Native gets its height from flex.
 const webFullHeight = Platform.OS === 'web' ? ({ height: '100vh' } as object) : null;
@@ -414,11 +423,12 @@ export default function DashboardScreen() {
               <View style={[styles.describeRow, { flexDirection: isNarrow ? 'column' : 'row' }]}>
                 <TextInput
                   value={claimCode}
-                  onChangeText={setClaimCode}
+                  onChangeText={(t) => setClaimCode(formatClaimCode(t))}
                   onSubmitEditing={submitClaim}
                   editable={!claiming}
                   autoCapitalize="characters"
                   autoCorrect={false}
+                  maxLength={9}
                   placeholder="ABCD-2345"
                   placeholderTextColor={theme.textMuted}
                   style={[
