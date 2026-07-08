@@ -92,6 +92,13 @@ export interface Question {
   compiledSpec: CompiledSpec;
   /** Capture/sampling policy for cloud watches — the configurable "frame rate". */
   record?: RecordPolicy;
+  /**
+   * Reference-memory objects (household member ids) the homeowner has attached to this
+   * watch — the specific people/pets/vehicles Qwen-VL should reason over when it fires.
+   * A vision watch with links narrows "who/what to look for" to just these, instead of
+   * every object in memory. Empty/absent means "use all of memory" (the prior behaviour).
+   */
+  memoryIds?: string[];
   evalOn: 'event' | 'interval';
   fire: FirePolicy;
   authoring?: string[]; // the brain's authoring reasoning steps (shown once)

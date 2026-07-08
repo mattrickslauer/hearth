@@ -25,8 +25,10 @@ import {
   deleteWatch,
   describeHome,
   getSnapshot,
+  linkWatchMemory,
   listCadences,
   listEvents,
+  listMemory,
   listWatches,
   readInput,
   setCadence,
@@ -35,6 +37,7 @@ import {
   type ContextSuggestion,
   type HomeCapability,
   type HomeModel,
+  type MemoryObject,
   type Reading,
   type RunEvent,
   type Snapshot,
@@ -152,6 +155,10 @@ export default function DashboardScreen() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [watchError, setWatchError] = useState<string | null>(null);
 
+  // Reference-memory objects, and which watch card currently has its "attach memory" picker open.
+  const [memory, setMemory] = useState<MemoryObject[]>([]);
+  const [memoryOpenId, setMemoryOpenId] = useState<string | null>(null);
+
   const [hubs, setHubs] = useState<HubView[] | null>(null);
   const [claimCode, setClaimCode] = useState('');
   const [claiming, setClaiming] = useState(false);
@@ -162,18 +169,20 @@ export default function DashboardScreen() {
     setLoading(true);
     setError(null);
     try {
-      const [h, w, e, hb, cd] = await Promise.all([
+      const [h, w, e, hb, cd, mem] = await Promise.all([
         describeHome(token),
         listWatches(token),
         listEvents(20, token),
         listHubs(token).catch(() => [] as HubView[]),
         listCadences(token).catch(() => ({}) as Cadences),
+        listMemory(token).catch(() => [] as MemoryObject[]),
       ]);
       setHome(h);
       setWatches(w);
       setEvents(e);
       setHubs(hb);
       setCadences(cd);
+      setMemory(mem);
       const sensors = h.capabilities.filter((c) => c.kind === 'sensor');
       const pairs = await Promise.all(
         sensors.map(async (c) => [c.id, await readInput(c.id, token).catch(() => null)] as const),
@@ -263,6 +272,24 @@ export default function DashboardScreen() {
       setWatchError((err as Error).message);
     } finally {
       setDeletingId(null);
+    }
+  };
+
+  // Attach or detach one reference-memory object from a watch. Optimistic: flip the link in place,
+  // persist, and roll back to the server's authoritative list if the call fails.
+  const toggleWatchMemory = async (w: Watch, memoryId: string) => {
+    const current = w.memoryIds ?? [];
+    const next = current.includes(memoryId)
+      ? current.filter((id) => id !== memoryId)
+      : [...current, memoryId];
+    setWatchError(null);
+    setWatches((prev) => (prev ? prev.map((x) => (x.id === w.id ? { ...x, memoryIds: next } : x)) : prev));
+    try {
+      const { question } = await linkWatchMemory(w.id, next, token);
+      setWatches((prev) => (prev ? prev.map((x) => (x.id === w.id ? { ...x, memoryIds: question.memoryIds ?? [] } : x)) : prev));
+    } catch (err) {
+      setWatchError((err as Error).message);
+      setWatches((prev) => (prev ? prev.map((x) => (x.id === w.id ? { ...x, memoryIds: current } : x)) : prev));
     }
   };
 
@@ -549,7 +576,14 @@ export default function DashboardScreen() {
             <View style={styles.section}>
               <Text style={[styles.sectionTitle, { color: theme.text }]}>Camera</Text>
               {visionSensors.map((c) => (
-                <CloudCameraCard key={c.id} theme={theme} cap={c} token={token} />
+                <CloudCameraCard
+                  key={c.id}
+                  theme={theme}
+                  cap={c}
+                  token={token}
+                  cadenceMs={cadences[c.id]}
+                  onChangeCadence={(ms) => changeCadence(c.id, ms)}
+                />
               ))}
             </View>
           ) : HUB_URL ? (
@@ -652,6 +686,15 @@ export default function DashboardScreen() {
                         <Text style={{ color: theme.textMuted }}> → </Text>
                         {w.action}
                       </Text>
+                      <WatchMemory
+                        theme={theme}
+                        watch={w}
+                        memory={memory}
+                        open={memoryOpenId === w.id}
+                        onToggleOpen={() => setMemoryOpenId((cur) => (cur === w.id ? null : w.id))}
+                        onToggle={(memoryId) => toggleWatchMemory(w, memoryId)}
+                        onAddMemory={() => router.push('/memory')}
+                      />
                       <View style={styles.watchActions}>
                         <Pressable
                           onPress={() => startEdit(w)}
@@ -744,14 +787,23 @@ function CloudCameraCard({
   theme,
   cap,
   token,
+  cadenceMs,
+  onChangeCadence,
 }: {
   theme: ReturnType<typeof useTheme>;
   cap: HomeCapability;
   token: string | null;
+  // The account's desired snap cadence for this camera (undefined → hub firmware default).
+  cadenceMs?: number;
+  onChangeCadence: (ms: number) => void;
 }) {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [frameOk, setFrameOk] = useState(false);
   const [loadedAt, setLoadedAt] = useState<number | null>(null);
+
+  // The rate the hub is asked to snap at (falls back to the firmware default). This drives both
+  // the downlink (setCadence → hub → camera.setCadence) and how often we re-pull the preview.
+  const effectiveMs = cadenceMs ?? DEFAULT_CADENCE_MS;
 
   const refresh = useCallback(() => {
     getSnapshot(cap.id, token)
@@ -763,10 +815,11 @@ function CloudCameraCard({
     refresh();
   }, [refresh]);
   // Re-pull on the snap cadence — a photo every few seconds, faithful to "sampled, not streamed".
+  // Matches the rate the camera actually snaps at, so the preview tracks the chosen frame rate.
   useEffect(() => {
-    const id = setInterval(refresh, DEFAULT_CADENCE_MS);
+    const id = setInterval(refresh, Math.max(1000, effectiveMs));
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, effectiveMs]);
 
   const uri = snap?.ossUrl ?? null;
   const waiting =
@@ -800,7 +853,9 @@ function CloudCameraCard({
         {frameOk && uri ? (
           <View style={styles.camStamp}>
             <View style={[styles.camStampDot, { backgroundColor: theme.ember }]} />
-            <Text style={styles.camStampText}>snapped {loadedAt ? new Date(loadedAt).toLocaleTimeString() : ''}</Text>
+            <Text style={styles.camStampText}>
+              snapped {loadedAt ? new Date(loadedAt).toLocaleTimeString() : ''} · every {fmtRate(effectiveMs)}
+            </Text>
           </View>
         ) : (
           <View style={styles.camPlaceholder}>
@@ -809,9 +864,20 @@ function CloudCameraCard({
         )}
       </View>
 
+      <View style={styles.camControls}>
+        <StepSlider
+          theme={theme}
+          label="Snap rate"
+          stops={CADENCE_STOPS}
+          value={effectiveMs}
+          format={fmtRate}
+          onCommit={onChangeCadence}
+        />
+      </View>
+
       <Text style={[styles.camCaption, { color: theme.textMuted }]}>
-        The hub samples a frame and pushes it to the cloud; Qwen-VL reads it only when a vision watch
-        needs it — no video stream leaves the home.
+        The hub samples a frame every {fmtRate(effectiveMs)} and pushes it to the cloud; Qwen-VL reads it
+        only when a vision watch needs it — no video stream leaves the home.
       </Text>
     </Card>
   );
@@ -1152,6 +1218,95 @@ function CadenceSlider({
   );
 }
 
+// The reference-memory a watch is bound to: which people/pets/vehicles from memory Qwen-VL
+// should reason over when it fires. Collapsed, it previews the attached thumbnails; expanded,
+// it's a picker of every memory object as a toggle chip. Attaching narrows a vision watch to
+// just these; attaching none means "reason over all of memory" (the default).
+function WatchMemory({
+  theme,
+  watch,
+  memory,
+  open,
+  onToggleOpen,
+  onToggle,
+  onAddMemory,
+}: {
+  theme: ReturnType<typeof useTheme>;
+  watch: Watch;
+  memory: MemoryObject[];
+  open: boolean;
+  onToggleOpen: () => void;
+  onToggle: (memoryId: string) => void;
+  onAddMemory: () => void;
+}) {
+  const linkedIds = watch.memoryIds ?? [];
+  const linked = memory.filter((m) => linkedIds.includes(m.id));
+
+  return (
+    <View style={styles.memWrap}>
+      <View style={styles.memHeadRow}>
+        <Pressable onPress={onToggleOpen} hitSlop={6}>
+          <Text style={[styles.memToggleText, { color: theme.textSecondary }]}>
+            {open ? '▾' : '▸'} Memory{linked.length ? ` (${linked.length})` : ''}
+          </Text>
+        </Pressable>
+        {!open ? (
+          linked.length ? (
+            <View style={styles.memThumbs}>
+              {linked.slice(0, 6).map((m) => (
+                <Image key={m.id} source={{ uri: m.image }} style={[styles.memThumb, { borderColor: theme.emberDeep }]} />
+              ))}
+            </View>
+          ) : (
+            <Text style={[styles.memHint, { color: theme.textMuted }]}>watches all of memory</Text>
+          )
+        ) : null}
+      </View>
+
+      {open ? (
+        memory.length ? (
+          <>
+            <Text style={[styles.memHint, { color: theme.textMuted }]}>
+              Tap to choose who or what Qwen-VL should look for. Attach none to reason over all of memory.
+            </Text>
+            <View style={styles.memGrid}>
+              {memory.map((m) => {
+                const on = linkedIds.includes(m.id);
+                return (
+                  <Pressable
+                    key={m.id}
+                    onPress={() => onToggle(m.id)}
+                    style={[
+                      styles.memChip,
+                      {
+                        borderColor: on ? theme.emberDeep : theme.border,
+                        backgroundColor: on ? theme.emberGlow : theme.backgroundElement,
+                      },
+                    ]}>
+                    <Image source={{ uri: m.image }} style={styles.memChipImg} />
+                    <Text
+                      style={[styles.memChipLabel, { color: on ? theme.ember : theme.textSecondary }]}
+                      numberOfLines={1}>
+                      {on ? '✓ ' : ''}
+                      {m.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
+        ) : (
+          <Pressable
+            onPress={onAddMemory}
+            style={[styles.memEmpty, { borderColor: theme.emberDeep, backgroundColor: theme.emberGlow }]}>
+            <Text style={[styles.memEmptyText, { color: theme.ember }]}>＋ Add reference photos to attach →</Text>
+          </Pressable>
+        )
+      ) : null}
+    </View>
+  );
+}
+
 function Tag({ theme, on, text }: { theme: ReturnType<typeof useTheme>; on?: boolean; text: string }) {
   return (
     <View
@@ -1344,6 +1499,30 @@ const styles = StyleSheet.create({
   },
   watchBtnText: { fontFamily: Fonts?.mono, fontSize: 12.5, fontWeight: '700' },
   editInput: { minHeight: 72, textAlignVertical: 'top' },
+
+  // watch ↔ reference-memory links: a collapsible strip of attachable people/pets/vehicles
+  memWrap: { gap: 7, marginTop: 2 },
+  memHeadRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, flexWrap: 'wrap' },
+  memToggleText: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.4 },
+  memThumbs: { flexDirection: 'row', gap: 4 },
+  memThumb: { width: 22, height: 22, borderRadius: 6, borderWidth: 1, backgroundColor: '#0002' },
+  memHint: { fontFamily: Fonts?.sans, fontSize: 12.5, lineHeight: 18 },
+  memGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  memChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingVertical: 5,
+    paddingHorizontal: 11,
+    paddingLeft: 5,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    maxWidth: 210,
+  },
+  memChipImg: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#0002' },
+  memChipLabel: { fontFamily: Fonts?.sans, fontSize: 13, fontWeight: '600', flexShrink: 1 },
+  memEmpty: { alignSelf: 'flex-start', paddingVertical: 8, paddingHorizontal: 14, borderRadius: Radius.pill, borderWidth: 1 },
+  memEmptyText: { fontFamily: Fonts?.sans, fontSize: 13, fontWeight: '700' },
 
   tag: { paddingVertical: 3, paddingHorizontal: 9, borderRadius: Radius.pill, borderWidth: 1 },
   tagText: { fontFamily: Fonts?.mono, fontSize: 10.5, fontWeight: '700', letterSpacing: 0.3 },

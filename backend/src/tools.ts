@@ -205,9 +205,10 @@ export const TOOLS: Tool[] = [
       const id = str(a.id);
       const existing = await store.getQuestion(id);
       if (!existing) throw new Error(`unknown question: ${id}`);
-      // Recompile from scratch — same path as author_question — but keep the id.
+      // Recompile from scratch — same path as author_question — but keep the id and any
+      // reference-memory links the homeowner attached (those are their choice, not the brain's).
       const { question, engine } = await qwenAuthor(str(a.wish));
-      const q: Question = { ...question, id };
+      const q: Question = { ...question, id, memoryIds: existing.memoryIds };
       if (q.compiledSpec.kind === 'cloud' && !q.record) {
         const inputId = q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0] ?? 'camera.frame';
         q.record = defaultRecord(inputId, q.compiledSpec.cloud.maxCadence ?? '10s');
@@ -233,6 +234,37 @@ export const TOOLS: Tool[] = [
       if (!existed) throw new Error(`unknown question: ${id}`);
       await store.appendEvent({ id: `ev-del-${id}-${Date.now().toString(36)}`, ts: Date.now(), questionId: id, kind: 'removed', reasoning: 'watch removed' });
       return { ok: true, questionId: id };
+    },
+  },
+  {
+    name: 'set_question_memory',
+    description:
+      "Attach reference-memory objects to a watch: link the specific household members (people, pets, vehicles) Qwen-VL should reason over when this watch fires, by their ids. Replaces the watch's current links. Pass an empty array to clear them (the watch then reasons over all of memory). Unknown ids are ignored.",
+    mode: ['authoring'],
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'the watch (question) id' },
+        memoryIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'household member ids to link (from list_household); empty clears all links',
+        },
+      },
+      required: ['id', 'memoryIds'],
+      additionalProperties: false,
+    },
+    handler: async (a, { store }) => {
+      const id = str(a.id);
+      const existing = await store.getQuestion(id);
+      if (!existing) throw new Error(`unknown question: ${id}`);
+      const requested = Array.isArray(a.memoryIds) ? a.memoryIds.map((m) => str(m)).filter(Boolean) : [];
+      // Keep only ids that name a real household member, preserving the caller's order and de-duping.
+      const known = new Set((await store.listHousehold()).map((m) => m.id));
+      const memoryIds = [...new Set(requested)].filter((m) => known.has(m));
+      const q: Question = { ...existing, memoryIds };
+      await store.putQuestion(q);
+      return { questionId: q.id, question: q };
     },
   },
   {
