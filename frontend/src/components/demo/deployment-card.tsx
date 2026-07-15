@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { capability } from '@/demo/home';
+import { dutyForGate, gatesFor } from '@/demo/gates';
 import { parseDuration } from '@/demo/engine/duration';
+import { recommend, type Recommendation } from '@/demo/engine/recommend';
 import {
   ACTIVITY,
   cheapestPlan,
@@ -11,16 +13,29 @@ import {
   formatUsd,
   type ActivityLevel,
 } from '@/demo/engine/pricing';
-import { MODELS, type CloudModel, type RecordPolicy } from '@/demo/engine/types';
+import { MODELS, type CloudModel, type PredicateNode, type RecordPolicy } from '@/demo/engine/types';
 import type { Question } from '@/demo/types';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 import { Dropdown, Option } from './dropdown';
 
-export type RecordPatch = { mode?: RecordPolicy['mode']; every?: string; retain?: number; model?: CloudModel };
+export type RecordPatch = {
+  mode?: RecordPolicy['mode'];
+  every?: string;
+  retain?: number;
+  model?: CloudModel;
+  /** A cheap local predicate that must hold before a cloud call is spent. */
+  gate?: PredicateNode;
+};
 
 const RATES = ['2s', '10s', '30s', '2m'];
+
+/** Cadence stops a recommendation may propose, slowest-first. */
+const SLOWER = ['2m', '30s', '10s'];
+
+/** Fallback duty for an already-gated watch whose gate we can't identify. */
+const DEFAULT_GATE_DUTY = 0.05;
 
 /** Human "≈ N/min" (or /hr) for a sample interval — the metered rate readout. */
 function rateLabel(every: string): string {
@@ -45,6 +60,29 @@ export function DeploymentCard({
   active?: boolean;
 }) {
   const theme = useTheme();
+
+  // The activity + gate-duty assumptions live here, above both the quote and the
+  // controls, so adjusting a slider re-prices against the same assumption.
+  const [activity, setActivity] = useState<ActivityLevel>('normal');
+  const gates = gatesFor(dep.boundInputs);
+  // Resolve an existing gate's duty from the input it actually references — not from
+  // whichever candidate happens to sort first.
+  const gateDuty =
+    dep.compiledSpec.kind === 'cloud'
+      ? dutyForGate(dep.compiledSpec.cloud.gate) ?? (dep.compiledSpec.cloud.gate ? DEFAULT_GATE_DUTY : undefined)
+      : undefined;
+  const quoteInput = {
+    spec: dep.compiledSpec,
+    record: dep.record,
+    // An empty/absent link list means "use all of memory", not "no references".
+    references: dep.memoryIds?.length || undefined,
+    eventsPerDay: ACTIVITY[activity],
+    gateDuty,
+  };
+  const quote = estimate(quoteInput);
+  const plan = cheapestPlan(quote);
+  const recs = recommend(quoteInput, { gates, slower: SLOWER });
+
   return (
     <View
       style={[
@@ -90,6 +128,12 @@ export function DeploymentCard({
       <Row theme={theme} k="When" v={dep.trigger} />
       <Row theme={theme} k="Do" v={dep.action} />
 
+      {/* Cost is shown for EVERY watch, not just the ones that bill. A local watch
+          reading "$0 · runs on your hub" is the whole token-frugal thesis, stated. */}
+      <Quote quote={quote} plan={plan} activity={activity} onActivity={setActivity} />
+
+      {recs.length && onConfigure ? <Recommendations recs={recs} onConfigure={onConfigure} /> : null}
+
       {dep.compiledSpec.kind === 'cloud' && dep.record && onConfigure ? (
         <RecordControls dep={dep} record={dep.record} onConfigure={onConfigure} />
       ) : null}
@@ -113,18 +157,6 @@ function RecordControls({
   const metered = record.mode === 'interval';
   const visionMismatch = dep.usesVision && active && !active.vision;
 
-  // A watch is a declared program, so its bill is knowable before it runs. Re-quoting
-  // is pure arithmetic — every patch below re-prices instantly, with no round-trip.
-  const [activity, setActivity] = useState<ActivityLevel>('normal');
-  const quote = estimate({
-    spec: dep.compiledSpec,
-    record,
-    // An empty/absent link list means "use all of memory", not "no references".
-    references: dep.memoryIds?.length || undefined,
-    eventsPerDay: ACTIVITY[activity],
-  });
-  const plan = cheapestPlan(quote);
-
   return (
     <View style={[styles.rec, { borderTopColor: theme.border }]}>
       <View style={styles.recHead}>
@@ -134,8 +166,6 @@ function RecordControls({
           <Text style={{ color: theme.textMuted }}>{'  ·  '}retain {record.retain}</Text>
         </Text>
       </View>
-
-      <Quote quote={quote} plan={plan} activity={activity} onActivity={setActivity} />
 
       {/* mode: sample every N (metered) vs only on scene change (on_event) */}
       <View style={styles.segRow}>
@@ -207,6 +237,23 @@ function Quote({
   const fitsFree = plan?.id === 'free';
   const tone = !plan ? theme.ember : fitsFree ? theme.text : theme.ember;
 
+  // A local watch has no bill to show — say so plainly. This is the product's whole
+  // argument ("Qwen compiles most wishes down to a local predicate"), so it deserves
+  // a line rather than silence.
+  if (quote.local) {
+    return (
+      <View style={[styles.quote, { borderColor: theme.border, backgroundColor: theme.background }]}>
+        <View style={styles.quoteHead}>
+          <Text style={[styles.quoteMoney, { color: theme.text }]}>
+            💸 $0/mo
+            <Text style={{ color: theme.textMuted }}>{'  ·  '}runs on your hub, offline, forever</Text>
+          </Text>
+          <Badge label="Free ✓" tone="success" />
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.quote, { borderColor: theme.border, backgroundColor: theme.background }]}>
       <View style={styles.quoteHead}>
@@ -241,6 +288,57 @@ function Quote({
           </Text>
         </View>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * Cost recommendations — Qwen negotiating the bill down, in the same visible-thinking
+ * idiom as the rest of the product. Each saving is measured by re-quoting the proposed
+ * config, never asserted, so the numbers here can't drift from the quote above.
+ *
+ * Tappable ones apply instantly. A hardware suggestion has no patch — you can't tap
+ * your way to a PIR sensor — so it reads as advice with a price attached.
+ */
+function Recommendations({
+  recs,
+  onConfigure,
+}: {
+  recs: Recommendation[];
+  onConfigure: (patch: RecordPatch) => void;
+}) {
+  const theme = useTheme();
+  return (
+    <View style={styles.recs}>
+      <Text style={[styles.recsTitle, { color: theme.textMuted }]}>QWEN SUGGESTS</Text>
+      {recs.map((r) => {
+        const tappable = !!r.patch;
+        return (
+          <Pressable
+            key={r.id}
+            disabled={!tappable}
+            onPress={() => r.patch && onConfigure(r.patch)}
+            style={[
+              styles.recItem,
+              { borderColor: theme.border, backgroundColor: theme.background, opacity: tappable ? 1 : 0.85 },
+            ]}>
+            <View style={styles.recItemHead}>
+              <Text style={[styles.recItemTitle, { color: theme.text }]} numberOfLines={2}>
+                {r.kind === 'hardware' ? '🔌 ' : '⚡ '}
+                {r.title}
+              </Text>
+              <Text style={[styles.recSaves, { color: theme.ember }]}>
+                −{formatUsd(r.savedUsd)}/mo
+              </Text>
+            </View>
+            <Text style={[styles.recWhy, { color: theme.textMuted }]}>{r.why}</Text>
+            <Text style={[styles.recWhy, { color: theme.textMuted }]}>
+              {Math.round(r.savedPct)}% cheaper → {formatUsd(r.projected.usdPerMonth)}/mo
+              {tappable ? ' · tap to apply' : ' · one-time hardware'}
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
@@ -348,4 +446,11 @@ const styles = StyleSheet.create({
   quoteAssume: { flexDirection: 'row', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' },
   quoteNote: { fontFamily: Fonts?.mono, fontSize: 10.5 },
   quoteLevel: { fontFamily: Fonts?.mono, fontSize: 10.5, fontWeight: '700' },
+  recs: { gap: 6 },
+  recsTitle: { fontFamily: Fonts?.mono, fontSize: 10, fontWeight: '700', letterSpacing: 0.8 },
+  recItem: { borderWidth: 1, borderRadius: Radius.sm, padding: Spacing.one, gap: 3 },
+  recItemHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: Spacing.one },
+  recItemTitle: { flex: 1, fontFamily: Fonts?.sans, fontSize: 12, fontWeight: '700' },
+  recSaves: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700' },
+  recWhy: { fontFamily: Fonts?.sans, fontSize: 10.5, lineHeight: 14 },
 });
