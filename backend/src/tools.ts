@@ -15,6 +15,7 @@ import { author as qwenAuthor, hasKey, validateQuestion } from './qwen';
 import { parseDuration, defaultRecord, type Question, type RecordPolicy } from './domain';
 import type { Agg, HomeStore, Scalar } from './store';
 import { ossProvisioned, putImage, putFrame, presignKey, frameKey, resolveImage } from './oss';
+import { deliver } from './notify';
 
 export interface ToolCtx {
   store: HomeStore;
@@ -446,22 +447,7 @@ export const TOOLS: Tool[] = [
       const channelId = str(a.channelId);
       const message = str(a.message);
       await store.appendEvent({ id: `ev-notify-${Date.now().toString(36)}`, ts: Date.now(), questionId: 'runtime', kind: 'notify', reasoning: `${channelId}: ${message}` });
-      // Telegram works with just a bot token + chat id — the one channel that needs no Alibaba setup.
-      const token = process.env.TELEGRAM_BOT_TOKEN;
-      const chat = process.env.TELEGRAM_CHAT_ID;
-      if (channelId.startsWith('telegram') && token && chat) {
-        try {
-          const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ chat_id: chat, text: message }),
-          });
-          return { ok: res.ok, channel: channelId, delivered: res.ok };
-        } catch (e) {
-          return { ok: false, channel: channelId, error: (e as Error).message };
-        }
-      }
-      return { ok: true, channel: channelId, delivered: false, note: 'logged; wire Expo Push / SMS / DirectMail channels next.' };
+      return deliver(channelId, message);
     },
   },
   {

@@ -12,6 +12,7 @@
     "qwen-vl-check": "tsx scripts/qwen-vl-check.ts",
     "oss-provision": "tsx scripts/oss-provision.ts",
     "household-check": "tsx scripts/household-check.ts",
+    "vision-watch-check": "tsx scripts/vision-watch-check.ts",
     "oss-check": "tsx scripts/oss-check.ts",
     "readings-check": "tsx scripts/readings-check.ts",
     "mail-check": "tsx scripts/mail-check.ts",

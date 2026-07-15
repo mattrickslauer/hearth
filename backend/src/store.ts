@@ -114,6 +114,25 @@ export interface HouseholdMember {
   addedAt: number;
 }
 
+/**
+ * A cloud watch's evaluation bookkeeping — what the runtime needs to honour
+ * `maxCadence` (budget floor), `fire.edge` (rising) and `fire.cooldown`.
+ *
+ * This deliberately does NOT live in the event feed. The feed de-noises: a watch that
+ * keeps judging "nothing there" writes no rows, so deriving `lastJudgedAt` from events
+ * would leave it stale forever and the budget floor would never meter the quiet case —
+ * which is exactly the case that burns tokens. Separate concerns, separate records.
+ *
+ * Kept per-question so two FC instances converge on the same row rather than each
+ * holding their own idea of when the watch last looked.
+ */
+export interface WatchRunState {
+  questionId: string;
+  lastJudgedAt: number; // when we last spent a cloud call (0 = never)
+  lastFiredAt: number; // when it last fired (0 = never)
+  lastAnswer: boolean; // the previous verdict — the rising edge compares against this
+}
+
 export interface HomeStore {
   describeHome(): Promise<HomeModel>;
   listInputs(filter?: 'sensor' | 'actuator'): Promise<Capability[]>;
@@ -142,6 +161,10 @@ export interface HomeStore {
   listHousehold(): Promise<HouseholdMember[]>;
   /** Remove a household member; true if one was removed. */
   deleteHouseholdMember(id: string): Promise<boolean>;
+  /** A cloud watch's eval bookkeeping (cadence floor / rising edge / cooldown). */
+  getRunState(questionId: string): Promise<WatchRunState | null>;
+  /** Persist a cloud watch's eval bookkeeping. */
+  putRunState(state: WatchRunState): Promise<void>;
   /** The desired actuator states (input id "<node>.<key>" → on/off) — the device shadow. */
   getDesired(): Promise<Record<string, boolean>>;
   /** Set (or clear, when on is null) one actuator's desired state — the cloud→node command. */
@@ -174,6 +197,7 @@ interface StoreSnapshot {
   cadences: [string, number][];
   household: HouseholdMember[];
   desired: [string, boolean][];
+  runs: WatchRunState[];
 }
 
 const emptyModel = (): HomeModel => ({ zones: [], nodes: [], capabilities: [] });
@@ -194,6 +218,8 @@ export class MemoryStore implements HomeStore {
   // device shadow. Set by the actuate tool; delivered to the node the same way cadences are
   // (hub device sync → node ingest response), where the node converges its output to match.
   protected desired = new Map<string, boolean>();
+  // Per-cloud-watch eval bookkeeping — see WatchRunState on why this isn't derived from events.
+  protected runs = new Map<string, WatchRunState>();
 
   /**
    * A new home is EMPTY — no zones, devices, watches, or readings. Pass seed=true
@@ -222,6 +248,7 @@ export class MemoryStore implements HomeStore {
       cadences: [...this.cadences.entries()],
       household: [...this.household.values()],
       desired: [...this.desired.entries()],
+      runs: [...this.runs.values()],
     };
   }
   protected restore(s: Partial<StoreSnapshot>): void {
@@ -234,6 +261,7 @@ export class MemoryStore implements HomeStore {
     this.cadences = new Map(s.cadences ?? []);
     this.household = new Map((s.household ?? []).map((m) => [m.id, m]));
     this.desired = new Map(s.desired ?? []);
+    this.runs = new Map((s.runs ?? []).map((r) => [r.questionId, r]));
   }
 
   /** Capabilities derived from every paired hub's real nodes (merged into the model). */
@@ -382,6 +410,13 @@ export class MemoryStore implements HomeStore {
     const existed = this.household.delete(id);
     if (existed) this.persist();
     return existed;
+  }
+  async getRunState(questionId: string): Promise<WatchRunState | null> {
+    return this.runs.get(questionId) ?? null;
+  }
+  async putRunState(state: WatchRunState): Promise<void> {
+    this.runs.set(state.questionId, state);
+    this.persist();
   }
   async getDesired(): Promise<Record<string, boolean>> {
     return Object.fromEntries(this.desired);
@@ -773,6 +808,22 @@ class TablestoreStore extends MemoryStore {
   async setDesired(input: string, on: boolean | null): Promise<void> {
     await super.setDesired(input, on); // in-memory
     await this.putBlob('desired', Object.fromEntries(this.desired));
+  }
+  // Run state persists per-question (`rs#<id>`), read/write-through: two FC instances
+  // must agree on when a watch last looked, or each would meter against its own clock
+  // and the budget floor would leak by a factor of however many instances are warm.
+  async getRunState(questionId: string): Promise<WatchRunState | null> {
+    const d = await this.getBlob(`rs#${questionId}`);
+    if (!d) return null;
+    try {
+      return JSON.parse(d) as WatchRunState;
+    } catch {
+      return null;
+    }
+  }
+  async putRunState(state: WatchRunState): Promise<void> {
+    await super.putRunState(state); // in-memory
+    await this.putBlob(`rs#${state.questionId}`, state);
   }
 }
 

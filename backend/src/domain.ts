@@ -12,6 +12,7 @@ const D = '../../frontend/src/demo';
 export * from '../../frontend/src/demo/engine/types';
 export { parseDuration, formatDuration } from '../../frontend/src/demo/engine/duration';
 export { evaluate } from '../../frontend/src/demo/engine/predicate';
+export { ReadingStore } from '../../frontend/src/demo/engine/store';
 export { shouldSample, meteredInterval } from '../../frontend/src/demo/engine/record';
 export {
   ACTIVITY,
