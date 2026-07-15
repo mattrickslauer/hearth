@@ -1,4 +1,8 @@
-# 01 — Infra: Alibaba Cloud candidate stack
+# 01 — Infra: Alibaba Cloud stack
+
+> ⚠️ **Planning-time doc.** The table below is the **candidate** stack we researched up front.
+> What we actually shipped is at the bottom (**"Decisions — how they actually resolved"**) and in
+> the root `README.md`. Several candidates here were never built. Read the bottom first.
 
 Maps each capability in `00-capabilities.md` to **candidate** Alibaba Cloud services. These are
 research-backed proposals with alternatives + tradeoffs. Everything here is chosen to
@@ -74,18 +78,33 @@ the home as an **MCP server** the Qwen agent calls, directly targets the rubric'
 "**sophisticated use of Qwen Cloud APIs (custom skills, MCP integrations)**" and the mandatory
 "**Proof of Alibaba Cloud Deployment**." Breadth of *their* stack = points.
 
-## Open decisions (make once the problem is fully shaped)
-- **OD-1 — Transport: ✅ DECIDED → Alibaba IoT Platform.**
-  Hub = **gateway device**, nodes = **sub-devices**, live control + offline reconcile via **device shadow**.
-  More "their stack" (scores), built-in intermittent-link twin semantics. DIY WebSocket rejected.
-- **OD-2 — Store: Tablestore vs serverless RDS/PolarDB.**
-  Tablestore = serverless NoSQL, ideal for the JSON twin + time-series, cheap-at-idle.
-  RDS Postgres = familiar SQL + JSONB, easier ad-hoc queries. *Lean: Tablestore.*
-- **OD-3 — Realtime: API Gateway WebSocket vs MQTT-over-WS vs polling.** *Lean: WebSocket; polling as the trivial fallback.*
-- **OD-4 — Notifications: Alibaba-native (SMS/DirectMail) vs external (Expo Push/Telegram/Vonage).**
-  *Lean: Expo Push (native to app) + Telegram (free) for the demo; add Alibaba SMS/DirectMail to strengthen the "all-on-Alibaba" claim.*
-- **OD-5 — Auth: IDaaS vs DIY vs defer.** *Lean: defer to single-home + guest-demo for v1.*
-- **OD-6 — Compute granularity:** one FC app vs several functions (authoring / runtime / sync / webhooks). *Lean: start as one, split if needed.*
+## Decisions — how they actually resolved in the shipped code
+
+> This doc was written at planning time. Below is what we **actually built**, which differs from
+> the leans above in two places. The code is the truth.
+
+- **OD-1 — Transport: ❌ NOT IoT Platform.** We planned IoT Platform + device shadow and **did not
+  ship it** — no MQTT/IoT SDK is in the repo. We built the "rejected" option: a **DIY device shadow**
+  (`store.setDesired()` in `backend/src/store.ts`, polled by the hub via `applyDesired` in
+  `hub/hub.mjs`) plus a self-hosted WebSocket relay (`relay/relay.mjs`). Reason: Function Compute
+  can't hold an open browser WebSocket, and the DIY shadow was a fraction of the setup cost. The
+  shadow semantics are real; the Alibaba branding on them is not.
+- **OD-2 — Store: ✅ Tablestore.** Shipped — `backend/src/tablestore.ts`; live health reports
+  `store:"tablestore"`. Holds watches, accounts, OTP, hub pairings, device registry.
+- **OD-3 — Realtime: ⚠️ self-hosted WebSocket relay, not API Gateway.** See OD-1. Note commit
+  `c6848a5` is titled "via Alibaba API Gateway WebSocket" — the title is wrong; the code is a DIY
+  relay. See `backend/docs/realtime-relay.md`.
+- **OD-4 — Notifications: ntfy + Telegram** (not Alibaba SMS/DirectMail). OTP email goes via
+  **ZeptoMail**, not DirectMail.
+- **OD-5 — Auth: ✅ built** (accounts + OTP on Tablestore), not deferred, not IDaaS.
+- **OD-6 — Compute: ✅ one FC app** (`hearth-mcp`), as leaned.
+
+### Planned but NOT shipped (candidates only — no code exists)
+**IoT Platform** · **KMS Secrets Manager** (secrets are FC env vars) · **SMS / DirectMail** ·
+**API Gateway WebSocket** · **OSS static hosting + CDN** (the app is on Vercel) · **IDaaS** · **SLS**.
+
+### Shipped Alibaba services
+**Function Compute 3.0** · **Model Studio / DashScope (qwen-plus, qwen-vl-plus)** · **Tablestore** · **OSS**.
 
 ## Sources
 - Function Compute (serverless, scale-to-zero, pricing): https://www.alibabacloud.com/en/product/function-compute/pricing · https://www.alibabacloud.com/help/en/functioncompute/fc/user-guide/introduction-to-serverless-gpus-1

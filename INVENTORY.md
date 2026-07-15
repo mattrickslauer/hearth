@@ -1,7 +1,10 @@
 # Inventory — the Hearth reference kit
 
-Everything on hand for the build. Items marked **⚠️ confirm** are assumptions or missing
-specs — please correct.
+Everything on hand for the build. Items marked **⚠️ confirm** were open questions at planning
+time; the firmware for the core kit (ESP32 + DHT11 + HC-SR04 + relay) has since shipped and is
+flashed on real hardware — see `firmware/src/main.cpp`. The **solar chain remains aspirational**
+(panel only; no charge controller/battery), so treat the off-grid outdoor node as a design intent,
+not a built node.
 
 ---
 
@@ -64,12 +67,12 @@ for nRF24 · USB cables for flashing · external 5 V supply for servo/relay · h
 
 | Item | Status | Role |
 |------|--------|------|
-| **Qwen Cloud API key / hackathon credits** | ⚠️ **not yet — sign up ASAP** | Powers authoring + runtime reasoning (incl. Qwen-VL); blocks all interesting work |
-| Qwen endpoint | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` (OpenAI-compatible) | qwen-plus / qwen-max / qwen-vl |
-| **Alibaba Cloud account** | ⚠️ confirm | Required for "Proof of Alibaba Cloud Deployment" (host the dashboard/console) |
-| Qwen-Agent / Model Studio Skills | To evaluate | Deeper "used their stack" story |
+| **Qwen Cloud API key / hackathon credits** | ✅ **active** | Powers authoring (`qwen-plus`) + Qwen-VL judging. Verify: `cd backend && npm run qwen-check` |
+| Qwen endpoint | ✅ `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` (OpenAI-compatible) | Shipped models: **qwen-plus**, **qwen-vl-plus** |
+| **Alibaba Cloud account** | ✅ **provisioned + deployed** | Function Compute 3.0 (`ap-southeast-1`), Tablestore, OSS (`hearth-vision-c11d45`). Live: `hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run/health` |
+| Qwen-Agent / Model Studio Skills | ❌ not used | We exposed the home as a 20-tool **MCP surface** on FC instead |
 | Dev tooling | ✅ Node 20, Python 3.14, Docker, git | Build/deploy |
-| Arduino IDE / PlatformIO | ⚠️ not installed | ESP32 firmware build + flash |
+| PlatformIO | ✅ used | ESP32 firmware build + flash (`firmware/`) |
 
 ## Environment & non-hardware assets
 
@@ -77,13 +80,19 @@ for nRF24 · USB cables for flashing · external 5 V supply for servo/relay · h
 |-------|------|
 | The developer's own home | Live demo environment for the "describe it" hero demo |
 | Senior full-stack developer (solo) | The team |
-| ~8 days (deadline 2026-07-09 14:00 PDT) | Timeline |
+| Submission deadline **2026-07-20 14:00 PDT** | Timeline |
 
 ---
 
-### Open questions this raises
-1. **Raspberry Pi model + RAM?** (affects what runs locally, e.g. any local vision)
-2. **Relay + servo — how many, what type?** (both are core actuators)
-3. **Solar power chain** — panel alone won't run a node; do we have controller + battery + regulator, or is solar "for the photo"?
-4. **3rd nRF24, or ESP-NOW/Wi-Fi** for node↔hub transport?
-5. **Support parts** (DHT11 pull-up, nRF24 power, external 5 V) — on hand?
+### How the planning questions resolved
+1. **Node↔hub transport** — ✅ **Wi-Fi + HTTP with mDNS discovery**, not nRF24. Nodes find the hub
+   via mDNS and re-discover after 3 failed posts (`firmware/src/main.cpp`). nRF24 unused.
+2. **Relay + servo** — ✅ relay actuation shipped and is the on-camera payoff (`ACTUATOR_PIN`, with
+   an active-low option and a node-side safety-veto latch).
+3. **Solar power chain** — ❌ **not built.** Panel alone won't run a node and we have no charge
+   controller/battery/regulator. Off-grid outdoor node is design intent only; don't claim it.
+4. **Sensors shipped** — ESP32 chip temp (`temperatureRead()`), DHT11 temp/humidity, HC-SR04
+   distance. **RFID is not implemented** — household identity is done by **Qwen-VL comparing
+   reference photos**, which is the better story anyway.
+5. **Camera** — ✅ USB webcam via ffmpeg on the hub (`hub/camera.mjs`). Insta360/α7 unused for the
+   system; the α7 is the video-production camera.
