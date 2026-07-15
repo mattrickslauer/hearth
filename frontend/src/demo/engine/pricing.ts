@@ -156,15 +156,19 @@ export function estimate(input: QuoteInput): Quote {
   const events = (input.eventsPerDay ?? ACTIVITY.normal) * DAYS_PER_MONTH;
   const uncapped = mode === 'interval' ? perInterval : Math.min(events, perInterval);
 
-  // A gate blocks the call outright while its predicate is false, so it scales spend
-  // by its duty cycle. `cloud.gate` on the spec is the declaration; the duty cycle is
-  // the caller's estimate of how much of the day it actually holds.
+  // A gate only removes calls that would otherwise have happened. In `interval` mode
+  // sampling is timer-driven and independent of the gate, so the duty cycle applies in
+  // full. In `on_event` mode it must NOT: the runtime's scene change and the gate are
+  // the same phenomenon — `use-simulation` keys the scene on `visitor?.id` and gates on
+  // `entry.presence`, so the camera's scene changes precisely when someone is present.
+  // Multiplying duty by an event rate counts one throttle twice and quotes a doorway
+  // watch at ~1 call/day, which is nonsense.
   const gated = input.spec.cloud.gate !== undefined;
-  const duty = gated ? clamp01(input.gateDuty ?? 1) : 1;
+  const duty = gated && mode === 'interval' ? clamp01(input.gateDuty ?? 1) : 1;
   const callsPerMonth = Math.round(uncapped * duty);
 
   // Anything resting on an assumption about the home rather than the spec.
-  const assumed = mode !== 'interval' || (gated && input.gateDuty !== undefined);
+  const assumed = mode !== 'interval' || (duty < 1 && input.gateDuty !== undefined);
 
   const image = isVision(model) ? imageTokens(frame, 1 + references) : 0;
   const usdPerCall = costPerCall(model, { frame, references });
