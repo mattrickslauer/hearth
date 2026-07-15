@@ -152,12 +152,6 @@ hub                          cloud                         user (dashboard)
 
 Identity persists to `~/.hearth/hub-state.json`, so restarting keeps the same hub.
 
-## Legacy split scripts
-
-`hearth-hub.mjs` (pairing only) and `agent.mjs` (node ingest only) are the original
-two-process scripts, kept for local development and reference. **Prefer `hub.mjs`** — it is
-what the installer ships and what avoids the token-handoff desync described above.
-
 ## Local development
 
 ```bash

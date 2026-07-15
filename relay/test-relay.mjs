@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { decodeFrames } from '../hub/ws-frame.mjs';
 
 const PORT = 8791;
 const SECRET = 'test-session-secret-1234567890';
@@ -24,20 +25,12 @@ function ticket(sub, { aud = 'hearth-ws', iss = 'hearth', exp = Math.floor(Date.
   return `${h}.${p}.${sig}`;
 }
 
+// Decode via the SAME module the relay encodes with, so this test exercises the shipped
+// wire format instead of a lookalike. (It previously had its own copy, which had already
+// drifted — no MAX_FRAME_BYTES guard.)
 function decodeServerFrames(buf) {
-  const frames = [];
-  let off = 0;
-  while (off + 2 <= buf.length) {
-    const opcode = buf[off] & 0x0f;
-    let len = buf[off + 1] & 0x7f;
-    let p = off + 2;
-    if (len === 126) { if (p + 2 > buf.length) break; len = buf.readUInt16BE(p); p += 2; }
-    else if (len === 127) { if (p + 8 > buf.length) break; len = Number(buf.readBigUInt64BE(p)); p += 8; }
-    if (p + len > buf.length) break;
-    frames.push({ opcode, text: buf.subarray(p, p + len).toString('utf8') });
-    off = p + len;
-  }
-  return { frames, rest: buf.subarray(off) };
+  const { frames, rest } = decodeFrames(buf);
+  return { frames: frames.map((f) => ({ opcode: f.opcode, text: f.payload.toString('utf8') })), rest };
 }
 
 const messages = [];
@@ -83,7 +76,13 @@ const waitFor = (pred, ms, label) => new Promise((resolve, reject) => {
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  relay = spawn('node', [RELAY], { env: { ...process.env, PORT: String(PORT), AUTH_SESSION_SECRET: SECRET, RELAY_PUBLISH_SECRET: PUB }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Pin RELAY_TICKET_SECRET explicitly, don't just set the AUTH_SESSION_SECRET fallback:
+  // relay.mjs prefers RELAY_TICKET_SECRET, so a developer with the real .env sourced would
+  // otherwise have their ambient value win and every ticket here would 401.
+  relay = spawn('node', [RELAY], {
+    env: { ...process.env, PORT: String(PORT), RELAY_TICKET_SECRET: SECRET, AUTH_SESSION_SECRET: SECRET, RELAY_PUBLISH_SECRET: PUB },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   let ready = false;
   relay.stdout.on('data', (d) => { if (String(d).includes('listening')) ready = true; });
   relay.stderr.on('data', (d) => process.stderr.write(`[relay] ${d}`));

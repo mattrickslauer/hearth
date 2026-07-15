@@ -13,6 +13,7 @@
     "oss-provision": "tsx scripts/oss-provision.ts",
     "household-check": "tsx scripts/household-check.ts",
     "oss-check": "tsx scripts/oss-check.ts",
+    "readings-check": "tsx scripts/readings-check.ts",
     "mail-check": "tsx scripts/mail-check.ts",
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs"

@@ -38,9 +38,21 @@ start() {
   rm -f "$CLAIM"
   # Detach fully so it survives this shell / SSH session closing.
   nohup node "$HUB" >>"$LOG" 2>&1 &
-  echo "$!" >"$PIDFILE"
+  local pid=$!
+  echo "$pid" >"$PIDFILE"
   disown 2>/dev/null || true
-  echo "$(ok '●') hub started (pid $!). Logs: $LOG"
+
+  # Confirm it's still alive a moment later. A hub that dies on boot (missing module, bad
+  # config, port in use) used to look identical to a stopped one — `status` just said
+  # "○ stopped" and swallowed the reason. Surface the log instead of guessing.
+  sleep 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$PIDFILE"
+    echo "✗ hub exited immediately. Last lines of $LOG:" >&2
+    tail -n 15 "$LOG" >&2 || true
+    exit 1
+  fi
+  echo "$(ok '●') hub started (pid $pid). Logs: $LOG"
 }
 
 stop() {

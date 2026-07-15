@@ -30,6 +30,7 @@ import {
   listEvents,
   listMemory,
   listWatches,
+  newerReading,
   readInput,
   setCadence,
   updateWatch,
@@ -187,7 +188,15 @@ export default function DashboardScreen() {
       const pairs = await Promise.all(
         sensors.map(async (c) => [c.id, await readInput(c.id, token).catch(() => null)] as const),
       );
-      setReadings(Object.fromEntries(pairs));
+      // Merge by timestamp instead of replacing. These reads are N awaited round-trips, and
+      // the live socket keeps delivering throughout — a blind replace threw away every frame
+      // that landed during the window and could reinstate an older value than the one on
+      // screen. Keying off the sensor list still prunes capabilities that went away.
+      setReadings((prev) => {
+        const next: Record<string, Reading | null> = {};
+        for (const [id, fetched] of pairs) next[id] = newerReading(prev[id], fetched);
+        return next;
+      });
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -206,7 +215,11 @@ export default function DashboardScreen() {
   const liveStatus = useHubLive(
     token,
     useCallback((updates: Record<string, Reading>) => {
-      setReadings((prev) => ({ ...prev, ...updates }));
+      setReadings((prev) => {
+        const next = { ...prev };
+        for (const [id, r] of Object.entries(updates)) next[id] = newerReading(prev[id], r);
+        return next;
+      });
     }, []),
   );
 

@@ -117,7 +117,7 @@ Headless read-back (used by the flashing pipeline):
 ## Finding the hub
 
 The node **discovers the hub automatically** — you don't configure an address.
-The hub agent (`../hub/agent.mjs`) advertises itself on the LAN over mDNS as
+The hub agent (`../hub/hub.mjs`) advertises itself on the LAN over mDNS as
 `_hearth._tcp`; on boot the node browses for it, resolves the hub's IP + port,
 and POSTs its `DESCRIBE` + readings there. If the hub starts *after* the node,
 the node keeps browsing and attaches when it appears. `HUB_ENDPOINT` in

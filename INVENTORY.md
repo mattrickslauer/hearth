@@ -70,7 +70,7 @@ for nRF24 · USB cables for flashing · external 5 V supply for servo/relay · h
 | **Qwen Cloud API key / hackathon credits** | ✅ **active** | Powers authoring (`qwen-plus`) + Qwen-VL judging. Verify: `cd backend && npm run qwen-check` |
 | Qwen endpoint | ✅ `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` (OpenAI-compatible) | Shipped models: **qwen-plus**, **qwen-vl-plus** |
 | **Alibaba Cloud account** | ✅ **provisioned + deployed** | Function Compute 3.0 (`ap-southeast-1`), Tablestore, OSS (`hearth-vision-c11d45`). Live: `hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run/health` |
-| Qwen-Agent / Model Studio Skills | ❌ not used | We exposed the home as a 20-tool **MCP surface** on FC instead |
+| Qwen-Agent / Model Studio Skills | ❌ not used | We exposed the home as a 21-tool **MCP surface** on FC instead |
 | Dev tooling | ✅ Node 20, Python 3.14, Docker, git | Build/deploy |
 | PlatformIO | ✅ used | ESP32 firmware build + flash (`firmware/`) |
 
