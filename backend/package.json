@@ -15,6 +15,7 @@
     "oss-check": "tsx scripts/oss-check.ts",
     "readings-check": "tsx scripts/readings-check.ts",
     "mail-check": "tsx scripts/mail-check.ts",
+    "notify-check": "tsx scripts/notify-check.ts",
     "typecheck": "tsc --noEmit",
     "build": "node build.mjs",
     "pricing-check": "tsx scripts/pricing-check.ts"

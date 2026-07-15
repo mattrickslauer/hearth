@@ -32,6 +32,7 @@ import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHub
 import { hubWatches, syncHubDevices } from './hub-devices';
 import { relayConfig, relayEnabled, publishToRelay } from './relay';
 import { putFrame, ossProvisioned } from './oss';
+import { applyNotifyConfig, deliverNotification, notifyChannels, redactNotifyConfig } from './notify';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
@@ -291,6 +292,70 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       hub.lastSeenAt = Date.now();
       await getHubStore().save(hub);
       return send(res, key ? 200 : 400, key ? { ok: true, provisioned: true, input, key } : { error: 'image must be a data: URI' });
+    }
+
+    /* --- notification channels (per-account: where "notify me" actually lands) --- */
+
+    // Read this account's channels. The Telegram bot token comes back as a HINT only —
+    // it is a live secret, and the dashboard never needs the real thing to render.
+    if (path === '/notify/config' && method === 'GET') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const store = await getStoreFor(session.sub);
+      const config = await store.getNotifyConfig();
+      return send(res, 200, { config: redactNotifyConfig(config), channels: notifyChannels(config) });
+    }
+
+    // Set/clear channels. Send `telegram: null` or `email: null` to turn one off; omit a key
+    // to leave it untouched. Omitting telegram.botToken keeps the stored one (the dashboard
+    // only ever saw a hint, so it has nothing to send back).
+    if (path === '/notify/config' && method === 'POST') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const body = await readBody(req);
+      const store = await getStoreFor(session.sub);
+      const result = applyNotifyConfig(body, await store.getNotifyConfig());
+      if ('error' in result) return send(res, 400, { error: result.error });
+      await store.setNotifyConfig(result.config);
+      return send(res, 200, { ok: true, config: redactNotifyConfig(result.config), channels: notifyChannels(result.config) });
+    }
+
+    // Send a real test notification. The only honest way to prove a bot token / address
+    // works — a saved config that silently never delivers is the failure mode this avoids.
+    if (path === '/notify/test' && method === 'POST') {
+      const session = requireSession(req, res);
+      if (!session) return;
+      const store = await getStoreFor(session.sub);
+      // Check BEFORE delivering: deliverNotification records every attempt on the activity feed,
+      // so testing with nothing configured would leave a "notified" row behind for a 400.
+      if (!notifyChannels(await store.getNotifyConfig()).length) {
+        return send(res, 400, { error: 'no channels configured — add Telegram or an email first' });
+      }
+      const result = await deliverNotification(store, '🔥 Hearth test', 'Your notifications are wired up correctly.');
+      return send(res, 200, result);
+    }
+
+    // A paired hub reports a fired watch for delivery. Delivery is cloud-side so the
+    // account's bot token never ships down to the hub, and so email (which needs SMTP creds
+    // the hub doesn't have) works at all. Same token + revocation checkpoint as /hub/devices.
+    if (path === '/hub/notify' && method === 'POST') {
+      const claims = verifyHubToken(bearer(req));
+      if (!claims) return send(res, 401, { error: 'invalid hub token' });
+      const hub = await getHubStore().getById(claims.sub);
+      if (!hub || hub.accountId !== claims.acc || hub.status !== 'claimed') {
+        return send(res, 403, { error: 'hub no longer paired' });
+      }
+      const body = await readBody(req);
+      const title = typeof body.title === 'string' ? body.title.slice(0, 200) : '';
+      const message = typeof body.message === 'string' ? body.message.slice(0, 2000) : '';
+      if (!title && !message) return send(res, 400, { error: 'title or message required' });
+      const store = await getStoreFor(claims.acc);
+      const result = await deliverNotification(store, title || '🔥 Hearth', message, {
+        questionId: typeof body.questionId === 'string' ? body.questionId : undefined,
+      });
+      hub.lastSeenAt = Date.now();
+      await getHubStore().save(hub);
+      return send(res, 200, result);
     }
 
     /* --- per-sensor sample cadence (frontend → backend → hub → node downlink) --- */

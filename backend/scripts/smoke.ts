@@ -108,8 +108,10 @@ ok('delete of unknown id throws', delThrew);
 // actuate + notify report their (unprovisioned) shapes without throwing
 const act = (await call('actuate', { input: 'garage.door', value: 'closed', reason: 'coyote in frame' })) as { status: string };
 ok('actuate returns a shadow-command shape', act.status === 'sent');
-const not = (await call('notify', { channelId: 'expo_push', message: 'hi' })) as { ok: boolean };
+// No channels configured for the smoke account → reports ok + delivered:false, never throws.
+const not = (await call('notify', { message: 'hi' })) as { ok: boolean; delivered: boolean };
 ok('notify returns ok', not.ok === true);
+ok('notify does not claim delivery with no channels configured', not.delivered === false);
 
 // ---- auth: OTP verify + session (hermetic; email uses console fallback) --------
 const { MemoryOtpStore, MemoryAccountStore, requestOtp, verifyOtp, issueSession, verifySession, normalizeEmail } =

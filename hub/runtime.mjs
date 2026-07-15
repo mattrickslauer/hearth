@@ -170,7 +170,11 @@ export function createRuntime({ nodes, log = console.log, watchesFile } = {}) {
           (skipped ? ` (skipped ${skipped} non-local/cloud — vision watches run in the app, not on the hub yet)` : ''),
       );
       const chans = notifyChannels();
-      log(chans.length ? `[runtime] notify channels: ${chans.join(', ')}` : '[runtime] no notify channel configured (set NTFY_TOPIC to get phone pushes)');
+      log(
+        chans.length
+          ? `[runtime] notify channels: ${chans.join(', ')}`
+          : '[runtime] no notify channel configured (add Telegram or an email under "Notify me" in the dashboard)',
+      );
     } catch (e) {
       log(`[runtime] failed to read watches: ${e.message}`);
     }
@@ -276,7 +280,8 @@ export function createRuntime({ nodes, log = console.log, watchesFile } = {}) {
     if (watch.notify) {
       // `notify` sends the title separately (push title), so the body should NOT repeat it.
       const msg = typeof watch.notify === 'string' ? fill(watch.notify, { title: watch.title, detail }) : detail;
-      await notify(`🔥 ${watch.title}`, msg);
+      // questionId lets the cloud attribute the notification to the watch on the activity feed.
+      await notify(`🔥 ${watch.title}`, msg, { questionId: watch.id });
     }
   }
 
