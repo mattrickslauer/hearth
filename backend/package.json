@@ -15,7 +15,8 @@
     "oss-check": "tsx scripts/oss-check.ts",
     "mail-check": "tsx scripts/mail-check.ts",
     "typecheck": "tsc --noEmit",
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "pricing-check": "tsx scripts/pricing-check.ts"
   },
   "devDependencies": {
     "esbuild": "^0.24.0",

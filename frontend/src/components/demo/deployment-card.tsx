@@ -1,7 +1,16 @@
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { capability } from '@/demo/home';
 import { parseDuration } from '@/demo/engine/duration';
+import {
+  ACTIVITY,
+  cheapestPlan,
+  estimate,
+  formatLooks,
+  formatUsd,
+  type ActivityLevel,
+} from '@/demo/engine/pricing';
 import { MODELS, type CloudModel, type RecordPolicy } from '@/demo/engine/types';
 import type { Question } from '@/demo/types';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
@@ -104,6 +113,18 @@ function RecordControls({
   const metered = record.mode === 'interval';
   const visionMismatch = dep.usesVision && active && !active.vision;
 
+  // A watch is a declared program, so its bill is knowable before it runs. Re-quoting
+  // is pure arithmetic — every patch below re-prices instantly, with no round-trip.
+  const [activity, setActivity] = useState<ActivityLevel>('normal');
+  const quote = estimate({
+    spec: dep.compiledSpec,
+    record,
+    // An empty/absent link list means "use all of memory", not "no references".
+    references: dep.memoryIds?.length || undefined,
+    eventsPerDay: ACTIVITY[activity],
+  });
+  const plan = cheapestPlan(quote);
+
   return (
     <View style={[styles.rec, { borderTopColor: theme.border }]}>
       <View style={styles.recHead}>
@@ -113,6 +134,8 @@ function RecordControls({
           <Text style={{ color: theme.textMuted }}>{'  ·  '}retain {record.retain}</Text>
         </Text>
       </View>
+
+      <Quote quote={quote} plan={plan} activity={activity} onActivity={setActivity} />
 
       {/* mode: sample every N (metered) vs only on scene change (on_event) */}
       <View style={styles.segRow}>
@@ -159,6 +182,64 @@ function RecordControls({
         <Text style={[styles.warn, { color: theme.textMuted }]}>
           ⚠ {active?.label} can’t read frames — this watch needs vision. Pick a Qwen-VL model.
         </Text>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * The live quote — what this configuration will cost per month, and the cheapest
+ * plan that covers it. Shown *before* deploy: the point is that you never discover
+ * the bill afterwards.
+ */
+function Quote({
+  quote,
+  plan,
+  activity,
+  onActivity,
+}: {
+  quote: ReturnType<typeof estimate>;
+  plan: ReturnType<typeof cheapestPlan>;
+  activity: ActivityLevel;
+  onActivity: (a: ActivityLevel) => void;
+}) {
+  const theme = useTheme();
+  const fitsFree = plan?.id === 'free';
+  const tone = !plan ? theme.ember : fitsFree ? theme.text : theme.ember;
+
+  return (
+    <View style={[styles.quote, { borderColor: theme.border, backgroundColor: theme.background }]}>
+      <View style={styles.quoteHead}>
+        <Text style={[styles.quoteMoney, { color: tone }]}>
+          💸 ~{formatLooks(quote.looksPerMonth)} Looks/mo
+          <Text style={{ color: theme.textMuted }}>{'  ·  '}</Text>
+          {formatUsd(quote.usdPerMonth)}/mo
+        </Text>
+        <Badge
+          label={plan ? (fitsFree ? 'Free ✓' : `needs ${plan.label}`) : 'over every plan'}
+          tone={fitsFree ? 'success' : 'ember'}
+        />
+      </View>
+
+      {/* The one number the config can't tell us: how busy this scene actually is. */}
+      {quote.assumed ? (
+        <View style={styles.quoteAssume}>
+          <Text style={[styles.quoteNote, { color: theme.textMuted }]}>assumes</Text>
+          {(Object.keys(ACTIVITY) as ActivityLevel[]).map((a) => (
+            <Pressable key={a} onPress={() => onActivity(a)} hitSlop={6}>
+              <Text
+                style={[
+                  styles.quoteLevel,
+                  { color: a === activity ? theme.ember : theme.textMuted },
+                ]}>
+                {a}
+              </Text>
+            </Pressable>
+          ))}
+          <Text style={[styles.quoteNote, { color: theme.textMuted }]}>
+            · ~{ACTIVITY[activity]} events/day
+          </Text>
+        </View>
       ) : null}
     </View>
   );
@@ -261,4 +342,10 @@ const styles = StyleSheet.create({
   rateChip: { flex: 1, alignItems: 'center', paddingVertical: 6, borderRadius: Radius.sm, borderWidth: 1 },
   rateText: { fontFamily: Fonts?.mono, fontSize: 12, fontWeight: '700' },
   warn: { fontFamily: Fonts?.sans, fontSize: 11.5, lineHeight: 16, fontWeight: '500' },
+  quote: { borderWidth: 1, borderRadius: Radius.sm, padding: Spacing.two, gap: 6 },
+  quoteHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.one },
+  quoteMoney: { fontFamily: Fonts?.mono, fontSize: 12.5, fontWeight: '700' },
+  quoteAssume: { flexDirection: 'row', alignItems: 'baseline', gap: 6, flexWrap: 'wrap' },
+  quoteNote: { fontFamily: Fonts?.mono, fontSize: 10.5 },
+  quoteLevel: { fontFamily: Fonts?.mono, fontSize: 10.5, fontWeight: '700' },
 });
