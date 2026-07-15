@@ -71,6 +71,13 @@ export interface QuoteInput {
   frame?: Frame;
   /** `on_event` watches only — assumed triggers per day. */
   eventsPerDay?: number;
+  /**
+   * Fraction of the day a `cloud.gate` precondition actually holds (0..1). A gate is
+   * a cheap local predicate that runs before we spend a cloud call — "only Look while
+   * someone is at the door" — so it scales spend by its duty cycle. Like `eventsPerDay`
+   * this is an assumption about the user's home, not a fact from their spec.
+   */
+  gateDuty?: number;
 }
 
 export interface Quote {
@@ -78,6 +85,8 @@ export interface Quote {
   local: boolean;
   model: CloudModel | null;
   mode: RecordPolicy['mode'];
+  /** True when a `cloud.gate` precondition already fronts the call. */
+  gated: boolean;
   /** Effective spend interval: the record's own rate, floored by `maxCadence`. */
   intervalMs: number;
   callsPerMonth: number;
@@ -90,6 +99,7 @@ export interface Quote {
 }
 
 const isVision = (m: CloudModel): boolean => MODELS.find((x) => x.id === m)?.vision ?? false;
+const clamp01 = (n: number): number => Math.min(1, Math.max(0, n));
 
 /** Image tokens for `count` frames of `frame` size, honouring Qwen-VL's floor and cap. */
 export function imageTokens(frame: Frame, count: number): number {
@@ -115,6 +125,7 @@ const FREE_QUOTE: Quote = {
   local: true,
   model: null,
   mode: 'on_event',
+  gated: false,
   intervalMs: 0,
   callsPerMonth: 0,
   looksPerMonth: 0,
@@ -142,9 +153,18 @@ export function estimate(input: QuoteInput): Quote {
   // `on_event` fires only when the scene changes, and is still throttled by the
   // metered interval — so the assumed event rate is a ceiling, never an addition.
   const mode = input.record?.mode ?? 'on_event';
-  const assumed = mode !== 'interval';
   const events = (input.eventsPerDay ?? ACTIVITY.normal) * DAYS_PER_MONTH;
-  const callsPerMonth = Math.round(assumed ? Math.min(events, perInterval) : perInterval);
+  const uncapped = mode === 'interval' ? perInterval : Math.min(events, perInterval);
+
+  // A gate blocks the call outright while its predicate is false, so it scales spend
+  // by its duty cycle. `cloud.gate` on the spec is the declaration; the duty cycle is
+  // the caller's estimate of how much of the day it actually holds.
+  const gated = input.spec.cloud.gate !== undefined;
+  const duty = gated ? clamp01(input.gateDuty ?? 1) : 1;
+  const callsPerMonth = Math.round(uncapped * duty);
+
+  // Anything resting on an assumption about the home rather than the spec.
+  const assumed = mode !== 'interval' || (gated && input.gateDuty !== undefined);
 
   const image = isVision(model) ? imageTokens(frame, 1 + references) : 0;
   const usdPerCall = costPerCall(model, { frame, references });
@@ -154,6 +174,7 @@ export function estimate(input: QuoteInput): Quote {
     local: false,
     model,
     mode,
+    gated,
     intervalMs,
     callsPerMonth,
     looksPerMonth: Math.round(usdPerMonth / BASELINE_LOOK_USD),

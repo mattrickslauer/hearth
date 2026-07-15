@@ -28,6 +28,14 @@ export {
   imageTokens,
 } from '../../frontend/src/demo/engine/pricing';
 export type { ActivityLevel, Frame, Plan, Quote, QuoteInput } from '../../frontend/src/demo/engine/pricing';
+export { recommend } from '../../frontend/src/demo/engine/recommend';
+export type {
+  GateCandidate,
+  QuestionPatch,
+  RecommendKind,
+  RecommendOpts,
+  Recommendation,
+} from '../../frontend/src/demo/engine/recommend';
 export {
   mockAuthor,
   mockJudge,

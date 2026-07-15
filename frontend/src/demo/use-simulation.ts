@@ -18,7 +18,7 @@ import { parseDuration, formatDuration } from './engine/duration';
 import { ReadingStore } from './engine/store';
 import { shouldSample } from './engine/record';
 import { isNight, minutesOfDay, simTimeAt } from './engine/simtime';
-import type { CloudModel, RecordPolicy, RunState } from './engine/types';
+import type { CloudModel, PredicateNode, RecordPolicy, RunState } from './engine/types';
 import { applyActuator, initialWorld, VISITORS } from './home';
 import type { ActivityEvent, Judgment, Question, Visitor, WorldState } from './types';
 
@@ -338,9 +338,18 @@ export function useSimulation() {
     setQuestions((prev) => prev.filter((q) => q.id !== id));
   }, []);
 
-  /** Edit a cloud watch's capture policy (frame rate / mode) and model — live. */
+  /** Edit a cloud watch's capture policy (frame rate / mode), model, and gate — live. */
   const configureQuestion = useCallback(
-    (id: string, patch: { mode?: RecordPolicy['mode']; every?: string; retain?: number; model?: CloudModel }) => {
+    (
+      id: string,
+      patch: {
+        mode?: RecordPolicy['mode'];
+        every?: string;
+        retain?: number;
+        model?: CloudModel;
+        gate?: PredicateNode;
+      },
+    ) => {
       const apply = (q: Question): Question => {
         if (q.id !== id || q.compiledSpec.kind !== 'cloud') return q;
         const rec = q.record ?? defaultRecord(q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0]);
@@ -350,7 +359,12 @@ export function useSimulation() {
           every: patch.every ?? rec.every,
           retain: patch.retain ?? rec.retain,
         };
-        const cloud = patch.model ? { ...q.compiledSpec.cloud, model: patch.model } : q.compiledSpec.cloud;
+        const cloud = {
+          ...q.compiledSpec.cloud,
+          ...(patch.model ? { model: patch.model } : {}),
+          // A gate is a cheap local predicate that must hold before we spend a call.
+          ...(patch.gate ? { gate: patch.gate } : {}),
+        };
         return { ...q, record, compiledSpec: { kind: 'cloud', cloud } };
       };
       questionsRef.current = questionsRef.current.map(apply);

@@ -22,9 +22,11 @@ import {
   costPerCall,
   estimate,
   fitsPlan,
+  formatUsd,
   imageTokens,
+  recommend,
 } from '../src/domain.ts';
-import type { CompiledSpec } from '../src/domain.ts';
+import type { CompiledSpec, QuoteInput } from '../src/domain.ts';
 
 let failures = 0;
 const check = (name: string, ok: boolean, detail: string): void => {
@@ -34,9 +36,14 @@ const check = (name: string, ok: boolean, detail: string): void => {
 
 const near = (a: number, b: number, tol = 0.02): boolean => Math.abs(a - b) <= Math.abs(b) * tol;
 
+const cloudCheck = (model: 'qwen-vl' | 'qwen-vl-max' | 'qwen-plus' | 'qwen-max', maxCadence: string) => ({
+  model,
+  question: 'is this someone we know?',
+  maxCadence,
+});
 const cloudSpec = (model: 'qwen-vl' | 'qwen-vl-max' | 'qwen-plus' | 'qwen-max', maxCadence: string): CompiledSpec => ({
   kind: 'cloud',
-  cloud: { model, question: 'is this someone we know?', maxCadence },
+  cloud: cloudCheck(model, maxCadence),
 });
 
 // ── A) image tokenization ────────────────────────────────────────────────────
@@ -136,6 +143,95 @@ check(
   'F) qwen-vl-max needs Pro regardless of volume',
   cheapestPlan(vlMax)?.id === 'pro',
   `${vlMax.looksPerMonth} Looks would fit Free, but the model gates it → ${cheapestPlan(vlMax)?.label}`,
+);
+
+// ── G) recommendations ───────────────────────────────────────────────────────
+// The doorway gate the mock brain already emits, offered to a watch that lacks one.
+const PRESENCE_GATE = {
+  inputId: 'entry.presence',
+  label: 'Doorway presence',
+  duty: 0.02,
+  predicate: { op: '==' as const, left: { input: 'entry.presence' }, right: true },
+  installed: true,
+  hardware: '~$5 ESP32 + HC-SR04',
+};
+
+const ungated: QuoteInput = {
+  spec: cloudSpec('qwen-vl', '10s'),
+  record: { inputId: 'cam.frame', mode: 'interval', every: '10s', retain: 10 },
+};
+const recs = recommend(ungated, { gates: [PRESENCE_GATE], slower: ['2m', '30s'] });
+const gate = recs.find((r) => r.kind === 'gate');
+check(
+  'G) both a local gate and motion-gating are offered, ranked by real savings',
+  !!gate && recs.some((r) => r.kind === 'mode') && recs[0].savedUsd >= recs[recs.length - 1].savedUsd,
+  `top is "${recs[0]?.title}" (${recs[0]?.savedPct.toFixed(0)}%); on_event out-saves a 2%-duty gate on an interval watch, so the list is sorted by measured saving, not by dogma`,
+);
+
+// The two compose: only Look when the scene changes AND someone is actually there.
+const composed = estimate({
+  ...ungated,
+  spec: { kind: 'cloud', cloud: { ...cloudCheck('qwen-vl', '10s'), gate: PRESENCE_GATE.predicate } },
+  record: { inputId: 'cam.frame', mode: 'on_event', every: '10s', retain: 10 },
+  gateDuty: PRESENCE_GATE.duty,
+  eventsPerDay: ACTIVITY.normal,
+});
+const modeOnly = recs.find((r) => r.kind === 'mode');
+check(
+  'G) a gate and on_event compose to beat either alone',
+  composed.usdPerMonth < (gate?.projected.usdPerMonth ?? Infinity) &&
+    composed.usdPerMonth < (modeOnly?.projected.usdPerMonth ?? Infinity),
+  `gate $${gate?.projected.usdPerMonth.toFixed(2)} · on_event $${modeOnly?.projected.usdPerMonth.toFixed(2)} · both $${composed.usdPerMonth.toFixed(2)}/mo`,
+);
+check(
+  'G) the gate saves ~98% (2% duty cycle)',
+  !!gate && gate.savedPct > 95,
+  `$${estimate(ungated).usdPerMonth.toFixed(0)}/mo → $${gate?.projected.usdPerMonth.toFixed(2)}/mo`,
+);
+
+// Savings must be measured by re-quoting, not asserted — so a recommendation's
+// projected quote has to actually equal a fresh estimate of the patched config.
+const reQuoted = estimate({
+  ...ungated,
+  spec: { kind: 'cloud', cloud: { ...cloudCheck('qwen-vl', '10s'), gate: PRESENCE_GATE.predicate } },
+  gateDuty: PRESENCE_GATE.duty,
+});
+check(
+  'G) projected savings are re-quoted, not asserted',
+  !!gate && Math.abs(gate.projected.usdPerMonth - reQuoted.usdPerMonth) < 1e-9,
+  `projected $${gate?.projected.usdPerMonth.toFixed(4)} === independent estimate $${reQuoted.usdPerMonth.toFixed(4)}`,
+);
+
+// An uninstalled sensor is advice with a price, not a button.
+const hwRecs = recommend(ungated, { gates: [{ ...PRESENCE_GATE, installed: false }] });
+const hw = hwRecs.find((r) => r.kind === 'hardware');
+check(
+  'G) an absent sensor becomes a hardware suggestion with no patch',
+  !!hw && hw.patch === undefined,
+  `"${hw?.title}" — saves ${formatUsd(hw?.savedUsd ?? 0)}/mo, but you can't tap your way to a sensor`,
+);
+
+// Nothing to suggest when the watch already costs nothing.
+check(
+  'G) local watches get no suggestions',
+  recommend({ spec: local.local ? { kind: 'local', local: { expr: { op: 'schedule', window: { after: '19:00', before: '07:00' } } } } : cloudSpec('qwen-vl', '10s') }).length === 0,
+  'a $0 watch has nothing honest left to optimize',
+);
+
+// A watch that is already gated + motion-triggered shouldn't be nagged.
+const alreadyGood = recommend(
+  {
+    spec: { kind: 'cloud', cloud: { ...cloudCheck('qwen-vl', '20s'), gate: PRESENCE_GATE.predicate } },
+    record: { inputId: 'cam.frame', mode: 'on_event', every: '20s', retain: 10 },
+    gateDuty: 0.02,
+    eventsPerDay: ACTIVITY.normal,
+  },
+  { gates: [PRESENCE_GATE], slower: ['2m'] },
+);
+check(
+  'G) a well-configured watch is not nagged',
+  alreadyGood.every((r) => r.savedPct >= 5),
+  `${alreadyGood.length} suggestion(s) — only ones worth ≥5% of the bill are shown`,
 );
 
 console.log(`\n${failures === 0 ? 'PASS' : `FAIL — ${failures} check(s) failed`}`);
