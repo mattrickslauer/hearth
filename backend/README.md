@@ -108,7 +108,7 @@ your judge-accessible "Proof of Alibaba Cloud Deployment".
 
 | Piece | State |
 |---|---|
-| Home MCP tool catalog (**20 tools** live) | ✅ real, typed, tested |
+| Home MCP tool catalog (**21 tools** live) | ✅ real, typed, tested |
 | Authoring (NL → compiled Question) | ✅ real — `qwen-plus` w/ key, deterministic fallback |
 | Runtime judge (verdict + reasoning) | ✅ real — routes to **`qwen-vl-plus`** when frames/reference photos are passed |
 | Accounts + OTP store (signups) | ✅ real (Tablestore) |

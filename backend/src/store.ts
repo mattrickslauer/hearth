@@ -468,12 +468,24 @@ export interface TablestoreConfig {
 
 const TS_TABLE = 'hearth_home';
 
+/* Live readings live in their OWN table, separate from hearth_home, because retention is a
+ * per-table property in Tablestore. hearth_home is timeToLive:-1 (watches and pairings are
+ * forever); readings expire after 24h, swept server-side by Tablestore itself so there is no
+ * cron, no sweeper, and no unbounded growth. Rows are keyed
+ * account / "<input>#<zero-padded ms>" so one input's window is a single ordered range scan.
+ * The padding is what makes lexicographic key order equal chronological order. */
+const TS_READINGS_TABLE = 'hearth_readings';
+const READING_TTL_SEC = 24 * 60 * 60;
+
+/** ms → fixed-width key component, so string order == time order (13 digits holds to y2286). */
+const tsKey = (ts: number) => String(Math.max(0, Math.floor(ts))).padStart(13, '0');
+
 // The `tablestore` SDK ships no type declarations; treat it as an opaque handle.
 type TsModule = {
   Client: new (opts: object) => TsClient;
   Condition: new (existence: unknown, columnCondition: unknown) => unknown;
   RowExistenceExpectation: { IGNORE: unknown };
-  Direction: { FORWARD: unknown };
+  Direction: { FORWARD: unknown; BACKWARD: unknown };
 };
 type TsAttr = { columnName: string; columnValue: unknown };
 type TsClient = {
@@ -516,23 +528,90 @@ class TablestoreStore extends MemoryStore {
     return typeof v === 'string' ? v : null;
   }
 
-  /** Create the shared table on first use; a pre-existing table is the steady state. */
+  /** Create the shared tables on first use; pre-existing tables are the steady state. */
   private async ensureTable(): Promise<void> {
+    await this.createTable(TS_TABLE, -1);
+    // Readings: same key shape, but Tablestore expires rows 24h after write for us.
+    await this.createTable(TS_READINGS_TABLE, READING_TTL_SEC);
+  }
+
+  private async createTable(tableName: string, timeToLive: number): Promise<void> {
     try {
       await this.client.createTable({
         tableMeta: {
-          tableName: TS_TABLE,
+          tableName,
           primaryKey: [
             { name: 'account', type: 'STRING' },
             { name: 'sk', type: 'STRING' },
           ],
         },
         reservedThroughput: { capacityUnit: { read: 0, write: 0 } },
-        tableOptions: { timeToLive: -1, maxVersions: 1 },
+        tableOptions: { timeToLive, maxVersions: 1 },
       });
     } catch (e) {
       if (!/already exist/i.test((e as Error).message || '')) throw e;
     }
+  }
+
+  /* ---- durable live readings (24h, own table, server-side TTL) --------------------
+   * MemoryStore keeps readings on the heap, which is wrong on Function Compute: instances are
+   * ephemeral and horizontally scaled, so a hub's sync could land on one instance while the
+   * dashboard's read hit another and saw nothing. These three overrides are the fix — every
+   * read goes to Tablestore, so any instance answers identically and the series survives a
+   * freeze. We deliberately do NOT keep a heap copy: a per-instance cache would reintroduce
+   * exactly the divergence this replaces. */
+
+  /** Scan one input's rows in [from, to] (inclusive). Backward+limit yields the newest first. */
+  private async scanReadings(input: string, from: number, to: number, opts: { newestFirst?: boolean; limit?: number } = {}): Promise<Reading[]> {
+    const backward = opts.newestFirst === true;
+    // '#' (0x23) opens the input's range and '$' (0x24) closes it, so `<input>$` sorts above
+    // every `<input>#…` row — the same trick listQuestions() uses for its q#/q$ sweep.
+    const lo = `${input}#${tsKey(from)}`;
+    const hi = backward ? `${input}$` : `${input}#${tsKey(to + 1)}`; // +1: exclusive end, so ts==to is kept
+    const out: Reading[] = [];
+    let start: unknown[] | null = backward ? [{ account: this.account }, { sk: hi }] : [{ account: this.account }, { sk: lo }];
+    const end = backward ? [{ account: this.account }, { sk: lo }] : [{ account: this.account }, { sk: hi }];
+    while (start) {
+      const res = await this.client.getRange({
+        tableName: TS_READINGS_TABLE,
+        direction: backward ? this.ts.Direction.BACKWARD : this.ts.Direction.FORWARD,
+        inclusiveStartPrimaryKey: start,
+        exclusiveEndPrimaryKey: end,
+        limit: opts.limit ?? 500,
+      });
+      for (const row of res.rows ?? []) {
+        const data = this.dataOf(row.attributes);
+        if (!data) continue;
+        const r = JSON.parse(data) as Reading;
+        if (r.ts >= from && r.ts <= to) out.push(r);
+      }
+      if (opts.limit && out.length >= opts.limit) return out.slice(0, opts.limit);
+      start = res.next_start_primary_key ?? null;
+    }
+    return out;
+  }
+
+  async appendReading(input: string, value: Scalar, ts: number): Promise<void> {
+    await this.client.putRow({
+      tableName: TS_READINGS_TABLE,
+      condition: this.ignore(),
+      primaryKey: this.pk(`${input}#${tsKey(ts)}`),
+      attributeColumns: [{ data: JSON.stringify({ input, ts, value } satisfies Reading) }],
+    });
+  }
+
+  async readInput(input: string, agg: Agg, windowMs: number, now: number): Promise<Reading | null> {
+    const from = windowMs > 0 ? now - windowMs : 0;
+    // 'latest' is the dashboard's hot path: one backward-scanned row beats paging a whole day.
+    if (agg === 'latest') {
+      const [row] = await this.scanReadings(input, from, now, { newestFirst: true, limit: 1 });
+      return row ?? null;
+    }
+    return aggregate(await this.scanReadings(input, from, now), agg, windowMs, now);
+  }
+
+  async history(input: string, from: number, to: number): Promise<Reading[]> {
+    return this.scanReadings(input, from, to);
   }
 
   async putQuestion(q: Question): Promise<void> {
@@ -579,7 +658,7 @@ class TablestoreStore extends MemoryStore {
   /* ---- durable device registry + cadences (per-account rows in the shared table) ----
    * Watches persist above; these keep the paired-hub device LIST and the user's per-sensor
    * cadences across a redeploy too, so the dashboard fills in immediately instead of waiting
-   * for the hub's next sync. Live readings stay transient (in-memory) by design. */
+   * for the hub's next sync. Live readings are durable too — see the 24h TTL table above. */
   private hydrated = false;
   private hubSigs = new Map<string, string>();
 

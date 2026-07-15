@@ -5,7 +5,7 @@
  * list_inputs, read_input, query_history, and Qwen-authored Questions — operate on REAL
  * hardware, not the demo world.
  *
- * The wire shape is exactly what `hub/agent.mjs` keeps in memory (its GET /nodes view):
+ * The wire shape is exactly what `hub/hub.mjs` keeps in memory (its GET /nodes view):
  *   { platform?, nodes: [ { id, describe: {board, fw, sensors:[{key,kind,unit}]},
  *                           lastReading: {<key>: number|null}, lastSeen } ] }
  */
@@ -71,7 +71,11 @@ const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : u
 export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Record<string, unknown>): Promise<SyncResult> {
   const now = Date.now();
   const nodes: HubNodeReport[] = [];
-  let readingsWritten = 0;
+  // Readings are now a durable per-row write (Tablestore), not a heap push, so issuing them
+  // one-at-a-time inside the loop would put N sequential round-trips in front of the realtime
+  // fan-out that the caller runs next. Collect and settle them together instead: one round-trip
+  // of latency regardless of how many sensors the home has.
+  const writes: Promise<void>[] = [];
 
   for (const raw of asArray(body.nodes)) {
     const entry = asObj(raw);
@@ -94,8 +98,7 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
       if (typeof v === 'number' && Number.isFinite(v)) {
         cleaned[k] = v;
         // Fold into the time series under the same id read_input / query_history use.
-        await store.appendReading(`${id}.${k}`, v, now);
-        readingsWritten += 1;
+        writes.push(store.appendReading(`${id}.${k}`, v, now));
       } else {
         cleaned[k] = null;
       }
@@ -121,7 +124,14 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
     nodes,
     syncedAt: now,
   };
-  await store.putHubDevices(snap);
+  const [snapResult, ...readingResults] = await Promise.allSettled([store.putHubDevices(snap), ...writes]);
+  // The registry snapshot is load-bearing — if it can't be stored, fail the sync as before.
+  if (snapResult.status === 'rejected') throw snapResult.reason;
+  // Individual readings are not: one unwritable sample must not fail the whole sync (and with
+  // it the hub's retry loop). Report what landed and let the next sync carry the rest.
+  const readingsWritten = readingResults.filter((r) => r.status === 'fulfilled').length;
+  const failed = readingResults.length - readingsWritten;
+  if (failed) console.log(`[hub-devices] ${failed}/${readingResults.length} reading writes failed for hub ${meta.hubId}`);
 
   return { ok: true, hubId: meta.hubId, nodes: nodes.length, readings: readingsWritten };
 }

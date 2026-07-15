@@ -21,7 +21,20 @@
  */
 
 import http from 'node:http';
-import { createHmac, createHash, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+// One RFC 6455 implementation, shared with the hub's LAN channel. Deploying the relay must
+// therefore copy hub/ws-frame.mjs alongside relay/ — see backend/docs/realtime-relay.md.
+import {
+  acceptKey,
+  decodeFrames,
+  encodeFrame,
+  MAX_BUFFERED,
+  OP_CLOSE,
+  OP_PING,
+  OP_PONG,
+  OP_TEXT,
+} from '../hub/ws-frame.mjs';
 
 const PORT = Number(process.env.PORT || 8790);
 // The key that signs/verifies browser tickets — set identically on the backend deploy env.
@@ -62,80 +75,6 @@ function verifyTicket(token) {
   }
 }
 
-/* ---------------------------------------------------------------- websocket framing */
-// (same minimal RFC 6455 framing the hub uses in hub/ws.mjs — server→client text frames,
-//  plus ping/pong + close handling for inbound control frames.)
-
-const OP_TEXT = 0x1;
-const OP_CLOSE = 0x8;
-const OP_PING = 0x9;
-const OP_PONG = 0xa;
-const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-function accept(key) {
-  return createHash('sha1').update(key + WS_GUID).digest('base64');
-}
-
-function encodeFrame(payload, opcode = OP_TEXT) {
-  const data = Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload));
-  const len = data.length;
-  let header;
-  if (len < 126) header = Buffer.from([0x80 | opcode, len]);
-  else if (len < 65536) {
-    header = Buffer.alloc(4);
-    header[0] = 0x80 | opcode;
-    header[1] = 126;
-    header.writeUInt16BE(len, 2);
-  } else {
-    header = Buffer.alloc(10);
-    header[0] = 0x80 | opcode;
-    header[1] = 127;
-    header.writeBigUInt64BE(BigInt(len), 2);
-  }
-  return Buffer.concat([header, data]);
-}
-
-// Largest client frame we'll accept. Without this cap a single ticket-holder can
-// declare a multi-GB frame length and we'd buffer it all before rejecting → OOM.
-const MAX_FRAME_BYTES = 1024 * 1024;
-
-function decodeFrames(buf) {
-  const frames = [];
-  let offset = 0;
-  while (offset + 2 <= buf.length) {
-    const b1 = buf[offset + 1];
-    const opcode = buf[offset] & 0x0f;
-    const masked = (b1 & 0x80) !== 0;
-    let len = b1 & 0x7f;
-    let p = offset + 2;
-    if (len === 126) {
-      if (p + 2 > buf.length) break;
-      len = buf.readUInt16BE(p);
-      p += 2;
-    } else if (len === 127) {
-      if (p + 8 > buf.length) break;
-      len = Number(buf.readBigUInt64BE(p));
-      p += 8;
-    }
-    if (len > MAX_FRAME_BYTES) return { frames, rest: buf.subarray(offset), overflow: true };
-    let mask;
-    if (masked) {
-      if (p + 4 > buf.length) break;
-      mask = buf.subarray(p, p + 4);
-      p += 4;
-    }
-    if (p + len > buf.length) break;
-    let payload = buf.subarray(p, p + len);
-    if (masked) {
-      const out = Buffer.allocUnsafe(len);
-      for (let i = 0; i < len; i++) out[i] = payload[i] ^ mask[i & 3];
-      payload = out;
-    }
-    frames.push({ opcode, payload });
-    offset = p + len;
-  }
-  return { frames, rest: buf.subarray(offset) };
-}
-
 /* ----------------------------------------------------------------- connection state */
 
 // accountId → Set<socket>. Each socket also carries ._accountId for cleanup.
@@ -156,9 +95,6 @@ function leave(socket) {
     if (!set.size) byAccount.delete(socket._accountId);
   }
 }
-// A stalled reader whose send buffer grows past this is a slow consumer we cut,
-// rather than let Node's write queue grow unbounded under a reading burst.
-const MAX_BUFFERED = 4 * 1024 * 1024;
 function publish(accountId, message) {
   const set = byAccount.get(accountId);
   if (!set || !set.size) return 0;
@@ -249,7 +185,7 @@ server.on('upgrade', (req, socket) => {
     'HTTP/1.1 101 Switching Protocols\r\n' +
       'Upgrade: websocket\r\n' +
       'Connection: Upgrade\r\n' +
-      `Sec-WebSocket-Accept: ${accept(key)}\r\n\r\n`,
+      `Sec-WebSocket-Accept: ${acceptKey(key)}\r\n\r\n`,
   );
   socket.setNoDelay(true);
   join(ticket.accountId, socket);

@@ -102,6 +102,20 @@ export interface Reading {
   value: number | string | boolean;
 }
 
+/**
+ * Pick whichever of two readings for the same input is fresher.
+ *
+ * Two writers race for the dashboard's reading state: the awaited read_input fetch and the
+ * live socket. Whoever lands last used to win regardless of age, so a slow fetch could put a
+ * stale number back on screen over a newer live one. Comparing `ts` makes the outcome depend
+ * on the data rather than on arrival order. Ties favour `b` (the incoming value).
+ */
+export function newerReading(a: Reading | null | undefined, b: Reading | null | undefined): Reading | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return b.ts >= a.ts ? b : a;
+}
+
 export const describeHome = (token?: string | null) => call<HomeModel>('describe_home', {}, token);
 export const listWatches = (token?: string | null) => call<Watch[]>('list_questions', {}, token);
 export const listEvents = (limit = 20, token?: string | null) =>

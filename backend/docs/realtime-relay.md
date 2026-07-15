@@ -28,15 +28,24 @@ hub ──POST /hub/devices (event-driven, debounced)──▶ FC ──POST /pu
 The relay is zero-dependency Node stdlib. It runs as a container on a local port; the front
 nginx terminates TLS for `hub-ws.agfarms.dev` and proxies to it (WebSocket upgrade).
 
-1. Copy `relay/` to the server and run it (Docker, no root needed — you're in the `docker`
-   group), binding a local port and passing the two secrets:
+1. Copy **`relay/` and `hub/`** to the server, keeping them siblings, and run it (Docker, no
+   root needed — you're in the `docker` group), binding a local port and passing the two
+   secrets. Both dirs are needed because `relay.mjs` imports the one shared RFC 6455
+   implementation from `../hub/ws-frame.mjs` — the same one the hub's LAN channel uses, so
+   there is a single framing implementation rather than a copy per server. The mount is the
+   **parent** dir and the workdir is `relay`, which keeps that relative import resolving
+   exactly as it does in the repo:
    ```bash
+   # on the server: ~/hearth/{relay/,hub/}
+   rsync -a relay hub  server:~/hearth/
+
    docker run -d --name hearth-relay --restart unless-stopped \
      -p 127.0.0.1:8790:8790 \
      -e AUTH_SESSION_SECRET=<same as backend> \
      -e RELAY_PUBLISH_SECRET=<shared push secret> \
-     -v ~/hearth-relay:/app -w /app node:20-alpine node relay.mjs
+     -v ~/hearth:/app -w /app/relay node:20-alpine node relay.mjs
    ```
+   Still zero npm dependencies — `hub/` is here for that one stdlib-only module, nothing else.
 2. Add the TLS vhost with `scripts/setup-hub-ws-nginx.sh` (run with sudo) — it writes an
    isolated nginx server block for `hub-ws.agfarms.dev` proxying to `127.0.0.1:8790` with the
    WebSocket upgrade headers, issues a certbot cert, `nginx -t`, and reloads.

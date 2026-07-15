@@ -20,18 +20,18 @@ The backend runs on **Alibaba Function Compute 3.0** in `ap-southeast-1`. Check 
 curl https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run/health
 ```
 ```json
-{"ok":true,"service":"hearth-cloud","brain":"qwen","store":"tablestore","tools":20}
+{"ok":true,"service":"hearth-cloud","brain":"qwen","store":"tablestore","tools":21}
 ```
 
 That one response is the whole cloud stack, live: `brain:"qwen"` = a real DashScope key serving
-Qwen; `store:"tablestore"` = Alibaba Tablestore holding the data plane; `tools:20` = the Home MCP
+Qwen; `store:"tablestore"` = Alibaba Tablestore holding the data plane; `tools:21` = the Home MCP
 surface Qwen calls. The host resolves to `47.236.86.78` — **Alibaba Cloud LLC**.
 
 | Alibaba service | What it does here | Where |
 |---|---|---|
 | **Function Compute 3.0** | The whole backend: Home MCP server + Qwen orchestration. Custom `debian10` runtime, scale-to-zero. | [`backend/s.yaml`](backend/s.yaml) |
 | **Model Studio / DashScope — Qwen** | `qwen-plus` authors deployments; `qwen-vl-plus` reads camera frames. | [`backend/src/qwen.ts`](backend/src/qwen.ts) |
-| **Tablestore** | Durable watches, accounts, OTP, hub pairings, device registry. Tables auto-create. | [`backend/src/tablestore.ts`](backend/src/tablestore.ts) |
+| **Tablestore** | Durable watches, accounts, OTP, hub pairings, device registry, and live readings (24h TTL). Tables auto-create. | [`backend/src/tablestore.ts`](backend/src/tablestore.ts) |
 | **OSS** | Camera frames + household reference photos Qwen-VL reads, served by presigned URL. Bucket `hearth-vision-c11d45`. | [`backend/src/oss.ts`](backend/src/oss.ts) |
 
 Verify the AI end-to-end against the live API — these exit non-zero if it isn't really Qwen:
@@ -82,7 +82,7 @@ flowchart TB
     CAM["Camera — hub/camera.mjs\n(ffmpeg frame at cadence)"]
   end
   subgraph AC["☁️ Alibaba Cloud — ap-southeast-1"]
-    FC["Function Compute 3.0\nHome MCP server (20 tools)"]
+    FC["Function Compute 3.0\nHome MCP server (21 tools)"]
     QWEN["Model Studio / DashScope\nqwen-plus · qwen-vl-plus"]
     TS[("Tablestore\nwatches · accounts · hubs")]
     OSS[("OSS\nframes + reference photos")]
@@ -139,7 +139,7 @@ We'd rather be checkable than impressive. Everything below is grep-able.
 | Rubric asks for… | Hearth delivers |
 |---|---|
 | perceive via edge sensors | Self-describing ESP32 nodes (chip temp, DHT11, HC-SR04) + hub webcam |
-| reason via cloud APIs / Skills | Qwen authors deployments (`qwen-plus`) and judges frames (`qwen-vl-plus`) through a **20-tool Home MCP surface** on Function Compute |
+| reason via cloud APIs / Skills | Qwen authors deployments (`qwen-plus`) and judges frames (`qwen-vl-plus`) through a **21-tool Home MCP surface** on Function Compute |
 | act locally | Real relay/servo actuation over HTTP + device-shadow downlink; **autonomous node-side safety veto** |
 | orchestration under bandwidth/latency | Sampled-not-streamed frames, per-sensor cadence downlink, adaptive debounce, exponential backoff, mDNS re-discovery |
 | graceful degradation offline | Compiled **local** watches need zero cloud — they fire during an outage; nodes re-find a restarted hub; the veto is autonomous *(no event buffering yet — see gaps)* |

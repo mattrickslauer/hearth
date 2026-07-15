@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/mattrickslauer/hearth"
+REPO_RAW="${HEARTH_REPO_RAW:-https://raw.githubusercontent.com/mattrickslauer/hearth}"
 REF="${HEARTH_REF:-main}"
 DIR="${HEARTH_HOME:-$HOME/.hearth}"
 DASHBOARD_URL="${HEARTH_DASHBOARD_URL:-https://hearth.vercel.app}"
@@ -43,12 +43,26 @@ NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 
 [ "$NODE_MAJOR" -ge 18 ] || die "Node.js 18+ is required (found $(node -v)). Upgrade Node and re-run."
 
 # --- install files ---------------------------------------------------------
+# EVERY module hub.mjs imports, transitively, must be listed here — a missing one makes the
+# hub die on startup with ERR_MODULE_NOT_FOUND. The import graph is:
+#   hub.mjs → ws.mjs → ws-frame.mjs
+#           → camera.mjs
+#           → runtime.mjs → engine.mjs, notify.mjs
+# `hearthctl start` verifies the process actually survives, so if this list ever falls behind
+# again the installer fails loudly instead of leaving a hub that silently won't boot.
+HUB_FILES="hub.mjs ws.mjs ws-frame.mjs runtime.mjs engine.mjs notify.mjs camera.mjs hearthctl"
+
 say "Installing the Hearth hub into $DIR"
 mkdir -p "$DIR"
-curl -fsSL "$REPO_RAW/$REF/hub/hub.mjs"    -o "$DIR/hub.mjs"    || die "Download failed: hub.mjs"
-curl -fsSL "$REPO_RAW/$REF/hub/ws.mjs"     -o "$DIR/ws.mjs"     || die "Download failed: ws.mjs"
-curl -fsSL "$REPO_RAW/$REF/hub/hearthctl"  -o "$DIR/hearthctl"  || die "Download failed: hearthctl"
+for f in $HUB_FILES; do
+  curl -fsSL "$REPO_RAW/$REF/hub/$f" -o "$DIR/$f" || die "Download failed: $f"
+done
 chmod +x "$DIR/hub.mjs" "$DIR/hearthctl"
+
+# Catch a truncated/incomplete download before it becomes a confusing runtime error.
+for f in $HUB_FILES; do
+  case "$f" in *.mjs) node --check "$DIR/$f" 2>/dev/null || die "Downloaded $f is not valid JavaScript — re-run the installer." ;; esac
+done
 
 # Minimal package.json so `npm install` can pull the (optional) mDNS dependency.
 cat >"$DIR/package.json" <<'JSON'
