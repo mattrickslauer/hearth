@@ -446,11 +446,19 @@ export function hmacHex(input: string): string {
 /**
  * Signing key for realtime WebSocket tickets. Distinct from the session secret so the relay
  * (which verifies these tickets) holds only a scoped, relay-specific key rather than the key
- * that signs user sessions. Falls back to the session secret for local dev where RELAY_* is
- * unset. Keep RELAY_TICKET_SECRET identical on the backend deploy env and the relay.
+ * that signs user sessions — a compromised relay can't mint a session.
+ *
+ * ONE name, no fallback. This used to fall back to sessionSecret(), and relay.mjs mirrored the
+ * fallback, so the same secret answered to both RELAY_TICKET_SECRET and AUTH_SESSION_SECRET.
+ * With one side's explicit var set and the other's not, each picked a different key and every
+ * handshake 401'd with nothing in the logs explaining it. Realtime is gated on relayConfig(),
+ * which requires this var, so an unset key means realtime is reported off rather than issuing
+ * tickets nothing can verify.
  */
 function wsTicketSecret(): string {
-  return process.env.RELAY_TICKET_SECRET || sessionSecret();
+  const s = process.env.RELAY_TICKET_SECRET;
+  if (!s) throw new Error('RELAY_TICKET_SECRET is required to issue realtime tickets');
+  return s;
 }
 
 /**

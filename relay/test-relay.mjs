@@ -76,11 +76,10 @@ const waitFor = (pred, ms, label) => new Promise((resolve, reject) => {
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
-  // Pin RELAY_TICKET_SECRET explicitly, don't just set the AUTH_SESSION_SECRET fallback:
-  // relay.mjs prefers RELAY_TICKET_SECRET, so a developer with the real .env sourced would
-  // otherwise have their ambient value win and every ticket here would 401.
+  // Pin the secrets so a developer with the real .env sourced doesn't have their ambient
+  // values win and 401 every ticket here.
   relay = spawn('node', [RELAY], {
-    env: { ...process.env, PORT: String(PORT), RELAY_TICKET_SECRET: SECRET, AUTH_SESSION_SECRET: SECRET, RELAY_PUBLISH_SECRET: PUB },
+    env: { ...process.env, PORT: String(PORT), RELAY_TICKET_SECRET: SECRET, RELAY_PUBLISH_SECRET: PUB },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let ready = false;
