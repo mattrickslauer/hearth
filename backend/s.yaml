@@ -88,7 +88,8 @@ resources:
         HEARTH_OTP_STORE: tablestore
         # Realtime relay (cloud-brokered live readings → dashboard). The URLs aren't secret;
         # the two secrets come from the deploy env and MUST match the relay container's env on
-        # agfarms (~/hearth-relay/relay.env). Unset → realtime off. See docs/realtime-relay.md.
+        # agfarms (~/hearth/relay/relay.env). Each has ONE name on both sides — RELAY_TICKET_SECRET
+        # is not AUTH_SESSION_SECRET. Unset any → realtime off. See docs/realtime-relay.md.
         RELAY_WS_URL: wss://hub-ws.agfarms.dev/live
         RELAY_PUBLISH_URL: https://hub-ws.agfarms.dev/publish
         RELAY_PUBLISH_SECRET: ${env('RELAY_PUBLISH_SECRET')}

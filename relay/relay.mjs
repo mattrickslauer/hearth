@@ -11,12 +11,16 @@
  *   FC ──POST /publish {accountId,message}──▶ relay ──▶ every socket for that account
  *
  * Auth: the ticket is the SAME HS256 JWT the backend issues (auth.ts issueWsTicket, audience
- * "hearth-ws"), verified here with the shared AUTH_SESSION_SECRET. /publish is guarded by a
+ * "hearth-ws"), verified here with the shared RELAY_TICKET_SECRET. /publish is guarded by a
  * shared RELAY_PUBLISH_SECRET. No inbound trust beyond those two secrets.
+ *
+ * RELAY_TICKET_SECRET is deliberately NOT the backend's AUTH_SESSION_SECRET: the relay only
+ * needs to verify short-lived tickets, so it holds a scoped key and never the key that signs
+ * user sessions. A compromised relay therefore cannot mint a session.
  *
  * Zero dependencies — Node stdlib only. Env:
  *   PORT                  listen port (default 8790; bind 0.0.0.0 inside its container)
- *   AUTH_SESSION_SECRET   HS256 key to verify tickets (same value as the backend)
+ *   RELAY_TICKET_SECRET   HS256 key to verify tickets (same value as the backend's)
  *   RELAY_PUBLISH_SECRET  bearer secret the backend presents on POST /publish
  */
 
@@ -37,15 +41,21 @@ import {
 } from '../hub/ws-frame.mjs';
 
 const PORT = Number(process.env.PORT || 8790);
-// The key that signs/verifies browser tickets — set identically on the backend deploy env.
-// Falls back to AUTH_SESSION_SECRET when RELAY_TICKET_SECRET is unset (backend's own fallback).
-const TICKET_SECRET = process.env.RELAY_TICKET_SECRET || process.env.AUTH_SESSION_SECRET || '';
+// The key that signs/verifies browser tickets — set to the identical value on the backend's
+// deploy env. ONE name, no fallback: this used to also accept AUTH_SESSION_SECRET, which meant
+// the same secret answered to two names and the backend and relay could each silently pick a
+// different one. That fails as a 401 on every handshake with nothing in the logs to say why.
+const TICKET_SECRET = process.env.RELAY_TICKET_SECRET || '';
 const PUBLISH_SECRET = process.env.RELAY_PUBLISH_SECRET || '';
 const JWT_ISS = 'hearth';
 const JWT_AUD_WS = 'hearth-ws';
 
 if (!TICKET_SECRET || !PUBLISH_SECRET) {
-  console.error('[relay] refusing to start: RELAY_TICKET_SECRET (or AUTH_SESSION_SECRET) and RELAY_PUBLISH_SECRET are required');
+  console.error('[relay] refusing to start: RELAY_TICKET_SECRET and RELAY_PUBLISH_SECRET are required');
+  if (process.env.AUTH_SESSION_SECRET && !TICKET_SECRET) {
+    // Point the operator straight at the rename rather than let them guess.
+    console.error('[relay] AUTH_SESSION_SECRET is set but is no longer used here — set RELAY_TICKET_SECRET instead.');
+  }
   process.exit(1);
 }
 

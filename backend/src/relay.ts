@@ -17,11 +17,18 @@ export interface RelayConfig {
   secret: string; // shared bearer the relay checks on /publish
 }
 
+/**
+ * Realtime is all-or-nothing: every RELAY_* var must be present, including the ticket key.
+ * RELAY_TICKET_SECRET is listed here even though it's consumed in auth.ts, so a deploy missing
+ * it reports realtime OFF instead of minting tickets the relay can never verify (a 401 per
+ * handshake, silent). Same name on both sides — there is no AUTH_SESSION_SECRET fallback.
+ */
 export function relayConfig(): RelayConfig | null {
   const wsUrl = process.env.RELAY_WS_URL;
   const publishUrl = process.env.RELAY_PUBLISH_URL;
   const secret = process.env.RELAY_PUBLISH_SECRET;
-  if (!wsUrl || !publishUrl || !secret) return null;
+  const ticketSecret = process.env.RELAY_TICKET_SECRET;
+  if (!wsUrl || !publishUrl || !secret || !ticketSecret) return null;
   return { wsUrl, publishUrl, secret };
 }
 
