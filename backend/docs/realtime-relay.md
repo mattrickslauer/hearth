@@ -41,11 +41,29 @@ nginx terminates TLS for `hub-ws.agfarms.dev` and proxies to it (WebSocket upgra
 
    docker run -d --name hearth-relay --restart unless-stopped \
      -p 127.0.0.1:8790:8790 \
-     -e AUTH_SESSION_SECRET=<same as backend> \
-     -e RELAY_PUBLISH_SECRET=<shared push secret> \
+     --env-file ~/hearth/relay/relay.env \
      -v ~/hearth:/app -w /app/relay node:20-alpine node relay.mjs
    ```
    Still zero npm dependencies — `hub/` is here for that one stdlib-only module, nothing else.
+
+   `relay.env` is a `chmod 600` file on the server holding the secrets, so they never appear in
+   a shell history or `docker inspect` argv:
+   ```
+   PORT=8790
+   RELAY_TICKET_SECRET=<same value the backend signs tickets with>
+   RELAY_PUBLISH_SECRET=<shared push secret>
+   ```
+   Set **`RELAY_TICKET_SECRET`**, not `AUTH_SESSION_SECRET`. The relay accepts either
+   (`RELAY_TICKET_SECRET || AUTH_SESSION_SECRET`), but the explicit one is what's deployed and
+   it wins — so setting only the fallback while the other is present in the environment gives
+   you tickets that verify against the wrong key and a 401 on every handshake.
+
+   Verify the deploy before pointing traffic at it — this runs the real suite (handshake,
+   fan-out, cross-account isolation, forged/expired tickets) against the copied files:
+   ```bash
+   docker run --rm -v ~/hearth:/app -w /app/relay node:20-alpine node test-relay.mjs
+   curl -s https://hub-ws.agfarms.dev/health     # {"ok":true,"sockets":N,"accounts":N}
+   ```
 2. Add the TLS vhost with `scripts/setup-hub-ws-nginx.sh` (run with sudo) — it writes an
    isolated nginx server block for `hub-ws.agfarms.dev` proxying to `127.0.0.1:8790` with the
    WebSocket upgrade headers, issues a certbot cert, `nginx -t`, and reloads.
