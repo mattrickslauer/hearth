@@ -14,6 +14,21 @@ export { parseDuration, formatDuration } from '../../frontend/src/demo/engine/du
 export { evaluate } from '../../frontend/src/demo/engine/predicate';
 export { shouldSample, meteredInterval } from '../../frontend/src/demo/engine/record';
 export {
+  ACTIVITY,
+  BASELINE_LOOK_USD,
+  MODEL_RATES,
+  PLANS,
+  VGA,
+  cheapestPlan,
+  costPerCall,
+  estimate,
+  fitsPlan,
+  formatLooks,
+  formatUsd,
+  imageTokens,
+} from '../../frontend/src/demo/engine/pricing';
+export type { ActivityLevel, Frame, Plan, Quote, QuoteInput } from '../../frontend/src/demo/engine/pricing';
+export {
   mockAuthor,
   mockJudge,
   defaultRecord,
