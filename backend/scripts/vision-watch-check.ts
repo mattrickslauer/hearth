@@ -147,6 +147,22 @@ const metered = (await judgeFrame(store, CAM)).find((o) => o.questionId === 'q-m
 line('C)', metered?.judged === false && metered?.skipped === 'cadence', `looked 1m ago, floor 1h → refused before spending (skipped=${metered?.skipped})`);
 await store.deleteQuestion('q-metered');
 
+// ── C2) a watch with NO maxCadence still gets a floor ────────────────────────
+// maxCadence and gate are both optional in the grammar and validateQuestion doesn't
+// require them, so a real authored watch can arrive with neither. Frames arrive as fast
+// as the snap cadence (down to 0.5s) — "absent" must never mean "unlimited", or one
+// forgotten field bills two Qwen-VL calls a second forever.
+await store.putQuestion(
+  watch({
+    id: 'q-unmetered',
+    compiledSpec: { kind: 'cloud', cloud: { model: 'qwen-vl', question: 'Anyone there?' } }, // no maxCadence, no gate
+  }),
+);
+await store.putRunState({ questionId: 'q-unmetered', lastJudgedAt: Date.now() - 500, lastFiredAt: 0, lastAnswer: false });
+const unmetered = (await judgeFrame(store, CAM)).find((o) => o.questionId === 'q-unmetered');
+line('C2)', unmetered?.judged === false && unmetered?.skipped === 'cadence', `no maxCadence in spec → default floor still applies (skipped=${unmetered?.skipped})`);
+await store.deleteQuestion('q-unmetered');
+
 // ── D) memoryIds narrow the reference set ───────────────────────────────────
 let dOk = true;
 if (LIVE) {
@@ -163,7 +179,8 @@ if (LIVE) {
   console.log('D) SKIPPED — needs a live key + bucket.');
 }
 
-const ok = aOk && attributedToQwen && dOk && gated?.skipped === 'gate' && metered?.skipped === 'cadence';
+const ok =
+  aOk && attributedToQwen && dOk && gated?.skipped === 'gate' && metered?.skipped === 'cadence' && unmetered?.skipped === 'cadence';
 console.log(
   `\n${ok ? 'PASS' : 'FAIL'} — ${LIVE ? 'a real frame reaches Qwen-VL at runtime, gated and metered.' : 'gate + cadence discipline verified; run with a key + bucket to prove the Qwen-VL leg.'}`,
 );

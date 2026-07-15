@@ -34,6 +34,19 @@ import type { HomeStore, RunEventRow, WatchRunState } from './store';
 /** How far back to hydrate a gate's series. Covers any sane `sustained`/`delta` window. */
 const GATE_LOOKBACK_MS = 60 * 60 * 1000;
 
+/**
+ * The floor we apply when a watch's spec doesn't name one — matching the `?? '10s'`
+ * the record policy already defaults to (tools.ts).
+ *
+ * This is a backstop, not a preference. `maxCadence` and `gate` are both OPTIONAL in the
+ * grammar, and validateQuestion doesn't require either — the author prompt only *shows*
+ * them in its example. So a perfectly valid Qwen-authored watch can arrive with no floor
+ * at all, and frames arrive as fast as the camera's snap cadence (which goes to 0.5s).
+ * Treating "absent" as "unlimited" would mean two billed Qwen-VL calls a second, forever,
+ * because a model forgot a field. Never let the floor be zero.
+ */
+const DEFAULT_MAX_CADENCE_MS = 10_000;
+
 /** Presigned frame URLs are handed straight to Qwen-VL; they only need to outlive the call. */
 const FRAME_URL_TTL_S = 300;
 
@@ -121,9 +134,9 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
     const base = { questionId: q.id, title: q.title };
     const state = (await store.getRunState(q.id)) ?? freshState(q.id);
 
-    // 1) Budget floor — the spec's own "never look faster than this".
-    const floor = ms(check.maxCadence);
-    if (floor && state.lastJudgedAt && now - state.lastJudgedAt < floor) {
+    // 1) Budget floor — the spec's own "never look faster than this", or ours if it didn't say.
+    const floor = ms(check.maxCadence) || DEFAULT_MAX_CADENCE_MS;
+    if (state.lastJudgedAt && now - state.lastJudgedAt < floor) {
       outcomes.push({ ...base, judged: false, skipped: 'cadence' });
       continue;
     }
