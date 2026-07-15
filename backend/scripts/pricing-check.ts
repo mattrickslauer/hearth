@@ -23,7 +23,9 @@ import {
   estimate,
   fitsPlan,
   formatUsd,
+  dutyForGate,
   imageTokens,
+  mockAuthor,
   recommend,
 } from '../src/domain.ts';
 import type { CompiledSpec, QuoteInput } from '../src/domain.ts';
@@ -232,6 +234,32 @@ check(
   'G) a well-configured watch is not nagged',
   alreadyGood.every((r) => r.savedPct >= 5),
   `${alreadyGood.length} suggestion(s) — only ones worth ≥5% of the bill are shown`,
+);
+
+// ── H) the brain's own gate must be priced ───────────────────────────────────
+// Regression guard: a compiled `gate` that isn't costed overstates the bill ~50×,
+// and it is the doorway watch — the one the demo authors — that gets it wrong.
+const authored = mockAuthor('tell me if someone unfamiliar is at the door');
+const authoredGate = authored.compiledSpec.kind === 'cloud' ? authored.compiledSpec.cloud.gate : undefined;
+check(
+  'H) the authored doorway watch actually carries a gate',
+  authoredGate !== undefined,
+  `brain emits gate on ${JSON.stringify(authoredGate ?? null)}`,
+);
+
+const resolvedDuty = dutyForGate(authoredGate);
+check(
+  "H) the gate's duty resolves from the catalog authoring binds against",
+  resolvedDuty === 0.02,
+  `entry.presence → duty ${resolvedDuty ?? 'UNRESOLVED'} (describe_home is empty until a hub reports, so the catalog is the fallback)`,
+);
+
+const priced = estimate({ spec: authored.compiledSpec, record: authored.record, gateDuty: resolvedDuty });
+const unpriced = estimate({ spec: authored.compiledSpec, record: authored.record });
+check(
+  'H) pricing the gate is worth ~50× on the demo watch',
+  priced.usdPerMonth < unpriced.usdPerMonth / 10,
+  `gate costed $${priced.usdPerMonth.toFixed(2)}/mo vs ignored $${unpriced.usdPerMonth.toFixed(2)}/mo`,
 );
 
 console.log(`\n${failures === 0 ? 'PASS' : `FAIL — ${failures} check(s) failed`}`);

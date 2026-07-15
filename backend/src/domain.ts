@@ -50,6 +50,7 @@ export {
   judgeUserPrompt,
 } from '../../frontend/src/demo/brain/prompts';
 export type { CapabilityLite } from '../../frontend/src/demo/brain/prompts';
+export { gatesFor, dutyForGate } from '../../frontend/src/demo/gates';
 export {
   ZONES,
   NODES,
