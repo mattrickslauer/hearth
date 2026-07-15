@@ -1,29 +1,35 @@
-HEARTH — read-aloud script, DASHBOARD cut · PROOF-LAST (~2:40 at ~135 wpm)
-Five movements, one peak: the fire. Cost + the Qwen wiring AI + "open" collapse into the close as the punchline.
+HEARTH — read-aloud script · "GIVE IT A QWEN BRAIN" cut (~2:45 at ~135 wpm)
+Five movements, one peak: the fire. The thesis is the frame; the hardware is the proof; "any board, no code, open" is the close.
 Say the on-screen words: "Your home", "live", "Author", "watch", "local", "Fired · Actuated · Notified".
 
 DELIVERY
 · Three registers — [CAMERA] slow + warm · [SCREEN] brisk, you're pointing · [PROOF] slowest, let the hardware breathe.
-· Rule of three is the metronome: "hubs, clouds, apps" · "76, 78, 79" · "Fired, Actuated, Notified." Land the third beat.
+· Rule of three is the metronome: "chat, code, slides" · "76, 78, 79" · "Fired, Actuated, Notified." Land the third beat.
 · Two golden silences — ~1.5s after "there's my phone", and a full stop before "Clone it."
 · One idea per breath. Start every screen line with a pointing word: "This is…", "See that…", "There it is…"
+· Never say "underdog," never say "smaller," never compare Qwen to anyone by name. The thesis lands as ambition, not grievance:
+  Qwen is the one you can afford to put inside things. Show it; don't argue it.
 
 
 ═══ 1 · HOOK  [camera — slow, warm]
-Home automation is closed. Closed hubs, closed clouds, closed apps — you rent your own house back from whoever sold you the gadget.
-So we opened the whole stack. This is Hearth… and this is my home, on one screen.
+Every AI you've seen this year lives in the same three boxes. A chat window, a code editor, a slide deck.
+Meanwhile the real world — the door, the pump, the greenhouse, the nursery — still runs on dumb thresholds somebody hard-coded in 2009.
+So we gave it a Qwen brain. Five dollars of hardware. No code. This is Hearth.
 
 
-═══ 2 · THE SCREEN  [dashboard — brisk, pointing]
-"Your home." Everything here is live — my hubs, my devices, my sensors, my watches.
-See that green dot — "live"? That's a real stream off the hub in my house. Every tile has a heartbeat — watch it pulse when a reading lands. I can dial any sensor right here — once a minute, or twice a second.
+═══ 2 · ANY HARDWARE  [hardware, then dashboard — brisk, pointing]
+Hearth isn't a product with a parts list — it's a runtime.
+One command flashes a board you already own. It boots, and announces itself: "I have a temperature pin. I have a relay."
+No drivers. No datasheet. And the hub? A Pi, an old laptop — whatever's in your drawer.
+So this is my home, on one screen. That green dot — "live"? Real stream, off the hub in my house.
 
 
 ═══ 3 · THE ASK  [dashboard — brisk]
-Now, the good part. I don't write code — I just say what I want.
+Now the good part. I don't write code — I just say what I want.
 "If the nursery goes over seventy-eight, cut the heater and text me."
-I hit Author… and Qwen turns that one sentence into a running watch. There it is — over seventy-eight, heater off, notify me.
-See that little "local" tag? That rule runs on the hub, in my house. Cut the internet — it still fires.
+I hit Author… and Qwen Cloud compiles that one sentence into a real, running script. There it is — over seventy-eight, heater off, notify me.
+I never touched a line of it.
+And see that "local" tag? Qwen wrote it — but it runs on the hub, in my house. Cut the internet, it still fires.
 
 
 ═══ 4 · THE PROOF  [hardware + screen — slowest, let it breathe]
@@ -31,11 +37,12 @@ So let's make it real. I warm this sensor with my hand… and the tile climbs �
 the watch flashes, and the feed lights up: Fired… Actuated… Notified.
 And — [phone buzzes] —
                           …there's my phone.
-Real sensor. Real rule. Real alert. No cloud required.
+Real sensor. Real script. Real alert. No cloud required.
 
 
 ═══ 5 · CLOSE  [wiring flash, then camera — land it]
-And here's the thing. That whole loop? A five-dollar chip, and one sentence to Qwen.
-Don't know how to wire it? Just ask — Qwen tells you which pin goes where.
-It's open, from the sensor to the cloud. This isn't the finished product — it's the platform you build it on.
+Don't know how to wire it? Just ask. "Add a soil sensor." Qwen tells you which pin goes where — then writes the code that reads it.
+That's the whole idea. Any hardware. Any brain — swap the model, it's yours. Open, from the sensor to the cloud.
+Qwen doesn't have to win the chat window. It can win the physical world instead — because it's the one you can afford to put inside things.
+This isn't the finished product. It's the platform you build it on.
 Clone it… and go build.
