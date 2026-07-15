@@ -1,37 +1,45 @@
-# 06 — Demo Video Script (≤ 3:00) — "GIVE IT A QWEN BRAIN" cut
+# 06 — Demo Video Script (≤ 3:00) — "THE WORLD HAS NO JUDGMENT" cut
 
-Submission video for **Track 5: EdgeAgent**. Measured runtime **~2:47** (hard cap 3:00 — see the timing note under the
-script table; this cut is tight). Format: 1080p+, YouTube/Vimeo/Youku.
+Submission video for **Track 5: EdgeAgent**. Counted runtime **~2:50** (hard cap 3:00 — see the timing note under the
+script table; the margin is ~10s and the counts are checked, not budgeted). Format: 1080p+, YouTube/Vimeo/Youku.
 
-**The thesis (what actually sells this):** every model in this market is fighting over the same three boxes — a chat
-window, a code editor, a slide deck. Nobody has made AI *cheap and open enough to put inside a physical thing*. Qwen can
-be that. Hearth is the open-source runtime that gives **any hardware you already own** a **Qwen brain**, where Qwen Cloud
-**compiles plain English into a real script that runs on the device** — for people who don't code.
+**The thesis (what actually sells this):** every AI you've seen this year lives in the same three boxes — a chat window,
+a code editor, a slide deck. Meanwhile the physical world runs on **thresholds**: two numbers, compared. A thermostat
+doesn't think. A door sensor doesn't know *who* opened the door. The real world is full of questions a number cannot
+answer — *is that my kid or a stranger?* — and until now nothing cheap enough to sit in your hallway could answer them.
+**Qwen can.** Hearth is the open-source runtime that puts a **Qwen brain** in hardware you already own.
 
-That reframes the whole cut. We are **not** demoing a home-automation product with a parts list. We're demoing **an open
-platform for building real-world devices**, and the nursery is just the one instance of it we filmed. The inventory on
-hand is the *example*, never the *scope* — every line is written so a viewer with a totally different board and a totally
-different problem sees themselves in it.
+**Read this before touching the script — it's why this cut exists.** The previous cut demoed
+`when temperature over 78 → heater off`, one movement after mocking a world that "runs on dumb thresholds somebody
+hard-coded in 2009." That *is* a hard-coded threshold. Qwen just typed it. The whole model contribution was a one-time
+translation the judges' own model could have done in 2023 — and then the cut bragged about not needing it
+(*"cut the internet, it still fires" · "No cloud required"*), which reads to a Qwen judge as **"we use your model once,
+then we're done with you."**
 
-**Structure:** five movements, one peak, **PROOF-LAST**. Thesis frames it, "any hardware / no code" is the substance,
-the hardware fire is the spectacle, and **open + model-swappable + "Qwen wins the physical world"** collapses into the
-close as the punchline. Never explain after the peak.
+**So the spine is a nervous system, and the ordering is deliberate.** Qwen Cloud is the **brain** — it *looks* at a real
+frame and makes a judgment no threshold can make. The hub is the **reflex arc** — fast, dumb, and the reason a lost link
+is survivable. Edge is not the flex; it's the **spine that protects the brain**. That framing serves the sponsor *and*
+Track 5 at once, and it's the only honest reading of what the code does: a vision watch calls **Qwen-VL on every frame**
+(`backend/src/vision-watch.ts`), gated by a cheap local predicate so the cloud call is the exception, not the tax.
+
+**What is on screen is real.** Camera → OSS → Qwen-VL → verdict → actuate → push is a live path, and the feed stamps
+**`· qwen`** on the row because `evaluatedBy` is now actually assigned. See **Honesty guardrails** — one leg is unproven
+until a key exists, and this document does not pretend otherwise.
+
+**Structure:** five movements, one peak, **PROOF-LAST**. Never explain after the peak.
 
 **Legend:** `[CAM]` you to camera · `[SCREEN]` dashboard capture · `[SHOOT]` real hardware in frame · `[VO]` voiceover.
 
-**The through-line:** one continuous scenario — *"keep the nursery under 78."* You describe it, Qwen **compiles it into a
-watch**, you warm a real sensor with your hand, and the chain lights up **on the dashboard**: the tile climbs, the watch
-flashes, the feed streams **Fired · Actuated · Notified**, your phone buzzes. Every string on screen is real
-(`frontend/src/app/dashboard.tsx`).
+**The through-line:** one continuous scenario — *"tell me if someone who isn't family is at the door."* You say it, Qwen
+compiles it, you show it a photo of Alex, and then **a stranger walks up** and Qwen-VL *looks* and *decides*. The
+reflex beat lands last and small, as reassurance, not as a boast.
 
-**Cadence:** three registers — `[CAM]` slow + warm · `[SCREEN]` brisk, pointing · `[PROOF]` slowest, let the hardware
-breathe. Rule of three is the metronome ("chat, code, slides" · "76, 78, 79" · "Fired, Actuated, Notified"). Two golden
-silences: ~1.5s after *"there's my phone"*, and a full stop before *"Clone it."* Deliver ~135 wpm so the pauses land.
+**Cadence:** three registers — `[CAM]` slow + warm · `[SCREEN]` brisk, pointing · `[PROOF]` slowest, let it breathe.
+Rule of three is the metronome ("chat, code, slides" · "Looked, Decided, Told me"). Two golden silences: ~1.5s after
+*"…that's not Alex"*, and a full stop before *"Clone it."* Deliver ~135 wpm so the pauses land.
 
 **Tone guardrail — the underdog frame is a *frame*, not a *line*.** Never say "underdog," "smaller," "lesser-known," and
-never name a competitor. Judges hear grievance and discount it. The positioning lands entirely through the *close*:
-*"Qwen doesn't have to win the chat window — it can win the physical world instead, because it's the one you can
-actually afford to put inside things."* That's ambition. It reads as a strategy the judges' own model could adopt.
+never name a competitor. Judges hear grievance and discount it. The positioning lands entirely through the *close*.
 
 ---
 
@@ -39,104 +47,113 @@ actually afford to put inside things."* That's ambition. It reads as a strategy 
 
 | # · Movement | Time | Visual | Audio |
 |---|---|---|---|
-| **1 · HOOK** *(thesis)* | **0:00–0:18** | `[CAM]` You, direct to camera. Slow, warm. Optional B-roll flash on "three boxes": a chat window, an editor, a deck — 0.5s each. | "Every AI you've seen this year lives in the same three boxes. A chat window, a code editor, a slide deck. Meanwhile the actual world — the door, the pump, the greenhouse, the nursery — still runs on dumb thresholds somebody hard-coded in 2009. So we gave the real world a Qwen brain. Whatever hardware you've got. No code. This is Hearth." |
-| **2 · ANY HARDWARE** | **0:18–0:52** | `[SHOOT]` a bare ESP board in your palm → `[SCREEN]` the **one-line flash command** running in a terminal → the node **appearing on the dashboard by itself** with its capabilities listed. Then land on **"Your home"** + live chips (**hubs · devices · sensors · watches**) and the green **`live`** badge. | `[VO]` "Here's the part I care about. Hearth isn't a product with a parts list — it's a runtime. One command flashes a board you already own. It boots, and it announces itself: *I have a temperature pin. I have a relay.* No drivers. No config file. No datasheet. And the hub is a Raspberry Pi, an old laptop — whatever's in your drawer. So: this is my home, on one screen. See that green dot — *live*? That's a real stream, off the hub in my house." |
-| **3 · THE ASK** | **0:52–1:24** | `[SCREEN]` **Describe a new watch** card. Type *"If the nursery goes over 78, cut the heater and text me."* → **Author →** → new **watch card**: **`when temperature over 78 → turn heater off, notify me`**, tagged **`local`**. Zoom the **`local`** tag. | `[VO]` "Now the good part. I don't write code — I just say what I want. *If the nursery goes over seventy-eight, cut the heater and text me.* I hit **Author**… and Qwen Cloud compiles that one sentence into a real, running script. There it is — over seventy-eight, heater off, notify me. I never touched a line of it. See that little *local* tag? Qwen wrote it — but it runs on the hub, in my house. Cut the internet, it still fires." |
-| **4 · THE PROOF** *(peak)* | **1:24–1:56** | **One continuous take, hardware + screen in frame. Slowest register.** `[SHOOT]` cup the ESP32; `[SCREEN]` temp tile climbs `76 → 78 → 79`, **watch card flashes ember**, **Activity** streams **`🔥 Fired · ⚡ Actuated · 📨 Notified`**. `[SHOOT]` **phone buzzes** — hold ~1.5s of silence. | `[VO]` "So let's make it real. I warm this sensor with my hand… the tile climbs — seventy-six… seventy-eight… seventy-nine — the watch flashes, and the feed lights up: Fired… Actuated… Notified. And — *[phone buzzes]* — …there's my phone. Real sensor. Real script. Real alert. No cloud required." |
-| **5 · CLOSE** | **1:56–2:45** | `[SCREEN]` 4s **wiring-assistant** flash: type *"add a soil sensor"* → Qwen returns a **pin recipe** `VCC→3V3 · GND→GND · signal→GPIO4`. Then `[CAM]` to camera over the end card: **Hearth · open source · any hardware · built on Qwen Cloud · \<repo URL\>**. Full stop before "Clone it." | "Don't know how to wire it? Just ask. *Add a soil sensor.* Qwen tells you which pin goes where — then writes the code that reads it. That's the whole idea. Any hardware. Any brain — swap the model out, it's yours. Open, from the sensor to the cloud. Qwen doesn't have to win the chat window. It can win the physical world instead — because it's the one you can actually afford to put inside things. This isn't the finished product. It's the platform you build it on. Clone it… and go build." |
+| **1 · HOOK** *(thesis)* | **0:00–0:30** | `[CAM]` You, direct to camera. Slow, warm. Optional B-roll flash on "three boxes": a chat window, an editor, a deck — 0.5s each. Then a hard cut to a doorway. | "Every AI this year lives in the same three boxes. A chat window, a code editor, a slide deck. Meanwhile your thermostat compares two numbers, like it's 2009. That's not thinking. The real world is full of questions a number can't answer — *is that my kid, or a stranger?* So we gave the hallway a Qwen brain. Whatever hardware you've got. No code. This is Hearth." |
+| **2 · ANY HARDWARE** | **0:30–0:59** | `[SHOOT]` a bare ESP board in your palm → `[SCREEN]` the **one-line flash command** in a terminal → the node **appearing on the dashboard by itself**, capabilities listed. Land on **"Your home"** + live chips (**hubs · devices · sensors · watches**) + green **`live`** badge. | `[VO]` "Hearth isn't a product with a parts list — it's a runtime. One command flashes a board you already own. It boots, and announces itself: *I have a camera. I have a relay.* No drivers. No datasheet. The hub? A Raspberry Pi, an old laptop — whatever's in your drawer. That green dot? A real stream, off the hub in my house." |
+| **3 · THE ASK** | **0:59–1:31** | `[SCREEN]` **Describe a new watch**: type *"Tell me if someone who isn't family is at the door."* → **Author →** → watch card tagged **`vision`**. Then `[SCREEN]` **link a memory object**: Alex's photo → attached to the watch. Zoom the **`vision`** tag. | `[VO]` "I don't write code — I just say what I want. *Tell me if someone who isn't family is at the door.* Qwen compiles that into a running watch. Notice what I never gave it: a number — no threshold answers *who*. So I show it my family. That's Alex; Qwen keeps him as memory it reasons over. See the *vision* tag? That watch doesn't check a value. It **looks**." |
+| **4 · THE PROOF** *(peak)* | **1:31–2:11** | **One continuous take. Slowest register.** `[SHOOT]` someone walks to the door. `[SCREEN]` the camera tile refreshes on its cadence → the watch card flashes ember → **Activity** streams **`🔥 Fired`** with **`· qwen`** and the real reasoning line. `[SHOOT]` **phone buzzes** — hold ~1.5s. Then `[SHOOT]` **pull the hub's network cable**; the local heat watch still fires. | `[VO]` "So — someone's at the door. Qwen-VL is looking at that frame right now. It compares them against Alex… and — *[phone buzzes]* — …*that's not Alex.* Read that line: that's not a threshold tripping. That's a **judgment**, on a real frame, from the cloud, in my hallway. And when I pull the plug — *[cable out]* — the reflexes Qwen compiled keep running on the hub. The brain is the cloud. The body still has a spine." |
+| **5 · CLOSE** | **2:11–2:50** | `[SCREEN]` 4s **wiring-assistant** flash: type *"add a soil sensor"* → Qwen returns a **pin recipe** `VCC→3V3 · GND→GND · signal→GPIO4`. Then `[CAM]` to camera over the end card: **Hearth · open source · any hardware · built on Qwen Cloud · \<repo URL\>**. Full stop before "Clone it." | "Don't know how to wire it? Just ask. *Add a soil sensor.* Qwen tells you which pin goes where — then writes the code that reads it. Any hardware. Any brain — swap the model out, it's yours. Open, from the sensor to the cloud. Qwen doesn't have to win the chat window. It can win the physical world instead — the one you can actually afford to put inside things. Clone it… and go build." |
 
-**Total: ~2:47 — and this cut is tight.** 354 spoken words at 135 wpm is **2:37 of speech alone**; the two golden
-silences and the beat around the phone buzz put it near **2:47** against a hard **3:00**. That's ~13s of margin, so
-**do a timed read-through before shoot day** — if you deliver under 130 wpm you will blow the cap.
+**Total: ~2:50 against a hard 3:00.** Counted, not budgeted: **349 spoken words** at 135 wpm is **2:35 of speech alone**
+(per movement: 67 · 62 · 70 · 74 · 76). The golden silences, the phone buzz and the cable-pull add ~15s, landing at
+**~2:50** — about **10s of margin**. The movement ranges above are derived from those counts, so they're internally
+consistent rather than aspirational.
 
-> Note: the previous DASHBOARD cut claimed "~2:40 at 275 words," which assumed ~38s of non-speech. That was optimistic —
-> most of its "silence" was actually narrated. The number above is measured, not budgeted.
+**This is the number to distrust.** Every prior cut of this doc under-claimed its own runtime — the DASHBOARD cut said
+"~2:40 at 275 words" by assuming ~38s of silence that was actually narrated, and the first draft of *this* cut claimed
+"358 words / 2:39" when it was really 407 words and **3:01 of speech alone — over the cap before a single pause**. Recount
+after any rewrite; don't trust the header. **Do a timed read-through before shoot day** — at 130 wpm this is 2:56 and you
+are betting the submission on ten seconds.
 
-**Buffer if long, in this order:** the B-roll flash in Movement 1 (~2s) → the *"No drivers. No datasheet."* triplet in
-Movement 2 (~3s) → the flash-command beat in Movement 2 (~5s, but it costs you the thesis — last resort).
-**Never cut:** the two golden silences, or the *"any brain — swap the model"* line (model-swappability is what makes
-"open" credible to these judges).
+**Buffer if long, in this order:** the B-roll flash in Movement 1 (~2s) → *"No drivers. No datasheet."* in Movement 2
+(~3s) → the cable-pull in Movement 4 (~5s — it costs the reflex beat, but the *judgment* is the thesis and survives
+without it).
+**Never cut:** the *"that's not Alex"* silence, the **`· qwen`** callout (it's the proof the model is in the loop), or
+*"any brain — swap the model"*.
 
 ---
 
-## What changed from the DASHBOARD cut, and why
+## What changed from the "QWEN BRAIN" cut, and why
 
 | Old | New | Why |
 |---|---|---|
-| Hook: "home automation is closed" | Hook: "AI lives in three boxes; the real world doesn't have a brain" | The old hook picks a fight with Home Assistant — a small market. The new one picks a *frontier*, and makes Qwen the protagonist instead of the dependency. |
-| Movement 2 was a **dashboard tour** (cadence slider, heartbeat) | Movement 2 is **"any hardware, one command, self-describing"** | The tour showed *our* setup. The new beat shows the viewer *their own* drawer of parts working. This is the thesis beat — it must not be UI garnish. |
-| "Qwen turns that into a running **watch**" | "Qwen Cloud **compiles** that into a real, running **script** — I never touched a line of it" | "Watch" is our jargon and sounds like a config row. "Compiles a script you never wrote" is program synthesis, and it's the load-bearing Qwen claim. |
-| Close: "a five-dollar chip and one sentence" | Close: "any hardware, any brain, and Qwen wins the physical world" | Cost alone is a feature. Cost + open + hardware-agnostic + a strategic thesis is a *position*. |
-| Cadence slider (Movement 2) | **cut** | It's a nice toy that costs ~5s and proves nothing about the thesis. The flash-and-self-describe beat buys the same time and carries the argument. |
+| Hero watch: `when temperature over 78 → heater off` | Hero watch: *"someone who isn't family at the door"* | The old hero **was the thing the hook mocks** — a hard-coded threshold. Qwen's only job was typing it. The new hero is a question no number can answer, so the model is load-bearing instead of decorative. |
+| "It runs on the hub, in my house. **Cut the internet, it still fires.**" | "The brain is the cloud. The body still has a spine." | Same fact, opposite argument. The old line sold Qwen as **optional**; a sponsor judge hears "we don't need you." Edge is now the **safety net**, which is what Track 5 actually rewards. |
+| "**No cloud required**" (Movement 4) | **cut entirely** | It was the loudest anti-sponsor line in the cut, at the peak, in the sponsor's own track. |
+| Qwen appears once, at authoring | Qwen appears **at authoring and on every frame** | This was a lie the code told: cloud/vision watches were filtered out and never evaluated. Fixed in `backend/src/vision-watch.ts` — now it's true, so we can say it. |
+| Memory objects: unused | Alex's photo **linked to the watch**, reasoned over | `memoryIds` was stored and never read. Now it narrows the reference set Qwen-VL compares against — a beat that shows *teaching* the model, not configuring it. |
+| Proof = a tile climbing `76 → 78 → 79` | Proof = **a verdict with reasoning**, stamped `· qwen` | A climbing number proves a sensor works. A reasoning line proves a **brain** works. |
+
+---
+
+## Honesty guardrails — read before you claim anything on camera
+
+The vision loop is **real code on a real path** (`hub/camera.mjs` → OSS → `backend/src/vision-watch.ts` → `qwen-vl-plus`),
+and `npm run vision-watch-check` proves the gate and the cadence floor with no key. But:
+
+1. **The live Qwen-VL leg is UNVERIFIED until a key exists.** `vision-watch-check` reports legs A and D as **SKIPPED**
+   without `QWEN_API_KEY` + `OSS_BUCKET` — deliberately, rather than passing on a mock. **Run it green before shoot day.**
+   Without a key, `judge()` silently falls back to `mockJudge` and the feed will stamp **`· local`**, not **`· qwen`** —
+   which is exactly the beat this cut is built on. *This is the single biggest risk to the shoot.*
+2. **"One command flashes a board you already own"** is true for the **ESP32 family**. Say *"a board you already own"* —
+   never *"literally any hardware"* on camera. The dashboard/hub layer is genuinely hardware-agnostic; the flash path is not.
+3. **Don't say Qwen-VL runs on the hub.** It doesn't, by design — the hub has no Qwen client. The cut says the opposite
+   on purpose ("the brain is the cloud"), so this is aligned, but don't improvise around it.
+4. **The `vision` tag is a label the authoring model gives itself**, not a fact about execution. What actually routes a
+   watch to Qwen-VL is `compiledSpec.kind === 'cloud'`. If the tag and the behaviour disagree on camera, believe the feed.
+5. **Do NOT show** the account-menu **`🔥 Live demo`** item or the `/demo` route — its "vision" is `qwen-plus` reading a
+   hardcoded English sentence (`use-simulation.ts`), and its Qwen-VL badge is cosmetic. Real dashboard only.
 
 ---
 
 ## Quick-build features that make the demo sing (in priority order)
 
-Small wins so the on-camera footage is **real by shoot day** — not narrated over a static screen. Each is scoped to be a
-same-day build.
-
 | # | Feature | Why it lands on camera | Rough scope |
 |---|---|---|---|
-| **1 — REQUIRED** | **Live-streaming Activity feed + watch-card "fired" flash.** When a watch fires, the feed appends `🔥 Fired · ⚡ Actuated · 📨 Notified` **without a manual Refresh**, and the firing card pulses ember ~1s. | The 1:24–1:56 payoff. Today the feed only updates on `↻ Refresh` — on camera it must stream *as you warm the board*. | Reuse the `useHubLive` WebSocket to push run-events (or poll `listEvents(20)` every ~2s while recording); `Animated` ember flash on the card whose `watchId` matches the newest `fired` event. |
-| **2 — REQUIRED** | **Qwen wiring assistant — "Add a device."** Type a sensor in plain words (*"add a soil sensor"*) → Qwen returns a **wiring recipe** (`VCC→3V3 · GND→GND · signal→GPIO4`), the one-line flash command, and the `DESCRIBE` it'll announce. | Carries the **close** *and* the thesis: anyone can add hardware without a datasheet. Promoted above the Test button — this cut is about *any hardware*, so the beat that proves it is load-bearing. | One Qwen call, system-prompted with the ESP32 pin map → pinout + firmware flag (`SENSOR_PIN`, `DHT_PIN`). NL-in / recipe-out. Reuses the existing Qwen client. |
-| **3 — REQUIRED** | **Test-fire button on each watch card.** A small `Test →` next to Edit/Delete that runs the action chain on cue. | Insurance for the hero take: the hand-warm is the star, but an on-cue trigger gets clean screen footage without re-warming hardware. A *real* fire, hand-triggered. | Button → POST to `runWatch(id)` (the hub already fires + actuates + notifies + logs the same events). |
-| **4 — nice** | **Self-describe moment on screen.** When a freshly flashed node checks in, briefly surface its announced capabilities (`temperature · relay`) as a toast or a new-tile flash. | This *is* Movement 2's proof — right now the node appearing is easy to miss on camera. | Toast fed by the existing node-registration event. |
-| **5 — nice** | **"Armed" status line under "Your home."** — **`Armed · 3 watches running locally`**. | Vocal anchor at 0:45; sells autonomy at a glance. | Copy + one derived count; reuse `Pill`. |
-| **6 — optional** | **Fire toast** — `🔥 Nursery 79° — heater off. You're notified.` | A second unmissable "it just happened" beat; reads on a phone-sized recording. | `Animated` toast on the same stream as #1. |
-
-**Honesty guardrail:** #1–#4 are real behaviors — the hub already fires/actuates/notifies and logs events, the node
-already self-describes on flash, and the wiring assistant is a thin Qwen prompt over the real ESP32 pin map. We're
-surfacing what exists and adding an on-cue trigger.
-
-**One claim to keep honest in Movement 2:** *"one command flashes a board you already own"* is true for the **ESP32
-family** today. Say **"a board you already own"** or **"any ESP board in your drawer"** — do **not** say *"literally any
-hardware"* on camera. The dashboard/hub layer is genuinely hardware-agnostic; the flash path is ESP-family. The written
-close ("Any hardware") is the *project's* direction and sits next to the repo URL, which is fair; the *spoken* line
-should stay board-specific.
+| **1 — REQUIRED** | **Live-streaming Activity feed + watch-card "fired" flash.** The feed appends `🔥 Fired · qwen` **without a manual Refresh**, and the firing card pulses ember ~1s. | The 1:22–2:04 payoff. The relay currently only carries `readings` (`frontend/src/lib/live.ts:133`), so a fire needs a Refresh — fatal for the peak. | Add an `events` message to the relay + a `pushEventsToAccount` on the fire path in `/hub/frame`; handle it in `useHubLive`. |
+| **2 — REQUIRED** | **Green `vision-watch-check` with a real key.** | Guardrail #1. Everything else is theatre if the model isn't really in the loop. | Provision `QWEN_API_KEY` + OSS, run it. No new code. |
+| **3 — REQUIRED** | **Qwen wiring assistant — "Add a device."** *"add a soil sensor"* → wiring recipe + flash command. | Carries the close. **Not built** — `build-a-node.tsx` is static content with no model call. | One Qwen call system-prompted with the ESP32 pin map. NL-in / recipe-out. |
+| **4 — REQUIRED** | **Test-fire on each watch card.** A small `Test →` that runs the chain on cue. | Insurance for the hero take — a real fire, hand-triggered, without waiting for a visitor. | Button → `runWatch(id)`; for a vision watch, re-judge the latest frame. |
+| **5 — nice** | **Show the reasoning line in the feed, not just the verdict.** | *"that's not Alex"* on screen **is** the peak. If the row only says `Fired`, the judgment is invisible. | The row already carries `reasoning`; surface it on the card. |
+| **6 — nice** | **Self-describe toast** when a freshly flashed node checks in (`camera · relay`). | Movement 2's proof — easy to miss on camera. | Toast on the existing node-registration event. |
 
 ---
 
-## On-screen strings the presenter points at (all real, all shipped)
+## On-screen strings the presenter points at
 Verified against `frontend/src/app/dashboard.tsx`. Match the spoken word to the pixel.
 
 - Header: **`Your home`** · chips **`hubs` `devices` `sensors` `watches`** · **`↻ Refresh`**
-- Sensors: live badge **`live`** (green, breathing) / `connecting…` / `hub offline`; per-tile **heartbeat** ping, **TTL bar**, cadence readout `0.5s … 60s`; boolean sensors read **`on`/`off`**.
-- Describe card: **`Describe a new watch`**, placeholder **`Warn me if the garage is left open after dark…`**, button **`Author →`**.
-- Watch card: **`when <trigger> → <action>`**, tags **`local`** / `cloud` / `vision`, `Edit` / `Delete` (+ **`Test →`** once #3 ships). Edit mode: **`Re-compile →`**.
-- Activity: **`✍️ Authored`** · **`🔥 Fired`** · **`⚡ Actuated`** · **`📨 Notified`** (+ `⏳ Held`, `📡 Offline`, `🔌 Reconnected`), each with `· <model>` and a `5m ago` stamp.
-
-**Do NOT show on camera:** the account-menu **`🔥 Live demo`** item or the `/demo` route — real dashboard only.
-
----
+- Sensors: live badge **`live`** / `connecting…` / `hub offline`; per-tile **heartbeat**, **TTL bar**, cadence readout `0.5s … 60s`.
+- Camera card: snapshot preview + **snap-rate** slider — *this is literally how often Qwen gets to look.* Worth one pointed beat.
+- Describe card: **`Describe a new watch`**, button **`Author →`**.
+- Watch card: **`when <trigger> → <action>`**, tags **`local`** / `cloud` / `vision`, `Edit` / `Delete`.
+- Activity: **`✍️ Authored`** · **`🔥 Fired`** · **`⚡ Actuated`** · **`📨 Notified`** (+ `⏳ Held`), each with `· <model>` and a `5m ago` stamp.
 
 ## Movement → rubric map
 | Movement | Serves |
 |---|---|
-| 1 · Hook — "the real world has no brain" | **Innovation + Impact**: a frontier, not a gadget category |
-| 2 · Any hardware — flash → self-describe → live on screen | **Impact + Tech**: zero-barrier onboarding on hardware you already own; the open-platform thesis, proven not asserted |
-| 3 · The ask — Describe → Author → running script (`local` tag) | **Innovation + Tech**: Qwen as program synthesis; no coding knowledge required; runs at the edge |
-| 4 · The proof *(peak)* — hand → tile climbs → feed streams → phone buzzes | **Tech**: the whole chain fires on real hardware, on-screen |
-| 5 · The close — wiring AI + any hardware + model-swappable + "win the physical world" | **Impact + Innovation**: cheap, open, buildable baseline infrastructure — and a strategic argument for Qwen itself |
+| 1 · Hook — "the world has no judgment" | **Innovation + Impact**: a frontier, not a gadget category |
+| 2 · Any hardware — flash → self-describe → live | **Impact + Tech**: zero-barrier onboarding on hardware you already own |
+| 3 · The ask — a question no number can answer, + memory | **Innovation + Tech**: Qwen as program synthesis *and* as the thing that runs |
+| 4 · The proof *(peak)* — Qwen-VL looks → judges → acts → the spine holds | **Tech**: the model is in the runtime loop, on real hardware, on camera |
+| 5 · The close — wiring AI + model-swappable + "win the physical world" | **Impact + Innovation**: cheap, open, buildable infrastructure — and a strategy for Qwen itself |
 
 ## Shot list
-- `[CAM]` host takes: hook (0:00), close (1:56 → to camera over the end card).
-- `[SHOOT]` **bare board in palm** (Movement 2 opener); the **hero proof take** — hand cupping the ESP32 with the dashboard in one frame, several passes; the **phone buzz** (hold ~1.5s).
-- `[SCREEN]` the **flash command + node self-appearing**; "Your home" + chips + green `live`; Describe→Author→new watch card; the proof (tile climb + card flash + Activity stream); the 4s **wiring-assistant** flash; end card.
-- Optional B-roll: 0.5s each of a chat window / code editor / slide deck under the hook's "three boxes."
+- `[CAM]` host takes: hook (0:00), close (2:04 → to camera over the end card).
+- `[SHOOT]` bare board in palm; **the hero take** — someone at the door with the dashboard in one frame, several passes; the **phone buzz** (hold ~1.5s); the **cable pull**.
+- `[SCREEN]` flash command + node self-appearing; "Your home" + green `live`; Describe→Author→`vision` card; linking Alex's photo; the proof (camera tile → card flash → `🔥 Fired · qwen` + reasoning); the 4s wiring-assistant flash; end card.
 
 ## Production notes
-- **Sign in first** — `/dashboard` redirects to `/signin` when signed out; use a clean demo account (e.g. `demo@hearth…`).
-- **Get the live badge green before rolling** — hub checked in and streaming, one tile updating on its own.
-- **Movement 2 flash shot:** do a real flash on a board that is *not* yet registered, so the node genuinely appears on the dashboard by itself. Rehearse it — but the take should be a real check-in, not a cut.
-- **Pre-author nothing you'll type on camera** — author the nursery watch live so `✍️ Authored` lands in the feed; pre-create one or two extra watches so the screen isn't empty.
-- **Wiring-assistant capture (close):** pre-run *"add a soil sensor"* once so you know the exact recipe, then capture clean. **Pin recipe only** (~4s) — it's a punchline, not a lesson.
-- **Make the actuator read on camera:** a bigger LED or relay+lamp on `ACTUATOR_PIN` (`ACTUATOR_ACTIVE_HIGH 0` for active-low) so "cut the heater" is visible. Still 100% real.
-- **Phone push:** `export NTFY_TOPIC=hearth-<unique>` + the free ntfy app, foregrounded, before recording.
-- **Ship #1–#3 before the shoot** — the live feed carries the payoff, the wiring assistant carries the close, the Test button de-risks the hero take.
+- **Sign in first** — `/dashboard` redirects to `/signin` when signed out; use a clean demo account.
+- **Green `vision-watch-check` first.** See guardrail #1. Everything below assumes the feed can stamp `· qwen`.
+- **Get the live badge green before rolling** — hub checked in and streaming.
+- **Camera:** OBS→RTMP or a real webcam via `hub/camera.mjs`. Set the snap cadence fast enough that the judgment lands within the take (a slow cadence = dead air at the peak).
+- **Upload Alex's photo before the shoot**, but **link it to the watch on camera** — the linking beat is the "teach it who your family is" moment.
+- **The stranger** should be visually unmistakable from the reference photo. Don't make Qwen-VL's job subtle on the one take that matters.
+- **Phone push:** `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` is the only channel that needs no Alibaba setup (`backend/src/notify.ts`); foreground the app before recording.
+- **Make the actuator read on camera** — a lamp or relay on `ACTUATOR_PIN` so "it did something" is visible.
 
 ## Open calls (yours)
-1. **The Movement 2 flash beat** is new and is the thesis — it needs a real unregistered board on shoot day. Confirm you'll have one, or we fall back to narrating over the existing node list (weaker, but survivable).
-2. **Scenario** — "nursery over 78" is filmable today. Swap the noun (fridge, greenhouse, garage) if a room shoots better, but keep it **temperature-based** to match the real fire.
-3. **Voice** — VO in post, or on-camera throughout?
-4. **Firmware still needs an on-device flash to verify** the actuator before the payoff shot (no ESP toolchain in CI).
+1. **The key.** Guardrail #1 is the whole cut. If `QWEN_API_KEY` + OSS won't land before shoot day, say so now — the fallback is a much weaker cut, and I'd rather rewrite early than film a `· local` stamp.
+2. **The Movement 2 flash beat** needs a real unregistered board on shoot day. Confirm, or we narrate over the existing node list (weaker, but survivable).
+3. **Scenario** — "someone who isn't family at the door" is the strongest *argument*. Swap the noun (a delivery, a pet on the couch, a car in the drive) if it shoots better, but keep it **a question a number can't answer**.
+4. **Voice** — VO in post, or on-camera throughout?
