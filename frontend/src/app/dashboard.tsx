@@ -16,6 +16,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AuthMenu } from '@/components/auth-menu';
+import { CostQuote } from '@/components/cost-quote';
 import { Card, GlowOrb, Pill, Wordmark, useResponsive } from '@/components/landing/ui';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/auth/context';
@@ -699,6 +700,9 @@ export default function DashboardScreen() {
                         <Text style={{ color: theme.textMuted }}> → </Text>
                         {w.action}
                       </Text>
+                      {/* What it costs, before you ever look at a bill. A local watch
+                          says "$0 · runs on your hub" — that's the point, not silence. */}
+                      <CostQuote watch={w} home={home} />
                       <WatchMemory
                         theme={theme}
                         watch={w}
