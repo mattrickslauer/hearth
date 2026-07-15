@@ -18,6 +18,44 @@ interface HubMeta {
   fw?: string;
 }
 
+/**
+ * One authored watch, in the shape the hub's runtime wants (hub/runtime.mjs fromCloud).
+ * `actuates` stays as actuator INPUT IDS ("<nodeId>.<key>") — the hub splits them against
+ * its live node registry, since it owns node identity and actuator keys may contain dots.
+ */
+export interface HubWatch {
+  id: string;
+  title: string;
+  compiledSpec: unknown;
+  fire: unknown;
+  actuates: string[];
+  notify: string | null;
+}
+
+/**
+ * The account's LOCAL watches, for the device-sync downlink. This is what closes the
+ * "author it in the app → it runs on the hardware" loop: the hub adopts these on every
+ * sync, so there is no copy-paste step and no hub restart.
+ *
+ * Cloud/vision watches are filtered out — the hub has no Qwen client, so it would have
+ * nothing to do with them (they're evaluated app-side today).
+ */
+export async function hubWatches(store: HomeStore): Promise<HubWatch[]> {
+  const questions = await store.listQuestions();
+  return questions
+    .filter((q) => q.compiledSpec?.kind === 'local' && q.compiledSpec.local?.expr)
+    .map((q) => ({
+      id: q.id,
+      title: q.title,
+      compiledSpec: q.compiledSpec,
+      fire: q.fire,
+      actuates: Array.isArray(q.actuates) ? q.actuates : [],
+      // The hub pushes to whatever channel it has configured (ntfy/Telegram); it only needs
+      // to know WHETHER to push and what to say.
+      notify: q.push ? q.action || q.title : null,
+    }));
+}
+
 export interface SyncResult {
   ok: true;
   hubId: string;

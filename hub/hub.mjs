@@ -327,6 +327,11 @@ async function syncToCloud() {
       // them up on its next ingest POST.
       applyCadences(data.cadences);
       applyDesired(data.desired);
+      // …and the account's authored watches. This is the "describe it in the app → it runs
+      // on my hardware" link: the sync is debounced onto live readings, so a watch you just
+      // authored starts running here about a second later. Same downlink as the shadow —
+      // the hub pulls, so no inbound port and an outage just delays it.
+      runtime.setWatches(data.watches);
     } else if (status === 401 || status === 403) {
       // Token invalid or hub unpaired → drop it and re-pair. Re-enroll surfaces a fresh code.
       console.log(`[hub→cloud] rejected ${status}: ${data.error || 'unpaired'} — re-pairing.`);
