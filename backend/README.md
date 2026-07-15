@@ -54,15 +54,21 @@ curl -XPOST localhost:9000/mcp/call -d '{"tool":"suggest_runs","args":{}}'
    The `tablestore` SDK is bundled into `dist/server.cjs` at build (esbuild), so no
    `node_modules` is needed on the function. Code lives in `src/tablestore.ts` +
    `src/auth.ts`.
-3. **Tablestore (data plane: home/readings)** — ⏳ remaining. `createTablestore()` in
-   `src/store.ts` still throws (loud). The Home Model + append-heavy readings/events are
-   a time-series shape — implement on `src/tablestore.ts` (tables `twin`, `readings`,
-   `questions`, `records`, `events`) or point at a TSDB (Lindorm). Use `HEARTH_STORE=file`
-   locally until then.
-4. **OSS snapshots** — presigned GET/PUT in `get_snapshot` (currently
-   `provisioned:false`). Raw frames stay local; only minimized frames get a temp URL.
-5. **IoT device shadow** — `actuate` publishes desired-state to the hub
-   (currently `provisioned:false`). This is the edge↔cloud link (docs `01` OD-1).
+3. **Tablestore (data plane: home/watches)** — ✅ **shipped.** `createTablestore()` →
+   `TablestoreStore.open()` in `src/store.ts` is fully implemented (it only throws if the
+   SDK is missing). The `hearth_home` table auto-creates on first use; hub pairings live in
+   its `_hubs` partition. Live health reports `store:"tablestore"`. Use `HEARTH_STORE=file`
+   locally if you'd rather not hit the cloud.
+4. **OSS snapshots** — ✅ **shipped.** Real `ali-oss` client in `src/oss.ts`, bucket
+   `hearth-vision-c11d45` (provision with `npm run oss-provision`), presigned GET/PUT in
+   `get_snapshot`. Stores camera frames + household reference photos Qwen-VL reads.
+   Unset `OSS_BUCKET` → images fall back to inline base64.
+   ⚠️ **Frames are stored raw** — the `transform: crop|redact|downscale` policy field is
+   accepted but **not yet enforced**. Don't describe this as a privacy filter.
+5. **Device shadow** — ✅ shipped, but **DIY, not Alibaba IoT Platform**. `actuate` writes
+   desired-state via `store.setDesired()`; the hub polls and applies it (`hub/hub.mjs`
+   `applyDesired`) and the firmware honors its safety veto. Docs `01` OD-1 planned IoT
+   Platform; we didn't build it.
 
 ## Deploy to Function Compute
 
@@ -102,13 +108,16 @@ your judge-accessible "Proof of Alibaba Cloud Deployment".
 
 | Piece | State |
 |---|---|
-| Home MCP tool catalog (11 tools) | ✅ real, typed, tested |
-| Authoring (NL → compiled Question) | ✅ real (Qwen w/ key, deterministic fallback) |
-| Runtime judge (verdict + reasoning) | ✅ real (Qwen w/ key, fallback) |
-| Accounts + OTP store (signups) | ✅ real (Tablestore w/ `HEARTH_STORE=tablestore`); in-memory/file otherwise |
-| Home Model + readings/events store | ✅ in-memory/file; Tablestore HomeStore still a stub (data plane) |
-| `notify` via Telegram | ✅ works with a bot token (no Alibaba needed) |
-| Snapshots (OSS), actuation (IoT shadow) | ⏳ shapes final, `provisioned:false` until account exists |
+| Home MCP tool catalog (**20 tools** live) | ✅ real, typed, tested |
+| Authoring (NL → compiled Question) | ✅ real — `qwen-plus` w/ key, deterministic fallback |
+| Runtime judge (verdict + reasoning) | ✅ real — routes to **`qwen-vl-plus`** when frames/reference photos are passed |
+| Accounts + OTP store (signups) | ✅ real (Tablestore) |
+| Home Model + watches store | ✅ real (Tablestore, `hearth_home`); file/in-memory fallback |
+| Snapshots (OSS) | ✅ real (bucket `hearth-vision-c11d45`, presigned URLs) |
+| Actuation (DIY device shadow) | ✅ real (`setDesired` → hub poll → firmware, safety veto honored) |
+| `notify` via Telegram / ntfy | ✅ works with a bot token (no Alibaba needed) |
+| **Judge auto-invoked from a camera frame** | ⏳ **not wired.** `judge()` works and is proven by `npm run qwen-vl-check`, but no code path automatically feeds a stored frame to it — `POST /qwen` is manual. |
+| **Frame minimization / redaction** | ⏳ **not implemented.** `transform` is stored, never applied. |
 
 ## Auth (passwordless email OTP)
 

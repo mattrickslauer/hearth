@@ -24,6 +24,7 @@ yarn-error.*
 *.tsbuildinfo
 .vscode/*
 !.vscode/extensions.json
+.claude/
 
 # local hub identity (default lives in ~/.hearth; this covers dev overrides in-repo)
 hub/.sim-hub-state.json

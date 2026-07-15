@@ -71,10 +71,17 @@ node (ESP32)                      hub (hub.mjs + runtime.mjs)
 - **`engine.mjs`** is a faithful port of the browser demo's evaluator
   (`frontend/src/demo/engine/*`) — it interprets the exact `PredicateNode` grammar Qwen emits,
   so a watch authored in the cloud runs unchanged on the hub, against **real wall-clock time**.
-- **Watches** are read from `~/.hearth/watches.json` (override `HUB_WATCHES_FILE`). Author one in
-  plain English in the Hearth app (real Qwen compiles the spec) and drop it in, or start from
-  [`watches.example.json`](watches.example.json). Only `kind: "local"` watches run on the hub;
-  vision (cloud) watches still run in the app.
+- **Watches arrive from the cloud.** Describe one in plain English in the Hearth app; Qwen compiles
+  it, and this hub adopts it on its next device sync — debounced onto live readings, so it's running
+  on your hardware about a second later. Nothing to copy, nothing to restart. Editing or deleting it
+  in the app propagates the same way. Only `kind: "local"` watches run here; vision (cloud) watches
+  still run in the app.
+  - The set is cached to `~/.hearth/watches.json` (override `HUB_WATCHES_FILE`), so a hub that
+    reboots with no internet keeps running the last-known watches. Hand-write that file to run
+    **unpaired** or to test without the app — see [`watches.example.json`](watches.example.json).
+  - **Reference inputs as `<nodeId>.<sensorKey>`** (e.g. `node-a1b2.board.temp`) — the same id the
+    cloud uses. A bare `board.temp` resolves only while exactly one node reports it; with two, the
+    hub warns and reads no-data rather than firing on whichever node reported last.
 - **Notifications** (`notify.mjs`): set `NTFY_TOPIC` (install the free **ntfy** app, no account) or
   `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`. With neither set, fires still actuate + log; you just
   don't get a push. Nothing is faked — a channel reports delivered only when the provider accepts it.

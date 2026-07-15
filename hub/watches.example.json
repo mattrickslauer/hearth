@@ -1,11 +1,13 @@
 [
   {
-    "_comment": "Copy to ~/.hearth/watches.json (or set HUB_WATCHES_FILE). `compiledSpec` is exactly what Qwen emits when you author a watch in plain English — author one in the Hearth app and paste its spec here, or hand-write one like this. Replace nodeId with your node's id (printed as `id node-XXXX` on boot / shown in `curl http://localhost:8899/nodes`). Calibrate the threshold: run the node, note the idle board.temp, set `right` a few degrees above it, then cup the chip in your hand to cross it.",
+    "_comment": "YOU PROBABLY DON'T NEED THIS FILE. A paired hub pulls your authored watches from the cloud on every device sync — describe one in the Hearth app and it starts running here within about a second; this file is then rewritten with the cloud's set as an offline cache (so a reboot with no internet keeps running them). Hand-write a watch here only to run the hub UNPAIRED, or to test without the app. `compiledSpec` is exactly what Qwen emits.",
+    "_inputs": "Reference an input as `<nodeId>.<sensorKey>` (e.g. `node-a1b2.board.temp`) — the same id the cloud uses. A bare `board.temp` still resolves IF only one node reports it; with two such nodes the hub warns and reads no-data rather than firing on whichever reported last. Your node id prints as `id node-XXXX` on boot and in `curl http://localhost:8899/nodes`.",
+    "_calibrate": "Run the node, note the idle board.temp, set `right` a few degrees above it, then cup the chip in your hand to cross it.",
     "id": "w-hot-board",
     "title": "Warn me if the board gets hot",
     "compiledSpec": {
       "kind": "local",
-      "local": { "expr": { "op": ">", "left": { "input": "board.temp" }, "right": 58 } }
+      "local": { "expr": { "op": ">", "left": { "input": "node-REPLACE_WITH_YOUR_NODE_ID.board.temp" }, "right": 58 } }
     },
     "fire": { "edge": "rising", "cooldown": "30s" },
     "actuate": [{ "nodeId": "node-REPLACE_WITH_YOUR_NODE_ID", "actuator": "led", "value": "on" }],

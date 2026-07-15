@@ -29,7 +29,7 @@ import {
   type AuthDeps,
 } from './auth';
 import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore, hubView } from './hubs';
-import { syncHubDevices } from './hub-devices';
+import { hubWatches, syncHubDevices } from './hub-devices';
 import { relayConfig, relayEnabled, publishToRelay } from './relay';
 import { putFrame, ossProvisioned } from './oss';
 
@@ -257,7 +257,14 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       // Downlink: hand the hub the account's desired per-sensor cadences AND desired actuator
       // states. The hub relays each to its node on the node's next ingest POST — the only
       // downlink path. `desired` is the "desired" half of the device shadow the node converges to.
-      return send(res, 200, { ...result, cadences: await store.getCadences(), desired: await store.getDesired() });
+      // `watches` rides the same downlink: the hub adopts the account's authored local watches
+      // on every sync, so "describe it in the app" reaches real hardware with no copy-paste.
+      return send(res, 200, {
+        ...result,
+        cadences: await store.getCadences(),
+        desired: await store.getDesired(),
+        watches: await hubWatches(store),
+      });
     }
 
     // A paired hub pushes its latest camera frame (a data: URI) for one vision input. The bytes
