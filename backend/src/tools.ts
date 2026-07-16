@@ -150,6 +150,30 @@ export const TOOLS: Tool[] = [
     handler: (_a, { store }) => store.listHubDevices(),
   },
   {
+    name: 'remove_hub_device',
+    description:
+      'Forget a hub-reported node and every sensor on it. Takes a node id ("hub-cam") or any of its input ids ("hub-cam.cam.frame"). Use this to clear out a device that is no longer physically there — typically a leftover listed twice after a hub re-enrolled. A node that IS still attached reappears on its hub next sync, so this cannot be used to mute live hardware (set its cadence instead).',
+    mode: ['authoring'],
+    parameters: {
+      type: 'object',
+      properties: { node: { type: 'string', description: 'node id, or an input id on that node' } },
+      required: ['node'],
+      additionalProperties: false,
+    },
+    handler: async (a, { store }) => {
+      const ref = str(a.node);
+      const snaps = await store.listHubDevices();
+      // Sensor keys contain dots ('cam.frame'), so an input id can't be split on the first dot.
+      // Resolve against the live registry instead: the node whose id prefixes the ref, longest
+      // match first so a node id that prefixes another can't shadow it.
+      const ids = [...new Set(snaps.flatMap((s) => s.nodes.map((n) => n.id)))].sort((x, y) => y.length - x.length);
+      const nodeId = ids.find((id) => ref === id || ref.startsWith(`${id}.`));
+      if (!nodeId) throw new Error(`unknown hub device: ${ref}`);
+      const removed = await store.removeHubNode(nodeId);
+      return { ok: true, node: nodeId, snapshots: removed };
+    },
+  },
+  {
     name: 'list_questions',
     description: 'List the authored Questions (watches) currently deployed on the home.',
     mode: ['authoring', 'runtime'],

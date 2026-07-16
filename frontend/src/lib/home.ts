@@ -167,6 +167,17 @@ export const linkWatchMemory = (id: string, memoryIds: string[], token?: string 
 export const suggestRuns = (token?: string | null) =>
   call<{ suggestions: string[]; brain: string }>('suggest_runs', {}, token);
 
+/**
+ * Forget a hub-reported device and all its sensors. Takes any input id on the node — the
+ * backend resolves it to the node, since sensor keys have dots in them too.
+ *
+ * `snapshots` is how many hubs were reporting it: >1 means this was the duplicate case, and
+ * the node was cleared from a leftover hub as well as the live one. Still-attached hardware
+ * re-registers on the next sync, so only genuinely-gone devices stay gone.
+ */
+export const removeSensor = (input: string, token?: string | null) =>
+  call<{ ok: boolean; node: string; snapshots: number }>('remove_hub_device', { node: input }, token);
+
 /* --- reference memory: named, tagged objects Qwen-VL reasons over (family, pets, vehicles…) --- */
 
 export interface MemoryObject {

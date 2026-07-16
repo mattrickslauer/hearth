@@ -46,10 +46,12 @@ import {
   listWatches,
   newerReading,
   readInput,
+  removeSensor,
   setCadence,
   updateWatch,
   type Cadences,
   type ContextSuggestion,
+  type HomeCapability,
   type HomeModel,
   type MemoryObject,
   type Reading,
@@ -139,6 +141,10 @@ export default function DashboardScreen() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [watchError, setWatchError] = useState<string | null>(null);
+
+  // Removing a hub-reported device: the input id in flight, and what to say about it afterwards.
+  const [removingSensor, setRemovingSensor] = useState<string | null>(null);
+  const [sensorNotice, setSensorNotice] = useState<string | null>(null);
 
   const [savingTune, setSavingTune] = useState(false);
   const [tuneError, setTuneError] = useState<string | null>(null);
@@ -360,6 +366,34 @@ export default function DashboardScreen() {
     }
   };
 
+  /**
+   * Forget a hub-reported device. Removal is by NODE, so every sensor on it goes at once —
+   * a camera node is one sensor, but an ESP32 is usually several, and pruning one key while
+   * leaving the node would just have the hub re-report it on the next sync.
+   *
+   * We reload rather than filter locally: the node is gone from the Home Model, and its
+   * capabilities, readings and hub grouping all derive from that.
+   */
+  const removeSensorNode = async (cap: HomeCapability) => {
+    if (removingSensor) return;
+    setRemovingSensor(cap.id);
+    setSensorNotice(null);
+    try {
+      const { node, snapshots } = await removeSensor(cap.id, token);
+      closeSheet();
+      await load();
+      setSensorNotice(
+        snapshots > 1
+          ? `Removed “${node}” — it was being reported by ${snapshots} hubs, so the leftover copy is gone too.`
+          : `Removed “${node}”. If it's still plugged in, it'll re-register on the next hub sync.`,
+      );
+    } catch (err) {
+      setSensorNotice((err as Error).message);
+    } finally {
+      setRemovingSensor(null);
+    }
+  };
+
   // Ask one sensor to sample faster/slower. Optimistic: reflect the choice at once, then let
   // the hub relay it to the node — that sensor's readings speed up within a few seconds.
   const changeCadence = async (input: string, ms: number) => {
@@ -447,6 +481,20 @@ export default function DashboardScreen() {
                   EXPO_PUBLIC_BACKEND_URL points at it.
                 </Text>
               </View>
+            ) : null}
+
+            {/* Outcome of a device removal. Lives above the tabs because the camera you removed
+                sits on 'home' and the sensor you removed sits on 'sensors' — same message either
+                way. Tap to dismiss; it's an outcome, not a state. */}
+            {sensorNotice ? (
+              <Pressable
+                onPress={() => setSensorNotice(null)}
+                accessibilityRole="button"
+                accessibilityLabel={`${sensorNotice}. Tap to dismiss.`}>
+                <View style={[styles.noticeCard, { borderColor: theme.border, backgroundColor: theme.card }]}>
+                  <Text style={[styles.errBody, { color: theme.textSecondary }]}>{sensorNotice}</Text>
+                </View>
+              </Pressable>
             ) : null}
 
             {tab === 'home' ? (
@@ -696,7 +744,18 @@ export default function DashboardScreen() {
         open={sheet.kind === 'sensor' && !!sheetSensor}
         onClose={closeSheet}
         title={sheetSensor?.label ?? 'Sensor'}
-        subtitle={sheetSensor?.id}>
+        subtitle={sheetSensor?.id}
+        footer={
+          sheetSensor ? (
+            <PillButton
+              label="Remove"
+              tone="danger"
+              grow
+              busy={removingSensor === sheetSensor.id}
+              onPress={() => removeSensorNode(sheetSensor)}
+            />
+          ) : null
+        }>
         {sheetSensor ? (
           <SensorSheetBody
             cap={sheetSensor}
@@ -711,7 +770,18 @@ export default function DashboardScreen() {
         open={sheet.kind === 'camera' && !!sheetCamera}
         onClose={closeSheet}
         title={sheetCamera?.label || 'Camera'}
-        subtitle="Sampled, not streamed.">
+        subtitle="Sampled, not streamed."
+        footer={
+          sheetCamera ? (
+            <PillButton
+              label="Remove"
+              tone="danger"
+              grow
+              busy={removingSensor === sheetCamera.id}
+              onPress={() => removeSensorNode(sheetCamera)}
+            />
+          ) : null
+        }>
         {sheetCamera ? (
           <CloudCameraSheetBody
             cadenceMs={cadences[sheetCamera.id]}
@@ -886,6 +956,7 @@ const styles = StyleSheet.create({
   suggestWhy: { fontFamily: Fonts?.sans, fontSize: 13, lineHeight: 19 },
 
   errCard: { borderRadius: Radius.md, borderWidth: 1, padding: Spacing.three },
+  noticeCard: { borderRadius: Radius.md, borderWidth: 1, padding: Spacing.three },
   errTitle: { fontFamily: Fonts?.sans, fontSize: 15, fontWeight: '700' },
   errBody: { fontFamily: Fonts?.mono, fontSize: 12.5, marginTop: 4 },
   errHint: { fontFamily: Fonts?.sans, fontSize: 13, lineHeight: 19, marginTop: 6 },
