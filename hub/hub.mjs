@@ -158,6 +158,39 @@ let live = null;
 // its snap cadence. Null when disabled — every use is guarded.
 let camera = null;
 
+// Bring the camera up. Idempotent — shared by boot (HEARTH_CAM=1) and a live
+// POST /camera {enabled:true}, so attaching a camera never requires a hub restart.
+function startCamera(sourceOverride) {
+  if (camera) return;
+  // Push each snapped frame up to the cloud (→ OSS) so any dashboard, on any network, and the
+  // Qwen-VL judge pull it by presigned URL — the scalable path, no per-hub URL to hardcode.
+  // No-op until paired (the LAN GET /frame still serves it); errors are logged, never fatal.
+  const pushFrame = async (input, dataUri) => {
+    if (!hubToken) return;
+    try {
+      const { ok, status, data } = await api('/hub/frame', { input, image: dataUri }, hubToken);
+      if (!ok) console.log(`[cam→cloud] frame push rejected ${status}: ${data.error || 'unknown'}`);
+    } catch (e) {
+      console.log(`[cam→cloud] frame push failed: ${e.message}`);
+    }
+  };
+  camera = createCamera({ ingest, onFrame: pushFrame, source: sourceOverride });
+  camera.start();
+  console.log(`[hub] camera enabled — frames pushed to cloud + served locally at GET http://<hub>:${PORT}/frame`);
+}
+
+// Tear the camera down. Idempotent. Kills the capture process immediately (the webcam LED
+// goes dark now, not at the next restart) and drops the node from the registry, so the next
+// cloud sync stops listing it instead of leaving a ghost sensor.
+function stopCamera() {
+  if (!camera) return;
+  camera.stop();
+  nodes.delete(camera.id);
+  camera = null;
+  scheduleSync();
+  console.log('[hub] camera disabled — capture stopped, node dropped from the registry');
+}
+
 // The watch runtime: evaluates compiled watches against live node readings and fires
 // (actuate a node + push a phone notification) on a rising edge. It shares the `nodes`
 // registry so it can resolve a node's address to send actuator commands back to it.
@@ -550,22 +583,31 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   // Camera config: GET seeds the dashboard's sliders; POST retunes quality/cadence live
-  // (LAN-direct control, complements the cloud cadence downlink).
+  // (LAN-direct control, complements the cloud cadence downlink). POST {enabled:true|false}
+  // attaches/detaches the camera on the running hub — how `hearthctl camera on|off` avoids
+  // bouncing the whole service (and every node registration with it) to toggle one sensor.
   if (req.url === '/camera') {
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      res.writeHead(405, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+      return;
+    }
+    // Read the body once — the stream can't be consumed twice.
+    const body = req.method === 'POST' ? (await readJson(req)) || {} : {};
+    if (body.enabled === false) {
+      stopCamera();
+      res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      res.end(JSON.stringify({ ok: true, enabled: false }));
+      return;
+    }
+    if (body.enabled === true) startCamera(typeof body.source === 'string' && body.source ? body.source : undefined);
     if (!camera) {
       res.writeHead(404, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
       res.end(JSON.stringify({ error: 'camera disabled' }));
       return;
     }
-    if (req.method === 'POST') {
-      const body = (await readJson(req)) || {};
-      if (body.quality != null) camera.setQuality(Number(body.quality));
-      if (body.cadenceMs != null) camera.setCadence(Number(body.cadenceMs));
-    } else if (req.method !== 'GET') {
-      res.writeHead(405, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-      res.end(JSON.stringify({ error: 'method not allowed' }));
-      return;
-    }
+    if (body.quality != null) camera.setQuality(Number(body.quality));
+    if (body.cadenceMs != null) camera.setCadence(Number(body.cadenceMs));
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
     res.end(JSON.stringify(camera.config()));
     return;
@@ -621,23 +663,8 @@ async function main() {
 
   // Optional camera sensor. Enabled with HEARTH_CAM=1 — it registers itself as a node via the
   // same ingest path, so it flows to the registry, /live, and the cloud like any ESP node.
-  if (process.env.HEARTH_CAM === '1') {
-    // Push each snapped frame up to the cloud (→ OSS) so any dashboard, on any network, and the
-    // Qwen-VL judge pull it by presigned URL — the scalable path, no per-hub URL to hardcode.
-    // No-op until paired (the LAN GET /frame still serves it); errors are logged, never fatal.
-    const pushFrame = async (input, dataUri) => {
-      if (!hubToken) return;
-      try {
-        const { ok, status, data } = await api('/hub/frame', { input, image: dataUri }, hubToken);
-        if (!ok) console.log(`[cam→cloud] frame push rejected ${status}: ${data.error || 'unknown'}`);
-      } catch (e) {
-        console.log(`[cam→cloud] frame push failed: ${e.message}`);
-      }
-    };
-    camera = createCamera({ ingest, onFrame: pushFrame });
-    camera.start();
-    console.log(`[hub] camera enabled — frames pushed to cloud + served locally at GET http://<hub>:${PORT}/frame`);
-  }
+  // Can also be attached/detached live via POST /camera {enabled} — no restart needed.
+  if (process.env.HEARTH_CAM === '1') startCamera();
 
   if (hubToken) console.log(`  Already paired (hub ${state.hubId}, account ${accountId}). Heartbeating + syncing.\n`);
 

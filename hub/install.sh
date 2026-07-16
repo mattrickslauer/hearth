@@ -18,6 +18,8 @@
 #   HEARTH_REF=main          git ref to pull from (default main)
 #   HEARTH_INSTALL_ONLY=1    install but don't start
 #   HEARTH_NO_MDNS=1         skip the mDNS dependency (nodes use HUB_ENDPOINT instead)
+#   HEARTH_CAM=1             attach a detected camera without asking (unattended installs;
+#                            interactive installs are asked, no-tty installs are only hinted)
 
 set -euo pipefail
 
@@ -126,10 +128,47 @@ else
   printf '\n    %s code\n\n' "$DIR/hearthctl"
 fi
 
+# --- offer to attach a camera ------------------------------------------------
+# A machine with a webcam can be a vision sensor with one more command — but only with
+# consent: a camera turning itself on during an install is creepy, so we ask. `curl | bash`
+# owns stdin (bash is reading the script from it), so the answer must come from /dev/tty —
+# and when there's no tty to ask (CI, scripted installs), we don't attach, we hint.
+# HEARTH_CAM=1 on the install command is the explicit yes for unattended installs.
+offer_camera() {
+  # Already attached (this is a re-install over a configured hub) — nothing to ask;
+  # `hearthctl start` above brought it up from the persisted config.
+  grep -q '^HEARTH_CAM=1' "$DIR/config.env" 2>/dev/null && { ok "Camera already attached (kept)."; return 0; }
+  ls /dev/video* >/dev/null 2>&1 || return 0            # nothing to attach
+  command -v ffmpeg >/dev/null 2>&1 || {
+    say "A camera device exists, but ffmpeg is missing. To use it as a vision sensor:"
+    printf '    dnf install ffmpeg   # or: apt install ffmpeg\n    %s camera on\n\n' "$DIR/hearthctl"
+    return 0
+  }
+  if [ "${HEARTH_CAM:-}" = "1" ]; then
+    say "HEARTH_CAM=1 — attaching the camera…"
+    "$DIR/hearthctl" camera on || warn "Camera attach failed — try: $DIR/hearthctl camera on"
+    return 0
+  fi
+  if ( : </dev/tty ) 2>/dev/null; then
+    printf '\033[38;5;209m▸\033[0m Camera detected — attach it as a vision sensor? It snaps a frame every few seconds for your watches. [Y/n] '
+    local reply=""
+    read -r reply </dev/tty || reply="n"
+    case "$reply" in
+      n*|N*) say "Skipped. Attach it any time with: $DIR/hearthctl camera on" ;;
+      *) "$DIR/hearthctl" camera on || warn "Camera attach failed — try: $DIR/hearthctl camera on" ;;
+    esac
+  else
+    say "Camera detected. Attach it any time with: $DIR/hearthctl camera on"
+  fi
+}
+offer_camera
+
 echo
 say "The hub is running in the background. Manage it with:"
-printf '    %s status     # running? paired? nodes ingested?\n' "$DIR/hearthctl"
+printf '    %s status     # running? paired? nodes ingested? camera?\n' "$DIR/hearthctl"
 printf '    %s logs       # follow the log\n' "$DIR/hearthctl"
+printf '    %s camera on  # attach a webcam as a vision sensor\n' "$DIR/hearthctl"
 printf '    %s restart    # after a reboot, or to re-read config\n' "$DIR/hearthctl"
+printf '    %s stop       # stop the hub (and the camera with it)\n' "$DIR/hearthctl"
 echo
 say "Tip: to start on boot, add '$DIR/hearthctl start' to your crontab (@reboot) or a login script."

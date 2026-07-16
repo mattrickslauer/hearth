@@ -63,6 +63,22 @@ const qToQv = (q) => Math.max(2, Math.min(31, Math.round(31 - (Math.max(1, Math.
 // A whole JPEG ends with the EOI marker FF D9 — used to skip a frame ffmpeg is mid-write on.
 const isCompleteJpeg = (buf) => buf.length > 3 && buf[buf.length - 2] === 0xff && buf[buf.length - 1] === 0xd9;
 
+// Every live capture process, so one exit hook can reap them all. The graceful path
+// (SIGTERM → camera.stop()) kills ffmpeg explicitly; this hook covers the hub dying any
+// other way Node still gets to run code for (uncaught exception, process.exit) — an
+// orphaned ffmpeg keeps the webcam open, and its LED on, until someone notices.
+// (SIGKILL skips this too; `hearthctl` sweeps leftovers on stop/start for that case.)
+const liveProcs = new Set();
+process.on('exit', () => {
+  for (const p of liveProcs) {
+    try {
+      p.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+});
+
 /** Human-readable name of a v4l2 node, e.g. "Integrated Camera". Best-effort. */
 const v4l2Name = (dev) => {
   try {
@@ -117,13 +133,15 @@ function detectCaptureDevice() {
  * (to fold DESCRIBE/READING into the registry like any node). Returns handles
  * the hub uses for GET /frame and live cadence retuning.
  *
- * @param {{ ingest: (doc:object)=>void, onFrame?: (input:string, dataUri:string)=>void }} deps
+ * @param {{ ingest: (doc:object)=>void, onFrame?: (input:string, dataUri:string)=>void, source?: string }} deps
  *   onFrame — called with the full-frame data: URI each time a fresh JPEG is captured, so the
  *   hub can push the bytes up to Hearth Cloud (→ OSS) where the dashboard and Qwen-VL read them.
+ *   source — overrides HEARTH_CAM_SOURCE, so a live POST /camera {enabled:true, source} can pick
+ *   one without restarting the hub (the env was read at boot and can't change under a running process).
  */
-export function createCamera({ ingest, onFrame }) {
+export function createCamera({ ingest, onFrame, source: sourceOverride }) {
   const id = process.env.HEARTH_CAM_ID || defaultCameraId();
-  const requested = process.env.HEARTH_CAM_SOURCE || 'rtmp';
+  const requested = sourceOverride || process.env.HEARTH_CAM_SOURCE || 'rtmp';
   // `auto` resolves once, at startup, to whatever camera is actually plugged into this
   // machine. No camera → rtmp, i.e. exactly the OBS behaviour, so a hub with no local
   // camera is unaffected.
@@ -188,6 +206,8 @@ export function createCamera({ ingest, onFrame }) {
     const args = ffmpegArgs();
     console.log(`[cam] ffmpeg ${source === 'rtmp' ? `listening for OBS at ${rtmpUrl}` : `source=${source}`} · every ${cadenceMs}ms · q${quality} · ${width}px`);
     proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const p = proc; // pin this spawn for its handlers — `proc` moves on at respawn
+    liveProcs.add(p);
     proc.stderr.on('data', (d) => {
       const line = String(d).trim();
       if (line) console.log(`[cam] ffmpeg: ${line.split('\n')[0]}`);
@@ -201,7 +221,8 @@ export function createCamera({ ingest, onFrame }) {
       console.log(`[cam] ffmpeg error: ${e.message}`);
     });
     proc.on('exit', (code) => {
-      proc = null;
+      liveProcs.delete(p);
+      if (proc === p) proc = null;
       if (stopped) return;
       // rtmp: OBS disconnected (or never connected yet). test/device: source ended. Respawn.
       console.log(`[cam] ffmpeg exited (${code}) — restarting in 2s`);
