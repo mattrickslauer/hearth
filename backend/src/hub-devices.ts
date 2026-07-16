@@ -38,7 +38,8 @@ export interface HubWatch {
  * sync, so there is no copy-paste step and no hub restart.
  *
  * Cloud/vision watches are filtered out — the hub has no Qwen client, so it would have
- * nothing to do with them (they're evaluated app-side today).
+ * nothing to do with them. They're evaluated in the cloud instead, on frame arrival
+ * (see vision-watch.ts): the hub's job for those is to keep pushing frames.
  */
 export async function hubWatches(store: HomeStore): Promise<HubWatch[]> {
   const questions = await store.listQuestions();

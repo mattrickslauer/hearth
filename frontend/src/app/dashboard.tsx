@@ -16,6 +16,8 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AuthMenu } from '@/components/auth-menu';
+import { CostQuote } from '@/components/cost-quote';
+import { TuneWatch, type TunePatch } from '@/components/tune-watch';
 import { Card, GlowOrb, Pill, Wordmark, useResponsive } from '@/components/landing/ui';
 import { NotifyChannelsCard } from '@/components/notify-channels-card';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
@@ -23,6 +25,7 @@ import { useAuth } from '@/auth/context';
 import { useTheme } from '@/hooks/use-theme';
 import {
   authorWatch,
+  configureWatch,
   deleteWatch,
   describeHome,
   getSnapshot,
@@ -156,6 +159,10 @@ export default function DashboardScreen() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [watchError, setWatchError] = useState<string | null>(null);
+  // The tuning modal: which watch is open, and the in-flight save.
+  const [tuning, setTuning] = useState<Watch | null>(null);
+  const [savingTune, setSavingTune] = useState(false);
+  const [tuneError, setTuneError] = useState<string | null>(null);
 
   // Reference-memory objects, and which watch card currently has its "attach memory" picker open.
   const [memory, setMemory] = useState<MemoryObject[]>([]);
@@ -237,10 +244,33 @@ export default function DashboardScreen() {
       );
       setWish('');
       await load();
+      // Tune it to a budget while the wish is still in mind. Local watches are free and
+      // have no cloud knobs, so there is nothing to tune and no modal to open.
+      if (question.compiledSpec?.kind === 'cloud') {
+        setTuneError(null);
+        setTuning(question);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setAuthoring(false);
+    }
+  };
+
+  const saveTune = async (patch: TunePatch) => {
+    if (!tuning || savingTune) return;
+    setSavingTune(true);
+    setTuneError(null);
+    try {
+      const { question } = await configureWatch(tuning.id, patch, token);
+      // Reflect the saved spec back into the open modal so it reads "Saved", then refresh.
+      setTuning(question);
+      await load();
+      setTuning(null);
+    } catch (err) {
+      setTuneError((err as Error).message);
+    } finally {
+      setSavingTune(false);
     }
   };
 
@@ -704,6 +734,9 @@ export default function DashboardScreen() {
                         <Text style={{ color: theme.textMuted }}> → </Text>
                         {w.action}
                       </Text>
+                      {/* What it costs, before you ever look at a bill. A local watch
+                          says "$0 · runs on your hub" — that's the point, not silence. */}
+                      <CostQuote watch={w} home={home} />
                       <WatchMemory
                         theme={theme}
                         watch={w}
@@ -714,6 +747,17 @@ export default function DashboardScreen() {
                         onAddMemory={() => router.push('/memory')}
                       />
                       <View style={styles.watchActions}>
+                        {w.compiledSpec?.kind === 'cloud' ? (
+                          <Pressable
+                            onPress={() => {
+                              setTuneError(null);
+                              setTuning(w);
+                            }}
+                            disabled={deletingId === w.id}
+                            style={[styles.watchBtn, { borderColor: theme.border }]}>
+                            <Text style={[styles.watchBtnText, { color: theme.textSecondary }]}>Tune</Text>
+                          </Pressable>
+                        ) : null}
                         <Pressable
                           onPress={() => startEdit(w)}
                           disabled={deletingId === w.id}
@@ -780,6 +824,18 @@ export default function DashboardScreen() {
           </View>
         </View>
       </ScrollView>
+
+      {/* Tune to a budget — opened right after authoring, and again from any cloud watch. */}
+      <TuneWatch
+        key={tuning?.id ?? 'none'}
+        watch={tuning}
+        home={home}
+        visible={!!tuning}
+        saving={savingTune}
+        error={tuneError}
+        onSave={saveTune}
+        onClose={() => setTuning(null)}
+      />
     </SafeAreaView>
   );
 }

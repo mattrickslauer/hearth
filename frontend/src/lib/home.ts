@@ -9,6 +9,7 @@
  */
 
 import { backendBase } from '@/auth/client';
+import type { CloudModel, CompiledSpec, RecordPolicy } from '@/demo/engine/types';
 import type { ContextSuggestion } from '@/demo/types';
 
 export type { ContextSuggestion };
@@ -80,6 +81,14 @@ export interface Watch {
   usesVision: boolean;
   cost: 'none' | 'cloud';
   push?: boolean;
+  /**
+   * The compiled program and its capture policy. `list_questions` / `author_question`
+   * have always returned the whole Question — this type just never declared these, so
+   * the dashboard couldn't price a watch it already had the spec for. Optional because
+   * a local watch has no record, and old stored rows may predate one.
+   */
+  compiledSpec?: CompiledSpec;
+  record?: RecordPolicy;
   /** What Qwen recommends adding to make this (vision) watch work optimally. */
   contextSuggestions?: ContextSuggestion[];
   /** Reference-memory objects (household member ids) attached to this watch. */
@@ -141,6 +150,17 @@ export const updateWatch = (id: string, wish: string, token?: string | null) =>
   call<{ questionId: string; question: Watch; engine: string }>('update_question', { id, wish }, token);
 export const deleteWatch = (id: string, token?: string | null) =>
   call<{ ok: boolean; questionId: string }>('delete_question', { id }, token);
+/**
+ * Tune a cloud watch's budget knobs — how it samples and which model reasons — without
+ * re-authoring it. Unlike `updateWatch` this never re-runs program synthesis, so the
+ * trigger/bindings/action survive exactly as compiled.
+ */
+export const configureWatch = (
+  id: string,
+  patch: { mode?: RecordPolicy['mode']; every?: string; model?: CloudModel },
+  token?: string | null,
+) => call<{ questionId: string; question: Watch }>('configure_question', { id, ...patch }, token);
+
 /** Attach reference-memory objects to a watch (replaces its links; [] clears them). */
 export const linkWatchMemory = (id: string, memoryIds: string[], token?: string | null) =>
   call<{ questionId: string; question: Watch }>('set_question_memory', { id, memoryIds }, token);

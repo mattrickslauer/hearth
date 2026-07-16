@@ -23,7 +23,9 @@ import {
   estimate,
   fitsPlan,
   formatUsd,
+  dutyForGate,
   imageTokens,
+  mockAuthor,
   recommend,
 } from '../src/domain.ts';
 import type { CompiledSpec, QuoteInput } from '../src/domain.ts';
@@ -168,7 +170,10 @@ check(
   `top is "${recs[0]?.title}" (${recs[0]?.savedPct.toFixed(0)}%); on_event out-saves a 2%-duty gate on an interval watch, so the list is sorted by measured saving, not by dogma`,
 );
 
-// The two compose: only Look when the scene changes AND someone is actually there.
+// A gate and on_event do NOT compound. The runtime keys the scene on `visitor?.id` and
+// gates on `entry.presence`: at a doorway they are the SAME event, so multiplying a duty
+// cycle by an event rate counts one throttle twice (it quoted the demo watch at 1 check
+// a day). A gate earns its keep against a timer, not against motion.
 const composed = estimate({
   ...ungated,
   spec: { kind: 'cloud', cloud: { ...cloudCheck('qwen-vl', '10s'), gate: PRESENCE_GATE.predicate } },
@@ -178,10 +183,14 @@ const composed = estimate({
 });
 const modeOnly = recs.find((r) => r.kind === 'mode');
 check(
-  'G) a gate and on_event compose to beat either alone',
-  composed.usdPerMonth < (gate?.projected.usdPerMonth ?? Infinity) &&
-    composed.usdPerMonth < (modeOnly?.projected.usdPerMonth ?? Infinity),
-  `gate $${gate?.projected.usdPerMonth.toFixed(2)} · on_event $${modeOnly?.projected.usdPerMonth.toFixed(2)} · both $${composed.usdPerMonth.toFixed(2)}/mo`,
+  'G) a gate does not further discount on_event (same phenomenon, not independent)',
+  Math.abs(composed.usdPerMonth - (modeOnly?.projected.usdPerMonth ?? -1)) < 1e-9,
+  `on_event $${modeOnly?.projected.usdPerMonth.toFixed(2)} · on_event+gate $${composed.usdPerMonth.toFixed(2)}/mo — identical, as it must be`,
+);
+check(
+  'G) a gate DOES discount a timer-driven watch',
+  !!gate && gate.projected.usdPerMonth < estimate(ungated).usdPerMonth,
+  `interval $${estimate(ungated).usdPerMonth.toFixed(2)} → gated $${gate?.projected.usdPerMonth.toFixed(2)}/mo (duty ${PRESENCE_GATE.duty}) — timer sampling is independent of presence, so duty applies`,
 );
 check(
   'G) the gate saves ~98% (2% duty cycle)',
@@ -232,6 +241,39 @@ check(
   'G) a well-configured watch is not nagged',
   alreadyGood.every((r) => r.savedPct >= 5),
   `${alreadyGood.length} suggestion(s) — only ones worth ≥5% of the bill are shown`,
+);
+
+// ── H) the brain's own gate must be priced ───────────────────────────────────
+// Regression guard: a compiled `gate` that isn't costed overstates the bill ~50×,
+// and it is the doorway watch — the one the demo authors — that gets it wrong.
+const authored = mockAuthor('tell me if someone unfamiliar is at the door');
+const authoredGate = authored.compiledSpec.kind === 'cloud' ? authored.compiledSpec.cloud.gate : undefined;
+check(
+  'H) the authored doorway watch actually carries a gate',
+  authoredGate !== undefined,
+  `brain emits gate on ${JSON.stringify(authoredGate ?? null)}`,
+);
+
+const resolvedDuty = dutyForGate(authoredGate);
+check(
+  "H) the gate's duty resolves from the catalog authoring binds against",
+  resolvedDuty === 0.02,
+  `entry.presence → duty ${resolvedDuty ?? 'UNRESOLVED'} (describe_home is empty until a hub reports, so the catalog is the fallback)`,
+);
+
+// The bug this pins: the authored doorway watch is on_event, so it must quote a sane
+// number of checks. Multiplying its gate duty by its event rate produced ~1 check a DAY
+// for a front door — a number a user rightly called useless.
+const priced = estimate({ spec: authored.compiledSpec, record: authored.record, gateDuty: resolvedDuty });
+check(
+  'H) the authored doorway watch quotes a believable rate',
+  priced.callsPerMonth / 30 >= 10,
+  `${(priced.callsPerMonth / 30).toFixed(0)} checks/day, $${priced.usdPerMonth.toFixed(2)}/mo — not the ~1/day the double-count produced`,
+);
+check(
+  'H) resolving a gate cannot change an on_event quote',
+  priced.usdPerMonth === estimate({ spec: authored.compiledSpec, record: authored.record }).usdPerMonth,
+  'duty is inert for on_event, so a missing catalog lookup can never silently mis-quote it',
 );
 
 console.log(`\n${failures === 0 ? 'PASS' : `FAIL — ${failures} check(s) failed`}`);

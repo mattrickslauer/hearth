@@ -33,6 +33,7 @@ import { hubWatches, syncHubDevices } from './hub-devices';
 import { relayConfig, relayEnabled, publishToRelay } from './relay';
 import { putFrame, ossProvisioned } from './oss';
 import { applyNotifyConfig, deliverNotification, notifyChannels, redactNotifyConfig } from './notify';
+import { judgeFrame, type VisionOutcome } from './vision-watch';
 
 // One home per account (keyed by the session subject). The world MODEL is
 // static; what's per-account is the authored watches, events, and readings.
@@ -291,7 +292,20 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const key = await putFrame(input, image).catch(() => null);
       hub.lastSeenAt = Date.now();
       await getHubStore().save(hub);
-      return send(res, key ? 200 : 400, key ? { ok: true, provisioned: true, input, key } : { error: 'image must be a data: URI' });
+      if (!key) return send(res, 400, { error: 'image must be a data: URI' });
+
+      // The frame is stored — now let Qwen-VL actually look at it. A fresh frame is the
+      // trigger for every vision watch aimed at this input (there's no scheduler; FC
+      // freezes idle instances). Awaited, like pushReadingsToAccount above, so it runs
+      // before the instance can freeze. judgeFrame never throws — a bad judge must not
+      // fail the frame push — but guard anyway so storage stays the contract here.
+      let watches: VisionOutcome[] = [];
+      try {
+        watches = await judgeFrame(store, input);
+      } catch (e) {
+        console.warn('[hub/frame] vision eval failed:', (e as Error).message);
+      }
+      return send(res, 200, { ok: true, provisioned: true, input, key, watches });
     }
 
     /* --- notification channels (per-account: where "notify me" actually lands) --- */
