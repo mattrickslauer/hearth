@@ -43,6 +43,12 @@ Both toggle the *running* hub in place — no restart, nodes stay registered —
 capture process immediately (webcam LED goes dark now, not at the next restart). The installer
 offers to attach a detected camera on fresh installs; a re-install keeps whatever you had.
 
+A real camera device is never held open: each snap opens it, grabs a frame, and closes it
+(~1s), so between snaps the LED is off, other apps can use the camera, and nothing long-lived
+exists to wedge it. (A camera held streaming through a shutdown can hang its own firmware and
+vanish from the USB bus — a warm reboot won't recover it, only a full power-off will, because
+reboots never cut USB power.) Only a pushed stream (`rtmp`) keeps ffmpeg running.
+
 Needs `ffmpeg` on PATH (`dnf install ffmpeg` / `apt install ffmpeg`).
 
 > **Why it probes instead of asking you for a device.** A single webcam registers *several*

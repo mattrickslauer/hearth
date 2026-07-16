@@ -159,6 +159,11 @@ camera() {
       if is_running; then
         # Attach live — the hub stays up, its nodes stay registered. Restart only if the
         # running hub predates the toggle endpoint.
+        # Detach first so `camera on <new source>` actually switches — attach on a hub
+        # that already has a camera is a no-op. Off is idempotent; on a camera-less hub
+        # this is just a fast 200.
+        curl -fsS --max-time 5 -X POST -H 'content-type: application/json' \
+          -d '{"enabled":false}' "http://localhost:$PORT/camera" >/dev/null 2>&1 || true
         # Generous timeout: `auto` probes each /dev/video* for a real frame before answering.
         curl -fsS --max-time 45 -X POST -H 'content-type: application/json' \
           -d "$(printf '{"enabled":true,"source":"%s"}' "$src")" \
