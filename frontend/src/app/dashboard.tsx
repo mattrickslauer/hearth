@@ -26,6 +26,7 @@ import { SensorSheetBody, SensorTile } from '@/components/dashboard/sensors';
 import { LiveIndicator, PillButton, SectionLabel, Stat } from '@/components/dashboard/shared';
 import { WatchCard, WatchEditBody, WatchSheetBody } from '@/components/dashboard/watches';
 import { GlowOrb, Wordmark, useResponsive } from '@/components/landing/ui';
+import { TuneWatch, type TunePatch } from '@/components/tune-watch';
 import { ActionFab } from '@/components/ui/action-fab';
 import { Rail, TabBar, type NavTab } from '@/components/ui/nav';
 import { Sheet } from '@/components/ui/sheet';
@@ -34,6 +35,7 @@ import { useAuth } from '@/auth/context';
 import { useTheme } from '@/hooks/use-theme';
 import {
   authorWatch,
+  configureWatch,
   deleteWatch,
   describeHome,
   linkWatchMemory,
@@ -92,7 +94,8 @@ type SheetState =
   | { kind: 'camera'; id: string }
   | { kind: 'hubCamera' }
   | { kind: 'watch'; id: string }
-  | { kind: 'editWatch'; id: string };
+  | { kind: 'editWatch'; id: string }
+  | { kind: 'tune'; id: string };
 
 /**
  * The dashboard is three layers deep, on purpose.
@@ -135,6 +138,13 @@ export default function DashboardScreen() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [watchError, setWatchError] = useState<string | null>(null);
+
+  const [savingTune, setSavingTune] = useState(false);
+  const [tuneError, setTuneError] = useState<string | null>(null);
+  // Authoring can produce two things worth saying, and only one layer to say them on: Qwen's
+  // context suggestions, and the budget of a cloud watch. When both apply we queue the tune
+  // behind the suggestions rather than dropping either.
+  const [pendingTuneId, setPendingTuneId] = useState<string | null>(null);
 
   const [memory, setMemory] = useState<MemoryObject[]>([]);
 
@@ -220,16 +230,50 @@ export default function DashboardScreen() {
         : null;
       setSuggestions(next);
       setWish('');
-      // Hand the layer straight to Qwen's suggestions when it has any; otherwise drop back to
-      // the page, on the tab where the new watch just appeared.
-      setSheet(next ? { kind: 'suggest' } : { kind: 'none' });
-      if (!next) setTab('watches');
+      // A local watch is free and has no cloud knobs, so there's nothing to tune.
+      const tuneable = question.compiledSpec?.kind === 'cloud';
+      setTuneError(null);
+      // Suggestions first when there are any — they're about making it work at all. The budget
+      // follows on their heels (see pendingTuneId), while the wish is still in mind.
+      setPendingTuneId(next && tuneable ? question.id : null);
+      if (next) setSheet({ kind: 'suggest' });
+      else if (tuneable) setSheet({ kind: 'tune', id: question.id });
+      else {
+        setSheet({ kind: 'none' });
+        setTab('watches');
+      }
       await load();
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setAuthoring(false);
     }
+  };
+
+  // Persist the real program knobs (mode, rate, model). Expected activity isn't sent — it isn't
+  // a property of the program, only of your guess at how busy the scene is.
+  const saveTune = async (id: string, patch: TunePatch) => {
+    if (savingTune) return;
+    setSavingTune(true);
+    setTuneError(null);
+    try {
+      const { question } = await configureWatch(id, patch, token);
+      setWatches((prev) => (prev ? prev.map((w) => (w.id === question.id ? question : w)) : prev));
+      await load();
+      closeSheet();
+    } catch (err) {
+      setTuneError((err as Error).message);
+    } finally {
+      setSavingTune(false);
+    }
+  };
+
+  // Leaving the suggestions hands the layer to the budget, if this watch has one to spend.
+  const closeSuggest = () => {
+    const next = pendingTuneId;
+    setPendingTuneId(null);
+    if (next) setSheet({ kind: 'tune', id: next });
+    else closeSheet();
   };
 
   const saveEdit = async (id: string) => {
@@ -358,6 +402,7 @@ export default function DashboardScreen() {
   const sheetSensor = sheet.kind === 'sensor' ? allSensors.find((c) => c.id === sheet.id) : undefined;
   const sheetCamera = sheet.kind === 'camera' ? allSensors.find((c) => c.id === sheet.id) : undefined;
   const sheetHub = sheet.kind === 'hub' ? hubs?.find((h) => h.id === sheet.id) : undefined;
+  const sheetTune = sheet.kind === 'tune' ? (watches?.find((w) => w.id === sheet.id) ?? null) : null;
 
   return (
     <SafeAreaView style={[styles.screen, webFullHeight, { backgroundColor: theme.background }]} edges={['top']}>
@@ -572,17 +617,18 @@ export default function DashboardScreen() {
       {/* Qwen's context suggestions — the agent telling you what it needs to do the job well */}
       <Sheet
         open={sheet.kind === 'suggest'}
-        onClose={closeSheet}
+        onClose={closeSuggest}
         title={suggestions ? `To make “${suggestions.title}” work well` : 'Suggestions'}
         subtitle="Qwen suggests adding this context."
         footer={
           <>
-            <PillButton label="Not now" onPress={closeSheet} />
+            <PillButton label={pendingTuneId ? 'Next: tune →' : 'Not now'} onPress={closeSuggest} />
             <PillButton
               label="＋ Add photos →"
               tone="primary"
               grow
               onPress={() => {
+                setPendingTuneId(null);
                 closeSheet();
                 router.push('/memory');
               }}
@@ -684,6 +730,16 @@ export default function DashboardScreen() {
         footer={
           sheetWatch ? (
             <>
+              {/* Only a cloud watch has knobs worth turning — a local one is free. */}
+              {sheetWatch.compiledSpec?.kind === 'cloud' ? (
+                <PillButton
+                  label="Tune"
+                  onPress={() => {
+                    setTuneError(null);
+                    setSheet({ kind: 'tune', id: sheetWatch.id });
+                  }}
+                />
+              ) : null}
               <PillButton
                 label="Edit"
                 grow
@@ -743,6 +799,19 @@ export default function DashboardScreen() {
         <WatchEditBody value={editText} onChange={setEditText} disabled={savingEdit} />
         {watchError ? <Text style={[styles.msg, { color: theme.info }]}>{watchError}</Text> : null}
       </Sheet>
+
+      {/* Tune to a budget — opened right after authoring a cloud watch, and again from any of
+          them. Keyed on the watch id so opening a different one remounts with fresh draft state. */}
+      <TuneWatch
+        key={sheetTune?.id ?? 'none'}
+        watch={sheetTune}
+        home={home}
+        visible={sheet.kind === 'tune' && !!sheetTune}
+        saving={savingTune}
+        error={tuneError}
+        onSave={(patch) => (sheetTune ? saveTune(sheetTune.id, patch) : undefined)}
+        onClose={closeSheet}
+      />
     </SafeAreaView>
   );
 }

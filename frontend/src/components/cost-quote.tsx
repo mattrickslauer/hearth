@@ -12,7 +12,7 @@
 
 import { StyleSheet, Text, View } from 'react-native';
 
-import { cheapestPlan, estimate, formatLooks, formatUsd, type QuoteInput } from '@/demo/engine/pricing';
+import { cheapestPlan, estimate, formatUsd, type QuoteInput } from '@/demo/engine/pricing';
 import { recommend } from '@/demo/engine/recommend';
 import { dutyForGate as catalogDuty, gatesFor as catalogGates } from '@/demo/gates';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
@@ -22,6 +22,18 @@ import type { HomeModel, Watch } from '@/lib/home';
 
 /** Cadence stops a suggestion may propose, slowest-first. */
 const SLOWER = ['2m', '30s', '10s'];
+
+/**
+ * Checks a day, rounded for humans. Deliberately NOT Looks: a Look is a normalized
+ * cost unit (a sharper model spends ~4 per check), so showing Looks here would read as
+ * "the model quadrupled how often it looks" when it only quadrupled the price.
+ */
+function perDay(callsPerMonth: number): string {
+  const d = callsPerMonth / 30;
+  if (d === 0) return '0';
+  if (d < 1) return '<1';
+  return String(Math.round(d));
+}
 
 export function CostQuote({ watch, home }: { watch: Watch; home: HomeModel | null }) {
   const theme = useTheme();
@@ -64,9 +76,10 @@ export function CostQuote({ watch, home }: { watch: Watch; home: HomeModel | nul
             </>
           ) : (
             <>
-              💸 ~{formatLooks(quote.looksPerMonth)} Looks/mo
-              <Text style={{ color: theme.textMuted }}>{'  ·  '}</Text>
-              {formatUsd(quote.usdPerMonth)}/mo
+              💸 {formatUsd(quote.usdPerMonth)}/mo
+              <Text style={{ color: theme.textMuted }}>
+                {'  ·  '}≈{perDay(quote.callsPerMonth)} checks a day
+              </Text>
             </>
           )}
         </Text>

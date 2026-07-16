@@ -9,7 +9,7 @@
  */
 
 import { backendBase } from '@/auth/client';
-import type { CompiledSpec, RecordPolicy } from '@/demo/engine/types';
+import type { CloudModel, CompiledSpec, RecordPolicy } from '@/demo/engine/types';
 import type { ContextSuggestion } from '@/demo/types';
 
 export type { ContextSuggestion };
@@ -150,6 +150,17 @@ export const updateWatch = (id: string, wish: string, token?: string | null) =>
   call<{ questionId: string; question: Watch; engine: string }>('update_question', { id, wish }, token);
 export const deleteWatch = (id: string, token?: string | null) =>
   call<{ ok: boolean; questionId: string }>('delete_question', { id }, token);
+/**
+ * Tune a cloud watch's budget knobs — how it samples and which model reasons — without
+ * re-authoring it. Unlike `updateWatch` this never re-runs program synthesis, so the
+ * trigger/bindings/action survive exactly as compiled.
+ */
+export const configureWatch = (
+  id: string,
+  patch: { mode?: RecordPolicy['mode']; every?: string; model?: CloudModel },
+  token?: string | null,
+) => call<{ questionId: string; question: Watch }>('configure_question', { id, ...patch }, token);
+
 /** Attach reference-memory objects to a watch (replaces its links; [] clears them). */
 export const linkWatchMemory = (id: string, memoryIds: string[], token?: string | null) =>
   call<{ questionId: string; question: Watch }>('set_question_memory', { id, memoryIds }, token);

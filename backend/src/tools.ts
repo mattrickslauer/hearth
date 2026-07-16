@@ -12,9 +12,10 @@
  */
 
 import { author as qwenAuthor, hasKey, validateQuestion } from './qwen';
-import { parseDuration, defaultRecord, type Question, type RecordPolicy } from './domain';
+import { parseDuration, defaultRecord, type CloudModel, type Question, type RecordPolicy } from './domain';
 import type { Agg, HomeStore, Scalar } from './store';
 import { ossProvisioned, putImage, putFrame, presignKey, frameKey, resolveImage } from './oss';
+import { deliver } from './notify';
 
 export interface ToolCtx {
   store: HomeStore;
@@ -237,6 +238,66 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'configure_question',
+    description:
+      "Tune a cloud watch's budget knobs WITHOUT re-authoring it: how it samples (mode + rate), and which Qwen model runs its cloud check. Unlike update_question this never re-runs program synthesis — the trigger, bindings and action are left exactly as compiled. These are the three settings that decide what a watch costs.",
+    mode: ['authoring'],
+    parameters: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'the watch (question) id' },
+        mode: {
+          type: 'string',
+          enum: ['on_event', 'interval'],
+          description: "on_event: evaluate only when the scene changes (cheap). interval: evaluate on a timer.",
+        },
+        every: { type: 'string', description: "sample interval as a duration, e.g. '10s', '2m'" },
+        model: {
+          type: 'string',
+          enum: ['qwen-vl', 'qwen-vl-max', 'qwen-max', 'qwen-plus'],
+          description: 'which model runs the cloud check',
+        },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    handler: async (a, { store }) => {
+      const id = str(a.id);
+      const existing = await store.getQuestion(id);
+      if (!existing) throw new Error(`unknown question: ${id}`);
+      if (existing.compiledSpec.kind !== 'cloud') {
+        // A local predicate runs on the hub for free — it has no cadence to tune and
+        // no model to pick. Fail loudly rather than silently storing a dead setting.
+        throw new Error(`question ${id} is a local watch — it has no cloud budget knobs`);
+      }
+
+      const rec =
+        existing.record ??
+        defaultRecord(
+          existing.boundInputs.find((b) => b.endsWith('.frame')) ?? existing.boundInputs[0] ?? 'camera.frame',
+          existing.compiledSpec.cloud.maxCadence ?? '10s',
+        );
+      const mode = a.mode === undefined ? rec.mode : (str(a.mode) as typeof rec.mode);
+      const every = a.every === undefined ? rec.every : str(a.every);
+      // Never accept a rate the compiled spec's own budget guard forbids.
+      if (parseDuration(every) <= 0) throw new Error(`invalid duration: ${str(a.every)}`);
+
+      const q: Question = {
+        ...existing,
+        record: { ...rec, mode, every },
+        compiledSpec: {
+          kind: 'cloud',
+          cloud: {
+            ...existing.compiledSpec.cloud,
+            ...(a.model === undefined ? {} : { model: str(a.model) as CloudModel }),
+          },
+        },
+      };
+      await store.putQuestion(q);
+      return { questionId: q.id, question: q };
+    },
+  },
+  {
     name: 'set_question_memory',
     description:
       "Attach reference-memory objects to a watch: link the specific household members (people, pets, vehicles) Qwen-VL should reason over when this watch fires, by their ids. Replaces the watch's current links. Pass an empty array to clear them (the watch then reasons over all of memory). Unknown ids are ignored.",
@@ -446,22 +507,7 @@ export const TOOLS: Tool[] = [
       const channelId = str(a.channelId);
       const message = str(a.message);
       await store.appendEvent({ id: `ev-notify-${Date.now().toString(36)}`, ts: Date.now(), questionId: 'runtime', kind: 'notify', reasoning: `${channelId}: ${message}` });
-      // Telegram works with just a bot token + chat id — the one channel that needs no Alibaba setup.
-      const token = process.env.TELEGRAM_BOT_TOKEN;
-      const chat = process.env.TELEGRAM_CHAT_ID;
-      if (channelId.startsWith('telegram') && token && chat) {
-        try {
-          const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ chat_id: chat, text: message }),
-          });
-          return { ok: res.ok, channel: channelId, delivered: res.ok };
-        } catch (e) {
-          return { ok: false, channel: channelId, error: (e as Error).message };
-        }
-      }
-      return { ok: true, channel: channelId, delivered: false, note: 'logged; wire Expo Push / SMS / DirectMail channels next.' };
+      return deliver(channelId, message);
     },
   },
   {

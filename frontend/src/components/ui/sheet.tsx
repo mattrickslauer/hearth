@@ -243,6 +243,7 @@ const styles = StyleSheet.create({
   bodyContent: { paddingHorizontal: Spacing.four, paddingBottom: Spacing.three, gap: Spacing.three },
   footer: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: Spacing.two,
     paddingTop: Spacing.three,
     paddingHorizontal: Spacing.four,
