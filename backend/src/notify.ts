@@ -211,6 +211,7 @@ export async function deliverNotification(
       ts: Date.now(),
       questionId: meta.questionId ?? 'runtime',
       kind: 'notify',
+      title,
       reasoning: results.length
         ? `${title} — ${message} → ${results.map((r) => `${r.channel}${r.delivered ? '' : ' (failed)'}`).join(', ')}`
         : `${title} — ${message} (no channel configured)`,

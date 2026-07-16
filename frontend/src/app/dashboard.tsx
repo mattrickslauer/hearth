@@ -14,6 +14,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AuthMenu } from '@/components/auth-menu';
 import { ActivityList } from '@/components/dashboard/activity';
+import { RunLog } from '@/components/dashboard/run-log';
 import {
   CloudCameraCard,
   CloudCameraSheetBody,
@@ -612,10 +613,14 @@ export default function DashboardScreen() {
               </View>
             ) : null}
 
+            {/* The Activity tab is the run log: searchable, and priced with what we were
+                actually billed rather than what the quote predicted. The Home tab keeps the
+                unfiltered glance (ActivityList above) — this is the place you come to ask
+                questions of it. */}
             {tab === 'activity' ? (
               <View style={styles.section}>
-                <SectionLabel>Activity</SectionLabel>
-                <ActivityList events={events} loading={loading} />
+                <SectionLabel>Runs &amp; spend</SectionLabel>
+                <RunLog token={token} />
               </View>
             ) : null}
           </View>
