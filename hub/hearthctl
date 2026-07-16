@@ -5,9 +5,12 @@
 #   hearthctl start     start the hub in the background
 #   hearthctl stop      stop it
 #   hearthctl restart   stop + start
-#   hearthctl status    is it running? paired? how many nodes?
+#   hearthctl status    is it running? paired? how many nodes? camera on?
 #   hearthctl logs      follow the log
 #   hearthctl code      print the current pairing claim code (if unpaired)
+#   hearthctl camera on|off|status
+#                       attach/detach a camera. `on` finds the camera plugged into
+#                       this machine; `on <ffmpeg args>` forces a specific source.
 #
 # The hub runs from $HEARTH_HOME (default ~/.hearth). Everything — the script, its
 # identity, logs, and PID — lives there, so this is fully self-contained.
@@ -19,6 +22,9 @@ HUB="$HEARTH_HOME/hub.mjs"
 LOG="$HEARTH_HOME/hub.log"
 PIDFILE="$HEARTH_HOME/hub.pid"
 CLAIM="$HEARTH_HOME/claim-code.txt"
+# Persisted settings, sourced on every start. Without this a camera turned on with a
+# one-off `HEARTH_CAM=1 hearthctl restart` silently vanishes on the next reboot.
+CONFIG="$HEARTH_HOME/config.env"
 PORT="${HUB_PORT:-8899}"
 
 c()  { printf '\033[38;5;209m%s\033[0m' "$1"; }
@@ -31,10 +37,32 @@ is_running() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 
+# Load persisted settings, then let a real env var win — so a one-off
+# `HEARTH_CAM_SOURCE=test hearthctl restart` still overrides the saved config.
+load_config() {
+  [ -f "$CONFIG" ] || return 0
+  local key val
+  while IFS='=' read -r key val; do
+    case "$key" in ''|\#*) continue ;; esac
+    # Only set it if it isn't already in the environment.
+    if [ -z "${!key:-}" ]; then export "$key=$val"; fi
+  done <"$CONFIG"
+}
+
+# Upsert KEY=VALUE into $CONFIG (VALUE empty ⇒ remove the key).
+set_config() {
+  local key="$1" val="${2:-}" tmp="$CONFIG.tmp"
+  touch "$CONFIG"
+  grep -v "^$key=" "$CONFIG" >"$tmp" 2>/dev/null || true
+  [ -n "$val" ] && echo "$key=$val" >>"$tmp"
+  mv "$tmp" "$CONFIG"
+}
+
 start() {
   command -v node >/dev/null 2>&1 || { echo "node not found — install Node 18+ first." >&2; exit 1; }
   [ -f "$HUB" ] || { echo "hub not installed at $HUB — run the installer first." >&2; exit 1; }
   if is_running; then echo "$(ok '●') hub already running (pid $(cat "$PIDFILE"))."; exit 0; fi
+  load_config
   rm -f "$CLAIM"
   # Detach fully so it survives this shell / SSH session closing.
   nohup node "$HUB" >>"$LOG" 2>&1 &
@@ -84,12 +112,50 @@ status() {
   else
     echo "  paired $(dim '(no pending claim code)')"
   fi
+  # Camera state, straight from the running hub rather than the saved config, so a camera
+  # that's configured-but-failing doesn't get reported as attached.
+  local cam; cam="$(curl -fsS --max-time 2 "http://localhost:$PORT/camera" 2>/dev/null || echo)"
+  if [ -n "$cam" ]; then
+    echo "  camera: $(ok 'attached') $(dim "$cam")"
+  else
+    echo "  camera: off $(dim '(hearthctl camera on)')"
+  fi
 }
 
 logs() { touch "$LOG"; tail -n 40 -f "$LOG"; }
 
 code() {
   if [ -s "$CLAIM" ]; then cat "$CLAIM"; else echo "(no pending claim code — the hub is paired, or hasn't enrolled yet)"; fi
+}
+
+# A camera is just another sensor, so attaching one is meant to feel like plugging in a
+# node: turn it on, the hub finds it, the dashboard shows it. `on` with no argument means
+# "use whatever camera is plugged into this machine" — the hub probes for the real capture
+# device, which is emphatically not always /dev/video0.
+camera() {
+  case "${1:-status}" in
+    on)
+      command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg not found — install it first (dnf install ffmpeg / apt install ffmpeg)." >&2; exit 1; }
+      shift || true
+      local src="${*:-auto}"
+      set_config HEARTH_CAM 1
+      set_config HEARTH_CAM_SOURCE "$src"
+      echo "$(ok '●') camera on $(dim "(source: $src)")"
+      if is_running; then stop; start; else echo "  $(dim 'start the hub to bring it up:') hearthctl start"; fi
+      echo "  $(dim 'It appears in the dashboard as a Camera sensor once the hub syncs.')"
+      ;;
+    off)
+      set_config HEARTH_CAM ''
+      set_config HEARTH_CAM_SOURCE ''
+      echo "camera off."
+      if is_running; then stop; start; fi
+      ;;
+    status)
+      local cfg; cfg="$(curl -fsS --max-time 2 "http://localhost:$PORT/camera" 2>/dev/null || echo)"
+      if [ -n "$cfg" ]; then echo "$(ok '●') camera on — $cfg"; else echo "○ camera off $(dim '(hearthctl camera on)')"; fi
+      ;;
+    *) echo "usage: hearthctl camera {on [ffmpeg input args]|off|status}" >&2; exit 2 ;;
+  esac
 }
 
 case "${1:-status}" in
@@ -99,5 +165,6 @@ case "${1:-status}" in
   status)  status ;;
   logs)    logs ;;
   code)    code ;;
-  *) echo "usage: hearthctl {start|stop|restart|status|logs|code}" >&2; exit 2 ;;
+  camera)  shift; camera "$@" ;;
+  *) echo "usage: hearthctl {start|stop|restart|status|logs|code|camera}" >&2; exit 2 ;;
 esac
