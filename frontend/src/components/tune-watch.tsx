@@ -336,7 +336,11 @@ const styles = StyleSheet.create({
   title: { fontFamily: Fonts?.sans, fontSize: 17, fontWeight: '800' },
   sub: { fontFamily: Fonts?.sans, fontSize: 11.5, lineHeight: 16, marginTop: 2 },
   close: { fontSize: 16, fontWeight: '700' },
-  body: { flexGrow: 0 },
+  // flexGrow keeps a short sheet hugging its content; flexShrink lets a tall one scroll
+  // instead of pushing the model chips and the footer past the sheet's maxHeight. Web
+  // gets flexShrink: 1 free from react-native-web's ScrollView base style, but Yoga
+  // defaults it to 0, so on native it has to be said out loud.
+  body: { flexGrow: 0, flexShrink: 1 },
   quote: { borderWidth: 1, borderRadius: Radius.sm, padding: Spacing.two, gap: 3 },
   money: { fontFamily: Fonts?.mono, fontSize: 15, fontWeight: '800' },
   planLine: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '700' },
