@@ -1,4 +1,9 @@
-# Dependencies
+# Dependencies. Both forms: `node_modules/` only matches a real directory, so a
+# node_modules SYMLINK (e.g. one linking a worktree to the main checkout's install)
+# sails straight past it into `git add -A` — which is exactly how #67 shipped two
+# self-referential symlinks that replaced real installs on checkout (scripts die
+# with exit 194 and no output). The bare form catches files and symlinks too.
+node_modules
 node_modules/
 
 # Expo / build outputs
