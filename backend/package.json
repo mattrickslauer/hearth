@@ -13,6 +13,8 @@
     "oss-provision": "tsx scripts/oss-provision.ts",
     "household-check": "tsx scripts/household-check.ts",
     "vision-watch-check": "tsx scripts/vision-watch-check.ts",
+    "hub-isolation-check": "tsx scripts/hub-isolation-check.ts",
+    "frames-cleanup": "tsx scripts/frames-cleanup.ts",
     "oss-check": "tsx scripts/oss-check.ts",
     "readings-check": "tsx scripts/readings-check.ts",
     "runs-check": "tsx scripts/runs-check.ts",

@@ -14,11 +14,17 @@
 import { author as qwenAuthor, hasKey, validateQuestion, type CallUsage } from './qwen';
 import { formatUsd, parseDuration, defaultRecord, type CloudModel, type Question, type RecordPolicy } from './domain';
 import type { Agg, HomeStore, RunEventRow, RunQuery, Scalar } from './store';
-import { ossProvisioned, putImage, putFrame, presignKey, frameKey, resolveImage } from './oss';
+import { ossProvisioned, putImage, framesFor, resolveImage } from './oss';
 import { deliverNotification } from './notify';
+import type { AccountId } from './auth';
 
 export interface ToolCtx {
   store: HomeStore;
+  /**
+   * The signed-in account. Typed `AccountId`, not `string`, so it can only have come from a
+   * verified token — a handler cannot quietly substitute something out of `args`.
+   */
+  accountId: AccountId;
 }
 
 export interface Tool {
@@ -114,22 +120,23 @@ export const TOOLS: Tool[] = [
       required: ['input'],
       additionalProperties: false,
     },
-    handler: async (a) => {
+    handler: async (a, { store, accountId }) => {
       const input = str(a.input);
       if (!ossProvisioned()) {
         return {
           input,
-          ts: num(a.at, Date.now()),
+          capturedAt: null,
           ossUrl: null,
           mime: 'image/jpeg',
           provisioned: false,
           note: 'OSS not configured (set OSS_BUCKET). Frames travel inline as base64 until then.',
         };
       }
-      // Presigned GET for the latest stored frame of this input (populated by put_snapshot /
-      // the hub frame push). The URL 404s until a frame has actually been stored.
-      const ossUrl = await presignKey(frameKey(input), 600).catch(() => null);
-      return { input, ts: num(a.at, Date.now()), ossUrl, mime: 'image/jpeg', provisioned: true };
+      // Scoped to the account and ownership-checked inside framesFor — there is no unchecked path.
+      const frame = await framesFor(store, accountId).read(input, 600);
+      if (!frame) return { input, capturedAt: null, ossUrl: null, mime: 'image/jpeg', provisioned: true, note: 'no frame stored yet' };
+      // capturedAt is the frame's own age. Callers decide what's too old — never assume "stored" means "current".
+      return { input, capturedAt: frame.capturedAt, ageMs: Math.max(0, Date.now() - frame.capturedAt), ossUrl: frame.url, mime: 'image/jpeg', provisioned: true };
     },
   },
   {
@@ -143,14 +150,15 @@ export const TOOLS: Tool[] = [
       required: ['input', 'image'],
       additionalProperties: false,
     },
-    handler: async (a) => {
+    handler: async (a, { store, accountId }) => {
       const input = str(a.input);
       const image = str(a.image);
       if (!input || !image) throw new Error('input and image (data: URI) required');
       if (!ossProvisioned()) return { provisioned: false, note: 'OSS not configured; frame not stored.' };
-      const handle = await putFrame(input, image);
+      const capturedAt = Date.now();
+      const handle = await framesFor(store, accountId).write(input, image, capturedAt);
       if (!handle) throw new Error('image must be a data: URI');
-      return { provisioned: true, input, key: handle, ts: Date.now() };
+      return { provisioned: true, input, key: handle, capturedAt };
     },
   },
   {

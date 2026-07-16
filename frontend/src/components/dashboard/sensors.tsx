@@ -3,7 +3,7 @@ import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import type { HomeCapability, Reading } from '@/lib/home';
+import { isStale, type HomeCapability, type Reading } from '@/lib/home';
 
 import {
   CADENCE_STOPS,
@@ -38,6 +38,18 @@ export function SensorTile({
   const [pulse] = useState(() => new Animated.Value(0));
   const [ttl] = useState(() => new Animated.Value(0));
   const ts = reading?.ts;
+  // Re-render as the reading ages so a sensor that goes quiet reaches "no data" by itself.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  // A reading that stopped being refreshed is not a reading. Nothing upstream expires one — the
+  // series just keeps returning the last sample — so a dead sensor used to show its final value
+  // forever, pixel-identical to a live one. Past its cadence we show "no data" and say how old it
+  // is: a number nobody can date is worse than no number. (formatValue applies the same rule.)
+  const live = !!reading && !isStale(ts, effectiveMs);
 
   // Every fresh reading (its timestamp changes) fires a pulse and refills the TTL bar, which
   // then drains over the sensor's own interval — a visible heartbeat you can watch speed up.
@@ -61,7 +73,7 @@ export function SensorTile({
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={`${cap.label}: ${formatValue(reading, cap)}. Tap to tune.`}
+      accessibilityLabel={`${cap.label}: ${formatValue(reading, cap, effectiveMs)}. Tap to tune.`}
       {...hoverProps}
       style={({ pressed }) => [
         styles.tile,
@@ -75,14 +87,17 @@ export function SensorTile({
         <Text style={styles.tileIcon}>{cap.icon}</Text>
         <View style={styles.pulseWrap}>
           <Animated.View style={[styles.pulseRing, { borderColor: theme.ember }, ring]} />
-          <View style={[styles.pulseDot, { backgroundColor: reading ? theme.ember : theme.textMuted }]} />
+          <View style={[styles.pulseDot, { backgroundColor: live ? theme.ember : theme.textMuted }]} />
         </View>
       </View>
-      <Text style={[styles.tileValue, { color: theme.text }]} numberOfLines={1}>
-        {formatValue(reading, cap)}
+      <Text style={[styles.tileValue, { color: live ? theme.text : theme.textMuted }]} numberOfLines={1}>
+        {formatValue(reading, cap, effectiveMs)}
       </Text>
       <Text style={[styles.tileLabel, { color: theme.textMuted }]} numberOfLines={1}>
         {cap.label}
+      </Text>
+      <Text style={[styles.tileStale, { color: theme.textMuted }]} numberOfLines={1}>
+        {live ? '' : ts != null ? `no data · last ${ago(ts)}` : 'no data'}
       </Text>
       {/* TTL: full on each receive, drains toward the next expected reading */}
       <View style={[styles.ttlTrack, { backgroundColor: theme.backgroundElement }]}>
@@ -115,7 +130,7 @@ export function SensorSheetBody({
         <Text style={styles.readoutIcon}>{cap.icon}</Text>
         <View style={{ flex: 1 }}>
           <Text style={[styles.readoutValue, { color: theme.text }]} numberOfLines={1}>
-            {formatValue(reading, cap)}
+            {formatValue(reading, cap, effectiveMs)}
           </Text>
           <Text style={[styles.readoutMeta, { color: theme.textMuted }]}>
             {reading ? `updated ${ago(reading.ts)}` : 'no reading yet'}
@@ -154,6 +169,8 @@ const styles = StyleSheet.create({
   tileIcon: { fontSize: 18 },
   tileValue: { fontFamily: Fonts?.sans, fontSize: 20, fontWeight: '800', letterSpacing: -0.4 },
   tileLabel: { fontFamily: Fonts?.mono, fontSize: 11, fontWeight: '600' },
+  // Reserves its line whether or not it has text, so a tile doesn't resize as it goes stale.
+  tileStale: { fontFamily: Fonts?.mono, fontSize: 9, fontWeight: '600', minHeight: 12 },
   tileRate: { fontFamily: Fonts?.mono, fontSize: 10.5, fontWeight: '700', marginTop: 5 },
 
   // pulse — a heartbeat ping in the tile corner on every fresh reading

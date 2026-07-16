@@ -62,16 +62,48 @@ export interface SyncResult {
   hubId: string;
   nodes: number;
   readings: number;
+  /** Node ids this hub reported that another hub in the account already owns; refused, not merged. */
+  conflicts?: string[];
 }
 
 const asArray = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const asObj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {});
 const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+const asAge = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+
+/**
+ * How long a node may go quiet before it stops counting as online. Generous next to the hub's own
+ * 90s window: a hub heartbeats on a fixed timer, but a node's cadence is the account's to tune and
+ * can legitimately be minutes.
+ */
+const NODE_ONLINE_WINDOW_MS = Number(process.env.HEARTH_NODE_ONLINE_WINDOW_MS || 300_000);
+
+/**
+ * Node ids already claimed by the account's OTHER hubs.
+ *
+ * Node ids arrive from hubs and nothing upstream can force them to be unique — ESP ids are
+ * MAC-derived by luck of implementation, and the camera's used to be the constant 'hub-cam'. Since
+ * readings, cadence downlinks and capability ids are all keyed by `<nodeId>.<key>` with no hub in
+ * them, two hubs sharing a node id silently interleave into one series and the dashboard shows the
+ * merge as though it were one device. We can't stop a hub from picking a name, but we can refuse to
+ * merge the second claim, and say so, instead of corrupting the first quietly.
+ */
+async function claimedByOtherHubs(store: HomeStore, hubId: string): Promise<Set<string>> {
+  const snaps = await store.listHubDevices();
+  const taken = new Set<string>();
+  for (const snap of snaps) {
+    if (snap.hubId === hubId) continue; // a hub re-reporting its own nodes is the normal case
+    for (const n of snap.nodes) taken.add(n.id);
+  }
+  return taken;
+}
 
 /** Map the hub's registry payload into the store: register nodes + append readings. */
 export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Record<string, unknown>): Promise<SyncResult> {
   const now = Date.now();
   const nodes: HubNodeReport[] = [];
+  const taken = await claimedByOtherHubs(store, meta.hubId);
+  const conflicts: string[] = [];
   // Readings are now a durable per-row write (Tablestore), not a heap push, so issuing them
   // one-at-a-time inside the loop would put N sequential round-trips in front of the realtime
   // fan-out that the caller runs next. Collect and settle them together instead: one round-trip
@@ -82,6 +114,13 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
     const entry = asObj(raw);
     const id = asStr(entry.id);
     if (!id) continue;
+    // First hub to claim a node id keeps it. Dropping the newcomer's whole node is deliberate:
+    // merging it is what produced a series interleaved from two devices, which no reader could
+    // untangle afterwards. Refusing is recoverable — set HEARTH_CAM_ID (or fix the node's id).
+    if (taken.has(id)) {
+      conflicts.push(id);
+      continue;
+    }
 
     const describe = asObj(entry.describe);
     const sensors: HubSensorReport[] = asArray(describe.sensors)
@@ -93,13 +132,25 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
       .filter((a) => typeof a.key === 'string')
       .map((a) => ({ key: a.key as string, kind: asStr(a.kind) }));
 
+    // The hub re-sends every node it has ever seen, each carrying its last reading — so "it's in
+    // this payload" says nothing about whether the node is still alive. `ageMs` is how long the
+    // node has actually been quiet (measured on the hub's clock, so no skew); an older hub that
+    // doesn't send it keeps the previous benefit of the doubt.
+    const ageMs = asAge(entry.ageMs);
+    const online = ageMs === null || ageMs < NODE_ONLINE_WINDOW_MS;
+    const observedAt = ageMs === null ? now : now - ageMs;
+
     const readings = asObj(entry.lastReading);
     const cleaned: Record<string, number | null> = {};
     for (const [k, v] of Object.entries(readings)) {
       if (typeof v === 'number' && Number.isFinite(v)) {
         cleaned[k] = v;
-        // Fold into the time series under the same id read_input / query_history use.
-        writes.push(store.appendReading(`${id}.${k}`, v, now));
+        // Fold into the time series under the same id read_input / query_history use, dated when
+        // the node was actually heard from — NOT now. Stamping `now` re-dated a dead node's last
+        // sample on every sync, so `read_input latest` reported a months-old value as current and
+        // no reader downstream could tell. A live node re-sending an unchanged sample now lands on
+        // the same timestamp instead of accumulating duplicates.
+        if (online) writes.push(store.appendReading(`${id}.${k}`, v, observedAt));
       } else {
         cleaned[k] = null;
       }
@@ -109,8 +160,8 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
       id,
       board: asStr(describe.board),
       fw: asStr(describe.fw),
-      online: true, // the hub just heard from it
-      lastSeen: now,
+      online,
+      lastSeen: observedAt,
       sensors,
       actuators,
       readings: cleaned,
@@ -133,6 +184,11 @@ export async function syncHubDevices(store: HomeStore, meta: HubMeta, body: Reco
   const readingsWritten = readingResults.filter((r) => r.status === 'fulfilled').length;
   const failed = readingResults.length - readingsWritten;
   if (failed) console.log(`[hub-devices] ${failed}/${readingResults.length} reading writes failed for hub ${meta.hubId}`);
+  // Loud on purpose: a refused node is a device the user thinks they installed and cannot see.
+  if (conflicts.length)
+    console.warn(
+      `[hub-devices] hub ${meta.hubId} reported ${conflicts.length} node id(s) another hub already owns — refused: ${conflicts.join(', ')}`,
+    );
 
-  return { ok: true, hubId: meta.hubId, nodes: nodes.length, readings: readingsWritten };
+  return { ok: true, hubId: meta.hubId, nodes: nodes.length, readings: readingsWritten, ...(conflicts.length ? { conflicts } : {}) };
 }

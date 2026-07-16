@@ -260,6 +260,15 @@ export interface HomeStore {
    * prunes the RECORD, and only records with no hardware behind them stay pruned.
    */
   removeHubNode(nodeId: string): Promise<number>;
+  /**
+   * Does this account have a sensor with this exact input id?
+   *
+   * Lives on the store because the store IS the account boundary — anything holding one has
+   * already been scoped by the caller's token, so this cannot be asked about someone else by
+   * accident. Exact match against a declared sensor, never a `<node>.` prefix: a prefix test
+   * lets a node id reach inputs its node never declared.
+   */
+  ownsInput(input: string): Promise<boolean>;
   /** The desired per-sensor sample cadence (input id "<node>.<key>" → ms) the account requested. */
   getCadences(): Promise<Record<string, number>>;
   /** Set (or clear, when ms is null) one sensor's desired sample cadence in milliseconds. */
@@ -571,6 +580,10 @@ export class MemoryStore implements HomeStore {
     }
     if (changed) this.persist();
     return changed;
+  }
+  async ownsInput(input: string): Promise<boolean> {
+    const snaps = await this.listHubDevices();
+    return snaps.some((snap) => snap.nodes.some((n) => n.sensors.some((s) => `${n.id}.${s.key}` === input)));
   }
   async getCadences(): Promise<Record<string, number>> {
     return Object.fromEntries(this.cadences);
