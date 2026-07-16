@@ -175,6 +175,11 @@ export function createCamera({ ingest, onFrame, source: sourceOverride }) {
   let proc = null;
   let pollTimer = null;
   let stopped = false;
+  // The capture switch. Distinct from `stopped` (process shutdown, terminal): powered off is a
+  // USER state — ffmpeg is down, nothing is snapped, pushed or billed — and powering back on
+  // resumes capture in place. Driven from the cloud via the same desired-state downlink as any
+  // ESP actuator (the node self-describes `power` below), or LAN-direct via POST /camera.
+  let powered = true;
 
   // A real camera DEVICE is captured snap-by-snap; only a pushed stream (rtmp) or the
   // synthetic test source keeps a long-lived ffmpeg. Holding a v4l2 device open 24/7 to
@@ -208,7 +213,11 @@ export function createCamera({ ingest, onFrame, source: sourceOverride }) {
         config: { cadenceMs, quality, width },
       },
     ],
-    actuators: [],
+    // The camera IS commandable hardware: `power` is its capture switch. Describing it as a
+    // normal actuator is what makes stop/start ride the existing rails — the dashboard and the
+    // `actuate` tool write the device shadow, the hub applies it here, no camera-shaped special
+    // case anywhere upstream.
+    actuators: [{ key: 'power', kind: 'switch', label: 'Capture on/off' }],
   });
 
   // Build ffmpeg args for the chosen source. Output is a single JPEG overwritten
@@ -238,9 +247,9 @@ export function createCamera({ ingest, onFrame, source: sourceOverride }) {
   // (the first ones are dark — auto-exposure needs a beat to converge; -update keeps
   // only the last), and exits. The poll loop picks the JPEG up exactly as it does for
   // the streaming sources, so downstream nothing changes.
-  let snapProc = null; // the in-flight snap, so stop() can kill it immediately
+  let snapProc = null; // the in-flight snap, so stop()/setPower(off) can kill it immediately
   function snapOnce() {
-    if (stopped || snapInFlight) return; // never overlap device opens
+    if (stopped || !powered || snapInFlight) return; // never overlap device opens; off = silent
     snapInFlight = true;
     const args = [
       '-loglevel', 'error',
@@ -292,6 +301,7 @@ export function createCamera({ ingest, onFrame, source: sourceOverride }) {
   }
 
   function startSnapping() {
+    if (stopped || !powered) return;
     if (snapTimer) clearInterval(snapTimer);
     const every = Math.max(cadenceMs, SNAP_MIN_MS);
     console.log(`[cam] snap mode: ${source} · every ${every}ms · q${quality} · ${width}px (device held only during each snap)`);
@@ -301,7 +311,9 @@ export function createCamera({ ingest, onFrame, source: sourceOverride }) {
   }
 
   function spawnFfmpeg() {
-    if (stopped) return;
+    // `proc` guard: setPower(on) and a pending exit-respawn timer can both try to start
+    // capture — whoever runs second must find it already running, not fork a second ffmpeg.
+    if (stopped || !powered || proc) return;
     const args = ffmpegArgs();
     console.log(`[cam] ffmpeg ${source === 'rtmp' ? `listening for OBS at ${rtmpUrl}` : `source=${source}`} · every ${cadenceMs}ms · q${quality} · ${width}px`);
     proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -322,7 +334,8 @@ export function createCamera({ ingest, onFrame, source: sourceOverride }) {
     proc.on('exit', (code) => {
       liveProcs.delete(p);
       if (proc === p) proc = null;
-      if (stopped) return;
+      // Powered off: this exit is the kill we asked for — stay down until setPower(true).
+      if (stopped || !powered) return;
       // rtmp: OBS disconnected (or never connected yet). test/device: source ended. Respawn.
       console.log(`[cam] ffmpeg exited (${code}) — restarting in 2s`);
       setTimeout(spawnFfmpeg, 2000);
@@ -332,6 +345,9 @@ export function createCamera({ ingest, onFrame, source: sourceOverride }) {
   // Poll the frame file; when ffmpeg has written a fresh, complete JPEG, capture
   // it and emit a READING through the hub's normal ingest path.
   function poll() {
+    // Off = silent. ffmpeg is already dead, but a frame it was mid-writing at the kill could
+    // still land on disk — without this guard that last frame would push after "off".
+    if (!powered) return;
     try {
       const st = statSync(framePath);
       if (st.mtimeMs !== lastMtime && st.size > 0) {
@@ -372,7 +388,30 @@ export function createCamera({ ingest, onFrame, source: sourceOverride }) {
     },
     /** Current sensor config — for GET /camera so the dashboard can seed its sliders. */
     config() {
-      return { id, source, width, quality, cadenceMs, hasFrame: !!latest, frameAt: latest?.at ?? null };
+      return { id, source, width, quality, cadenceMs, enabled: powered, hasFrame: !!latest, frameAt: latest?.at ?? null };
+    },
+    /**
+     * Stop or resume capture (the `power` actuator). Applied from the cloud device shadow on
+     * every sync — no shadow entry means "never commanded", which is ON, so a fresh account's
+     * camera runs without anyone touching a switch. Off kills ffmpeg and silences the poll:
+     * no readings, no frame pushes, no Looks spent. On respawns and capture resumes.
+     */
+    setPower(on) {
+      const v = on !== false; // undefined/null = uncommanded = on
+      if (v === powered || stopped) return;
+      powered = v;
+      console.log(`[cam] capture ${powered ? 'ON — resuming' : 'OFF — stopping capture, holding last frame'}`);
+      if (isDevice) {
+        // Snap mode: off = stop the interval and abort any in-flight snap (LED dies now);
+        // on = re-arm. No persistent process exists either way.
+        if (powered) startSnapping();
+        else {
+          if (snapTimer) clearInterval(snapTimer);
+          snapTimer = null;
+          if (snapProc) snapProc.kill('SIGKILL');
+        }
+      } else if (powered) spawnFfmpeg();
+      else if (proc) proc.kill('SIGKILL'); // exit handler sees !powered and stays down
     },
     /** Retune the snap cadence live (from the cloud per-sensor cadence downlink). */
     setCadence(ms) {

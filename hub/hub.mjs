@@ -136,6 +136,9 @@ function applyDesired(desired) {
   if (!desired || typeof desired !== 'object') return;
   desiredState.clear();
   for (const [input, on] of Object.entries(desired)) desiredState.set(input, !!on);
+  // The camera's capture switch is just another actuator: apply its shadow entry through the
+  // same downlink the ESP nodes converge on. No entry = never commanded = capture runs.
+  if (camera) camera.setPower(desiredState.get(`${camera.id}.power`) ?? true);
 }
 
 // The desired actuator states for one node, keyed by bare actuator key ("on"/"off" strings the
@@ -608,6 +611,14 @@ const server = http.createServer(async (req, res) => {
     }
     if (body.quality != null) camera.setQuality(Number(body.quality));
     if (body.cadenceMs != null) camera.setCadence(Number(body.cadenceMs));
+    // Two distinct verbs share this route, deliberately:
+    //   {enabled} — attach/detach the camera as a node (hearthctl camera on|off). Detached =
+    //               gone from the registry, as if unplugged.
+    //   {power}   — pause/resume capture while staying registered: the LAN-direct twin of the
+    //               `power` actuator the cloud downlink drives. Forgiving parse to match the
+    //               node convention: 0/'0'/false/'off' all mean off.
+    if (body.power != null)
+      camera.setPower(!(body.power === false || body.power === 0 || body.power === '0' || body.power === 'off'));
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
     res.end(JSON.stringify(camera.config()));
     return;

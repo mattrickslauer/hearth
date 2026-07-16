@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -10,6 +11,11 @@ export interface NavTab {
   label: string;
   /** Rendered as a small count next to the label. `null`/undefined shows nothing. */
   badge?: number | null;
+  /**
+   * Rail-only grouping. Consecutive tabs sharing a section render under one small
+   * header; the phone TabBar ignores it (a bottom bar has no room for headings).
+   */
+  section?: string;
 }
 
 /**
@@ -77,11 +83,19 @@ export function Rail({
   const theme = useTheme();
   return (
     <View style={[styles.rail, { zIndex: Layer.nav, borderRightColor: theme.border }]}>
-      {tabs.map((t) => {
+      {tabs.map((t, i) => {
         const on = t.key === value;
+        // A section header opens each new group — only where the section actually changes,
+        // so ungrouped tab lists render exactly as before.
+        const heading = t.section && t.section !== tabs[i - 1]?.section ? t.section : null;
         return (
+          <Fragment key={t.key}>
+            {heading ? (
+              <Text style={[styles.railSection, { color: theme.textMuted }, i > 0 && styles.railSectionGap]}>
+                {heading}
+              </Text>
+            ) : null}
           <Pressable
-            key={t.key}
             onPress={() => onChange(t.key)}
             accessibilityRole="tab"
             accessibilityState={{ selected: on }}
@@ -102,6 +116,7 @@ export function Rail({
               <Text style={[styles.railBadge, { color: on ? theme.ember : theme.textMuted }]}>{t.badge}</Text>
             ) : null}
           </Pressable>
+          </Fragment>
         );
       })}
     </View>
@@ -141,4 +156,14 @@ const styles = StyleSheet.create({
   railIcon: { fontSize: 15, width: 20, textAlign: 'center' },
   railLabel: { flex: 1, fontFamily: Fonts?.sans, fontSize: 14, fontWeight: '700' },
   railBadge: { fontFamily: Fonts?.mono, fontSize: 11.5, fontWeight: '700' },
+  railSection: {
+    fontFamily: Fonts?.mono,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    paddingHorizontal: 12,
+    paddingBottom: 4,
+  },
+  railSectionGap: { paddingTop: Spacing.three },
 });

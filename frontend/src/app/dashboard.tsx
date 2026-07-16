@@ -1,4 +1,4 @@
-import { Redirect, useRouter } from 'expo-router';
+import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -14,7 +14,9 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { AuthMenu } from '@/components/auth-menu';
 import { ActivityList } from '@/components/dashboard/activity';
+import { BillingPanel } from '@/components/dashboard/billing';
 import { RunLog } from '@/components/dashboard/run-log';
+import { SettingsPanel } from '@/components/dashboard/settings';
 import {
   CloudCameraCard,
   CloudCameraSheetBody,
@@ -24,7 +26,7 @@ import {
 } from '@/components/dashboard/camera';
 import { ConnectHubBody, HubRow, HubSheetBody } from '@/components/dashboard/hubs';
 import { SensorSheetBody, SensorTile } from '@/components/dashboard/sensors';
-import { LiveIndicator, PillButton, SectionLabel, Stat } from '@/components/dashboard/shared';
+import { ConfirmPillButton, LiveIndicator, PillButton, SectionLabel, Stat } from '@/components/dashboard/shared';
 import { WatchCard, WatchEditBody, WatchSheetBody } from '@/components/dashboard/watches';
 import { GlowOrb, Wordmark, useResponsive } from '@/components/landing/ui';
 import { NotifyChannelsCard } from '@/components/notify-channels-card';
@@ -42,6 +44,7 @@ import {
   describeHome,
   linkWatchMemory,
   listCadences,
+  listDesired,
   listEvents,
   listMemory,
   listWatches,
@@ -49,8 +52,10 @@ import {
   readInput,
   removeSensor,
   setCadence,
+  setDesired,
   updateWatch,
   type Cadences,
+  type DesiredStates,
   type ContextSuggestion,
   type HomeCapability,
   type HomeModel,
@@ -82,7 +87,9 @@ const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object
 // (matches the pattern in demo.tsx). Native gets its height from flex.
 const webFullHeight = Platform.OS === 'web' ? ({ height: '100vh' } as object) : null;
 
-type TabKey = 'home' | 'sensors' | 'watches' | 'activity';
+const TAB_KEYS = ['home', 'sensors', 'watches', 'activity', 'billing', 'settings'] as const;
+type TabKey = (typeof TAB_KEYS)[number];
+const isTabKey = (v: unknown): v is TabKey => TAB_KEYS.includes(v as TabKey);
 
 /**
  * Which overlay is on top, if any. One slot rather than a boolean per sheet: only one thing can
@@ -118,9 +125,15 @@ export default function DashboardScreen() {
   const router = useRouter();
   const { isWide, gutter } = useResponsive();
   const insets = useSafeAreaInsets();
-  const { status, account, token } = useAuth();
+  const { status, account, token, signOut } = useAuth();
 
-  const [tab, setTab] = useState<TabKey>('home');
+  // The tab IS the URL (?tab=billing) — no shadow state to fall out of sync. Pages are
+  // deep-linkable and shareable, the AuthMenu can land anywhere on the dashboard from any
+  // screen, and setParams replaces in place so tab clicks don't pile up history entries.
+  const params = useLocalSearchParams<{ tab?: string }>();
+  const tab: TabKey = isTabKey(params.tab) ? params.tab : 'home';
+  const setTab = useCallback((k: TabKey) => router.setParams({ tab: k }), [router]);
+
   const [sheet, setSheet] = useState<SheetState>({ kind: 'none' });
   const closeSheet = useCallback(() => setSheet({ kind: 'none' }), []);
 
@@ -129,6 +142,9 @@ export default function DashboardScreen() {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [readings, setReadings] = useState<Record<string, Reading | null>>({});
   const [cadences, setCadences] = useState<Cadences>({});
+  // The desired half of the device shadow — carries the camera's `power` switch (and any other
+  // actuator the dashboard learns to drive). No entry for an input = never commanded = device default.
+  const [desired, setDesiredMap] = useState<DesiredStates>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -166,12 +182,13 @@ export default function DashboardScreen() {
     setLoading(true);
     setError(null);
     try {
-      const [h, w, e, hb, cd, mem] = await Promise.all([
+      const [h, w, e, hb, cd, ds, mem] = await Promise.all([
         describeHome(token),
         listWatches(token),
         listEvents(20, token),
         listHubs(token).catch(() => [] as HubView[]),
         listCadences(token).catch(() => ({}) as Cadences),
+        listDesired(token).catch(() => ({}) as DesiredStates),
         listMemory(token).catch(() => [] as MemoryObject[]),
       ]);
       setHome(h);
@@ -179,6 +196,7 @@ export default function DashboardScreen() {
       setEvents(e);
       setHubs(hb);
       setCadences(cd);
+      setDesiredMap(ds);
       setMemory(mem);
       const sensors = h.capabilities.filter((c) => c.kind === 'sensor');
       const pairs = await Promise.all(
@@ -200,8 +218,12 @@ export default function DashboardScreen() {
     }
   }, [token]);
 
+  // Deferred a tick so the effect never sets state synchronously (load's first act is
+  // setLoading) — same shape as the run log's fetch, minus the debounce it needs.
   useEffect(() => {
-    if (status === 'signedIn') void load();
+    if (status !== 'signedIn') return;
+    const t = setTimeout(() => void load(), 0);
+    return () => clearTimeout(t);
   }, [status, load]);
 
   // Realtime: auto-discovers the account's hub and opens a secure, cloud-brokered
@@ -420,6 +442,36 @@ export default function DashboardScreen() {
     }
   };
 
+  /**
+   * The camera's capture switch, resolved from the home model: the `power` actuator on the
+   * node that owns this vision sensor. Older hub firmware doesn't describe one — then this is
+   * null and the camera renders without a toggle, rather than with a switch that does nothing.
+   */
+  const cameraPowerInput = useCallback(
+    (cap: HomeCapability): string | null => {
+      const node = home?.nodes.find((n) => n.capabilities.some((c) => c.id === cap.id));
+      return node?.capabilities.find((c) => c.kind === 'actuator' && c.id === `${node.id}.power`)?.id ?? null;
+    },
+    [home],
+  );
+
+  // Command an actuator on/off (the camera's stop/start). Optimistic, same shape as
+  // changeCadence: flip the shadow locally, POST it, roll back if the write is refused.
+  const changeDesired = async (input: string, on: boolean) => {
+    const prev = desired[input];
+    setDesiredMap((d) => ({ ...d, [input]: on }));
+    try {
+      await setDesired(input, on, token);
+    } catch {
+      setDesiredMap((d) => {
+        const next = { ...d };
+        if (prev == null) delete next[input];
+        else next[input] = prev;
+        return next;
+      });
+    }
+  };
+
   if (status === 'loading') {
     return (
       <View style={[styles.fill, { backgroundColor: theme.background }]}>
@@ -432,11 +484,18 @@ export default function DashboardScreen() {
   const devices = home?.nodes.length ?? 0;
   const pad = { paddingHorizontal: gutter };
 
+  // The phone bar carries the four live destinations; the rail has room for the whole
+  // platform, grouped the way a person thinks: the home first, the account around it.
   const tabs: NavTab[] = [
-    { key: 'home', icon: '🏠', label: 'Home' },
-    { key: 'sensors', icon: '📡', label: 'Sensors', badge: sensors.length || null },
-    { key: 'watches', icon: '👁', label: 'Watches', badge: watches?.length ?? null },
-    { key: 'activity', icon: '📜', label: 'Activity' },
+    { key: 'home', icon: '🏠', label: 'Home', section: 'Platform' },
+    { key: 'sensors', icon: '📡', label: 'Sensors', badge: sensors.length || null, section: 'Platform' },
+    { key: 'watches', icon: '👁', label: 'Watches', badge: watches?.length ?? null, section: 'Platform' },
+    { key: 'activity', icon: '📜', label: 'Activity', section: 'Platform' },
+  ];
+  const railTabs: NavTab[] = [
+    ...tabs,
+    { key: 'billing', icon: '💳', label: 'Usage & billing', section: 'Account' },
+    { key: 'settings', icon: '⚙️', label: 'Settings', section: 'Account' },
   ];
 
   const sheetWatch =
@@ -469,7 +528,7 @@ export default function DashboardScreen() {
       </View>
 
       <View style={styles.main}>
-        {isWide ? <Rail tabs={tabs} value={tab} onChange={(k) => setTab(k as TabKey)} /> : null}
+        {isWide ? <Rail tabs={railTabs} value={tab} onChange={(k) => setTab(k as TabKey)} /> : null}
 
         <ScrollView
           style={styles.scroll}
@@ -545,15 +604,20 @@ export default function DashboardScreen() {
                 {visionSensors.length ? (
                   <View style={styles.section}>
                     <SectionLabel>Camera</SectionLabel>
-                    {visionSensors.map((c) => (
-                      <CloudCameraCard
-                        key={c.id}
-                        cap={c}
-                        token={token}
-                        cadenceMs={cadences[c.id]}
-                        onPress={() => setSheet({ kind: 'camera', id: c.id })}
-                      />
-                    ))}
+                    {visionSensors.map((c) => {
+                      const power = cameraPowerInput(c);
+                      return (
+                        <CloudCameraCard
+                          key={c.id}
+                          cap={c}
+                          token={token}
+                          cadenceMs={cadences[c.id]}
+                          powerOn={power ? (desired[power] ?? true) : true}
+                          onTogglePower={power ? (on) => changeDesired(power, on) : undefined}
+                          onPress={() => setSheet({ kind: 'camera', id: c.id })}
+                        />
+                      );
+                    })}
                   </View>
                 ) : showHubCam ? (
                   <View style={styles.section}>
@@ -630,6 +694,43 @@ export default function DashboardScreen() {
                 <SectionLabel>Runs &amp; spend</SectionLabel>
                 <RunLog token={token} />
               </View>
+            ) : null}
+
+            {/* Usage & billing: the meter, the forecast, the plans, the rate card. */}
+            {tab === 'billing' ? (
+              <>
+                <View style={{ gap: Spacing.two }}>
+                  <Text style={[styles.h1, { color: theme.text }]}>Usage &amp; billing</Text>
+                  <Text style={[styles.sub, { color: theme.textMuted }]}>
+                    measured from what your watches actually ran
+                  </Text>
+                </View>
+                <BillingPanel
+                  token={token}
+                  watches={watches}
+                  home={home}
+                  onOpenWatch={(id) => setSheet({ kind: 'watch', id })}
+                />
+              </>
+            ) : null}
+
+            {/* Settings: profile, channels, session, the danger zone. */}
+            {tab === 'settings' ? (
+              <>
+                <View style={{ gap: Spacing.two }}>
+                  <Text style={[styles.h1, { color: theme.text }]}>Settings</Text>
+                  <Text style={[styles.sub, { color: theme.textMuted }]} numberOfLines={1}>
+                    {account?.email ?? 'account'}
+                  </Text>
+                </View>
+                <SettingsPanel
+                  account={account}
+                  token={token}
+                  hubs={hubs}
+                  onSignOut={signOut}
+                  onHubsRemoved={() => void load()}
+                />
+              </>
             ) : null}
           </View>
         </ScrollView>
@@ -745,7 +846,11 @@ export default function DashboardScreen() {
           sheetHub ? (
             <>
               <PillButton label="Done" grow onPress={closeSheet} />
-              <PillButton label="Unpair" tone="danger" onPress={() => removeHub(sheetHub)} />
+              <ConfirmPillButton
+                label="Unpair"
+                confirmLabel="Really unpair?"
+                onConfirm={() => removeHub(sheetHub)}
+              />
             </>
           ) : null
         }>
@@ -760,12 +865,12 @@ export default function DashboardScreen() {
         subtitle={sheetSensor?.id}
         footer={
           sheetSensor ? (
-            <PillButton
+            <ConfirmPillButton
               label="Remove"
-              tone="danger"
+              confirmLabel="Remove the whole node?"
               grow
               busy={removingSensor === sheetSensor.id}
-              onPress={() => removeSensorNode(sheetSensor)}
+              onConfirm={() => removeSensorNode(sheetSensor)}
             />
           ) : null
         }>
@@ -786,20 +891,27 @@ export default function DashboardScreen() {
         subtitle="Sampled, not streamed."
         footer={
           sheetCamera ? (
-            <PillButton
+            <ConfirmPillButton
               label="Remove"
-              tone="danger"
+              confirmLabel="Remove this camera?"
               grow
               busy={removingSensor === sheetCamera.id}
-              onPress={() => removeSensorNode(sheetCamera)}
+              onConfirm={() => removeSensorNode(sheetCamera)}
             />
           ) : null
         }>
         {sheetCamera ? (
-          <CloudCameraSheetBody
-            cadenceMs={cadences[sheetCamera.id]}
-            onChangeCadence={(ms) => changeCadence(sheetCamera.id, ms)}
-          />
+          (() => {
+            const power = cameraPowerInput(sheetCamera);
+            return (
+              <CloudCameraSheetBody
+                cadenceMs={cadences[sheetCamera.id]}
+                powerOn={power ? (desired[power] ?? true) : true}
+                onTogglePower={power ? (on) => changeDesired(power, on) : undefined}
+                onChangeCadence={(ms) => changeCadence(sheetCamera.id, ms)}
+              />
+            );
+          })()
         ) : null}
       </Sheet>
 
@@ -837,11 +949,11 @@ export default function DashboardScreen() {
                   setSheet({ kind: 'editWatch', id: sheetWatch.id });
                 }}
               />
-              <PillButton
+              <ConfirmPillButton
                 label="Delete"
-                tone="danger"
+                confirmLabel="Really delete?"
                 busy={deletingId === sheetWatch.id}
-                onPress={() => removeWatch(sheetWatch)}
+                onConfirm={() => removeWatch(sheetWatch)}
               />
             </>
           ) : null

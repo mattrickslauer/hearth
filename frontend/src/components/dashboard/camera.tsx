@@ -8,6 +8,7 @@ import { getSnapshot, isStale, type HomeCapability, type Snapshot } from '@/lib/
 import {
   CADENCE_STOPS,
   DEFAULT_CADENCE_MS,
+  PillButton,
   QUALITY_STOPS,
   StepSlider,
   Tag,
@@ -29,6 +30,7 @@ function CameraShell({
   uri,
   stamp,
   waiting,
+  power,
   onPress,
   onFrameLoad,
   onFrameError,
@@ -38,6 +40,9 @@ function CameraShell({
   uri: string | null;
   stamp: string | null;
   waiting: string;
+  /** The capture switch, when this camera has one — a Stop/Start pill on the glass, so
+   *  stopping the camera is one tap on the card rather than a trip into the sheet. */
+  power?: { on: boolean; toggle: () => void } | null;
   onPress: () => void;
   onFrameLoad: () => void;
   onFrameError: () => void;
@@ -88,6 +93,15 @@ function CameraShell({
         <View style={styles.tune}>
           <Text style={styles.tuneText}>⚙ Tune</Text>
         </View>
+        {power ? (
+          <Pressable
+            onPress={power.toggle}
+            accessibilityRole="button"
+            accessibilityLabel={power.on ? 'Stop capture' : 'Start capture'}
+            style={styles.power}>
+            <Text style={styles.tuneText}>{power.on ? '⏹ Stop' : '▶ Start'}</Text>
+          </Pressable>
+        ) : null}
       </View>
     </Pressable>
   );
@@ -105,12 +119,19 @@ export function CloudCameraCard({
   cap,
   token,
   cadenceMs,
+  powerOn,
+  onTogglePower,
   onPress,
 }: {
   cap: HomeCapability;
   token: string | null;
   /** The account's desired snap cadence for this camera (undefined → hub firmware default). */
   cadenceMs?: number;
+  /** Desired capture state from the device shadow (undefined → never commanded → on). */
+  powerOn?: boolean;
+  /** Present only when the camera self-describes a `power` actuator — older hub firmware
+   *  doesn't, and a switch that silently does nothing is worse than no switch. */
+  onTogglePower?: (on: boolean) => void;
   onPress: () => void;
 }) {
   const [snap, setSnap] = useState<Snapshot | null>(null);
@@ -120,6 +141,7 @@ export function CloudCameraCard({
   const [, setTick] = useState(0);
 
   const effectiveMs = cadenceMs ?? DEFAULT_CADENCE_MS;
+  const on = powerOn !== false;
 
   const refresh = useCallback(() => {
     getSnapshot(cap.id, token)
@@ -134,13 +156,16 @@ export function CloudCameraCard({
   }, [cap.id, token]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (on) refresh();
+  }, [on, refresh]);
   // Re-pull on the snap cadence — a photo every few seconds, faithful to "sampled, not streamed".
+  // A stopped camera pushes nothing, so polling it would just re-fetch the frame it went dark on;
+  // flipping back on restarts the pulls (and the `on` dep fires an immediate refresh above).
   useEffect(() => {
+    if (!on) return;
     const id = setInterval(refresh, Math.max(1000, effectiveMs));
     return () => clearInterval(id);
-  }, [refresh, effectiveMs]);
+  }, [on, refresh, effectiveMs]);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
@@ -151,9 +176,12 @@ export function CloudCameraCard({
   // week still hands back a valid URL and a perfectly good JPEG. Showing that as the live view is
   // exactly the lie this card used to tell, so an aged-out frame is dropped for the placeholder.
   const stale = isStale(snap?.capturedAt, effectiveMs);
-  const uri = snap?.ossUrl && !stale ? snap.ossUrl : null;
-  const waiting =
-    snap?.provisioned === false
+  // Stopped is a state we chose, not a failure — show it as such, never the last frame (which
+  // would quietly re-tell the stale-frame-as-live lie the moment someone hits Stop).
+  const uri = on && snap?.ossUrl && !stale ? snap.ossUrl : null;
+  const waiting = !on
+    ? 'Camera is stopped — no frames are being taken (and nothing is being spent). Press Start to resume.'
+    : snap?.provisioned === false
       ? 'Cloud image store (OSS) isn’t configured on the backend yet.'
       : snap?.capturedAt && stale
         ? `No data — the last frame arrived ${ago(snap.capturedAt)} and nothing has replaced it. Check the hub's camera is running.`
@@ -167,7 +195,7 @@ export function CloudCameraCard({
           <Tag on text="vision" />
           {/* Driven by a frame we have actually drawn, not by holding a URL: the backend presigns
               happily for a key that holds nothing, which is how "live" once sat over a 404. */}
-          <Tag on={frameOk && !!uri} text={frameOk && uri ? 'live' : 'no frame'} />
+          <Tag on={frameOk && !!uri} text={!on ? 'stopped' : frameOk && uri ? 'live' : 'no frame'} />
         </>
       }
       uri={uri}
@@ -179,6 +207,7 @@ export function CloudCameraCard({
           : null
       }
       waiting={waiting}
+      power={onTogglePower ? { on, toggle: () => onTogglePower(!on) } : null}
       onPress={onPress}
       onFrameLoad={() => setFrameOk(true)}
       onFrameError={() => setFrameOk(false)}
@@ -188,15 +217,28 @@ export function CloudCameraCard({
 
 export function CloudCameraSheetBody({
   cadenceMs,
+  powerOn,
+  onTogglePower,
   onChangeCadence,
 }: {
   cadenceMs?: number;
+  powerOn?: boolean;
+  onTogglePower?: (on: boolean) => void;
   onChangeCadence: (ms: number) => void;
 }) {
   const theme = useTheme();
   const effectiveMs = cadenceMs ?? DEFAULT_CADENCE_MS;
+  const on = powerOn !== false;
   return (
     <>
+      {onTogglePower ? (
+        <PillButton
+          label={on ? '⏹ Stop capture' : '▶ Start capture'}
+          tone={on ? 'danger' : 'primary'}
+          grow
+          onPress={() => onTogglePower(!on)}
+        />
+      ) : null}
       <StepSlider
         label="Snap rate"
         stops={CADENCE_STOPS}
@@ -205,8 +247,10 @@ export function CloudCameraSheetBody({
         onCommit={onChangeCadence}
       />
       <Text style={[styles.note, { color: theme.textMuted }]}>
-        The hub samples a frame every {fmtRate(effectiveMs)} and pushes it to the cloud; Qwen-VL reads
-        it only when a vision watch needs it — no video stream leaves the home.
+        {on
+          ? `The hub samples a frame every ${fmtRate(effectiveMs)} and pushes it to the cloud; Qwen-VL reads
+        it only when a vision watch needs it — no video stream leaves the home.`
+          : 'Capture is stopped: the hub takes no frames, pushes nothing, and vision watches on this camera spend nothing until you start it again.'}
       </Text>
     </>
   );
@@ -220,6 +264,8 @@ export interface CamConfig {
   width: number;
   quality: number;
   cadenceMs: number;
+  /** Capture switch state. Optional: a hub on older firmware doesn't report it (always on). */
+  enabled?: boolean;
   hasFrame: boolean;
   frameAt: number | null;
 }
@@ -229,6 +275,8 @@ export interface HubCamera {
   reachable: boolean | null;
   cadenceMs: number;
   quality: number;
+  /** False only when the hub says capture is stopped; unknown/older firmware reads as on. */
+  enabled: boolean;
   uri: string;
   post: (patch: Record<string, number>) => void;
   hubUrl: string;
@@ -245,6 +293,7 @@ export function useHubCamera(hubUrl: string): HubCamera {
 
   const cadenceMs = cfg?.cadenceMs ?? DEFAULT_CADENCE_MS;
   const quality = cfg?.quality ?? 70;
+  const enabled = cfg?.enabled !== false;
 
   // No LAN hub configured: stay inert. Hooks can't be called conditionally, so the caller
   // always calls this one and passes '' when there's nothing to talk to.
@@ -259,12 +308,13 @@ export function useHubCamera(hubUrl: string): HubCamera {
       .catch(() => setReachable(false));
   }, [hubUrl]);
 
-  // Re-pull the frame on the snap cadence — a photo every N seconds, not a stream.
+  // Re-pull the frame on the snap cadence — a photo every N seconds, not a stream. A stopped
+  // camera writes no new frames, so re-pulling would only re-download the one it stopped on.
   useEffect(() => {
-    if (!hubUrl) return;
+    if (!hubUrl || !enabled) return;
     const id = setInterval(() => setTick((t) => t + 1), Math.max(1000, cadenceMs));
     return () => clearInterval(id);
-  }, [hubUrl, cadenceMs]);
+  }, [hubUrl, cadenceMs, enabled]);
 
   const post = useCallback(
     (patch: Record<string, number>) => {
@@ -280,14 +330,20 @@ export function useHubCamera(hubUrl: string): HubCamera {
     [hubUrl],
   );
 
-  return { cfg, reachable, cadenceMs, quality, uri: `${hubUrl}/frame?t=${tick}`, post, hubUrl };
+  return { cfg, reachable, cadenceMs, quality, enabled, uri: `${hubUrl}/frame?t=${tick}`, post, hubUrl };
 }
 
 export function HubCameraCard({ cam, onPress }: { cam: HubCamera; onPress: () => void }) {
   const [frameOk, setFrameOk] = useState(false);
   const [snappedAt, setSnappedAt] = useState<number | null>(null);
   const sourceTag =
-    cam.reachable === false ? 'hub offline' : cam.cfg?.source === 'test' ? 'test source' : 'OBS';
+    cam.reachable === false
+      ? 'hub offline'
+      : !cam.enabled
+        ? 'stopped'
+        : cam.cfg?.source === 'test'
+          ? 'test source'
+          : 'OBS';
 
   return (
     <CameraShell
@@ -295,19 +351,26 @@ export function HubCameraCard({ cam, onPress }: { cam: HubCamera; onPress: () =>
       tags={
         <>
           <Tag on text="vision" />
-          <Tag on={cam.reachable === true} text={sourceTag} />
+          <Tag on={cam.reachable === true && cam.enabled} text={sourceTag} />
         </>
       }
-      uri={cam.reachable !== false ? cam.uri : null}
+      uri={cam.reachable !== false && cam.enabled ? cam.uri : null}
       stamp={
-        frameOk && cam.reachable
+        frameOk && cam.reachable && cam.enabled
           ? `snapped ${snappedAt ? new Date(snappedAt).toLocaleTimeString() : ''} · every ${fmtRate(cam.cadenceMs)}`
           : null
       }
       waiting={
         cam.reachable === false
           ? `Can’t reach the hub at ${cam.hubUrl}. Is it running with HEARTH_CAM=1?`
-          : 'Waiting for a frame — start OBS streaming to the hub, or run with HEARTH_CAM_SOURCE=test.'
+          : !cam.enabled
+            ? 'Camera is stopped — no frames are being taken. Press Start to resume.'
+            : 'Waiting for a frame — start OBS streaming to the hub, or run with HEARTH_CAM_SOURCE=test.'
+      }
+      power={
+        cam.reachable
+          ? { on: cam.enabled, toggle: () => cam.post({ enabled: cam.enabled ? 0 : 1 }) }
+          : null
       }
       onPress={onPress}
       onFrameLoad={() => {
@@ -330,6 +393,12 @@ export function HubCameraSheetBody({ cam }: { cam: HubCamera }) {
   }
   return (
     <>
+      <PillButton
+        label={cam.enabled ? '⏹ Stop capture' : '▶ Start capture'}
+        tone={cam.enabled ? 'danger' : 'primary'}
+        grow
+        onPress={() => cam.post({ enabled: cam.enabled ? 0 : 1 })}
+      />
       <StepSlider
         label="Snap rate"
         stops={CADENCE_STOPS}
@@ -345,8 +414,9 @@ export function HubCameraSheetBody({ cam }: { cam: HubCamera }) {
         onCommit={(v) => cam.post({ quality: v })}
       />
       <Text style={[styles.note, { color: theme.textMuted }]}>
-        Frames are pulled on demand from the hub and read by Qwen-VL only when a vision watch needs
-        them — no video stream leaves the home.
+        {cam.enabled
+          ? 'Frames are pulled on demand from the hub and read by Qwen-VL only when a vision watch needs them — no video stream leaves the home.'
+          : 'Capture is stopped: ffmpeg is down on the hub and no frames are taken until you start it again.'}
       </Text>
     </>
   );
@@ -395,6 +465,16 @@ const styles = StyleSheet.create({
   tune: {
     position: 'absolute',
     right: 10,
+    top: 10,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: Radius.pill,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  // The capture switch, mirroring the tune pill on the opposite corner of the glass.
+  power: {
+    position: 'absolute',
+    left: 10,
     top: 10,
     paddingVertical: 4,
     paddingHorizontal: 10,
