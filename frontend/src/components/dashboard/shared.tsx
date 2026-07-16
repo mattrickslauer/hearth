@@ -3,7 +3,7 @@ import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import type { HomeCapability, Reading } from '@/lib/home';
+import { isStale, type HomeCapability, type Reading } from '@/lib/home';
 import type { LiveStatus } from '@/lib/live';
 
 export function ago(ts: number): string {
@@ -16,8 +16,17 @@ export function ago(ts: number): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
-export function formatValue(r: Reading | null, cap: HomeCapability): string {
-  if (!r) return '—';
+/**
+ * Render a reading — or '—' when there isn't one, or when it's too old to still be true.
+ *
+ * `cadenceMs` is REQUIRED, and that's the point. Nothing upstream expires a reading (`read_input`
+ * agg 'latest' has no window), so a dead sensor serves its last value forever, pixel-identical to
+ * a live one. Age is the only thing that separates them, so the formatter refuses to render a
+ * value without being told the rate it should have arrived at — a new tile physically cannot
+ * display a stale number by forgetting to check, because there is no overload that lets it.
+ */
+export function formatValue(r: Reading | null, cap: HomeCapability, cadenceMs: number): string {
+  if (!r || isStale(r.ts, cadenceMs)) return '—';
   const v = r.value;
   if (typeof v === 'boolean') return v ? 'on' : 'off';
   if (typeof v === 'number') return `${v}${cap.unit ?? ''}`;

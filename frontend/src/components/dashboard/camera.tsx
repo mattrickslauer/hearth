@@ -3,7 +3,7 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { getSnapshot, type HomeCapability, type Snapshot } from '@/lib/home';
+import { getSnapshot, isStale, type HomeCapability, type Snapshot } from '@/lib/home';
 
 import {
   CADENCE_STOPS,
@@ -11,6 +11,7 @@ import {
   QUALITY_STOPS,
   StepSlider,
   Tag,
+  ago,
   fmtRate,
   useHover,
 } from './shared';
@@ -114,13 +115,21 @@ export function CloudCameraCard({
 }) {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [frameOk, setFrameOk] = useState(false);
-  const [loadedAt, setLoadedAt] = useState<number | null>(null);
+  // Re-render on a timer so a frame that stops arriving ages into "no data" on its own, instead of
+  // sitting there looking current until something else happens to re-render the card.
+  const [, setTick] = useState(0);
 
   const effectiveMs = cadenceMs ?? DEFAULT_CADENCE_MS;
 
   const refresh = useCallback(() => {
     getSnapshot(cap.id, token)
-      .then(setSnap)
+      .then((s) => {
+        setSnap(s);
+        // Once the backend stops handing back a frame, drop the "we drew one" verdict with it —
+        // otherwise the card keeps its last onLoad forever and still calls itself live. A frame
+        // that's still there keeps the verdict, so re-pulls don't flicker; onFrameError clears it.
+        setFrameOk((ok) => ok && !!s?.ossUrl);
+      })
       .catch(() => setSnap(null));
   }, [cap.id, token]);
 
@@ -132,12 +141,23 @@ export function CloudCameraCard({
     const id = setInterval(refresh, Math.max(1000, effectiveMs));
     return () => clearInterval(id);
   }, [refresh, effectiveMs]);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
-  const uri = snap?.ossUrl ?? null;
+  // A frame is only worth showing if the camera is still producing them. `capturedAt` is the
+  // frame's real age from OSS — the stored key is a fixed `latest.jpg`, so a camera unplugged last
+  // week still hands back a valid URL and a perfectly good JPEG. Showing that as the live view is
+  // exactly the lie this card used to tell, so an aged-out frame is dropped for the placeholder.
+  const stale = isStale(snap?.capturedAt, effectiveMs);
+  const uri = snap?.ossUrl && !stale ? snap.ossUrl : null;
   const waiting =
     snap?.provisioned === false
       ? 'Cloud image store (OSS) isn’t configured on the backend yet.'
-      : 'Waiting for a frame — the hub pushes one every few seconds once its camera is running.';
+      : snap?.capturedAt && stale
+        ? `No data — the last frame arrived ${ago(snap.capturedAt)} and nothing has replaced it. Check the hub's camera is running.`
+        : 'Waiting for a frame — the hub pushes one every few seconds once its camera is running.';
 
   return (
     <CameraShell
@@ -145,21 +165,22 @@ export function CloudCameraCard({
       tags={
         <>
           <Tag on text="vision" />
-          <Tag on={!!uri} text={uri ? 'live' : 'no frame'} />
+          {/* Driven by a frame we have actually drawn, not by holding a URL: the backend presigns
+              happily for a key that holds nothing, which is how "live" once sat over a 404. */}
+          <Tag on={frameOk && !!uri} text={frameOk && uri ? 'live' : 'no frame'} />
         </>
       }
       uri={uri}
       stamp={
-        frameOk && uri
-          ? `snapped ${loadedAt ? new Date(loadedAt).toLocaleTimeString() : ''} · every ${fmtRate(effectiveMs)}`
+        // The capture time from OSS. This used to be Date.now() at onLoad — the moment the
+        // browser finished the download — so any frame, at any age, read as just-snapped.
+        frameOk && uri && snap?.capturedAt
+          ? `snapped ${new Date(snap.capturedAt).toLocaleTimeString()} · every ${fmtRate(effectiveMs)}`
           : null
       }
       waiting={waiting}
       onPress={onPress}
-      onFrameLoad={() => {
-        setFrameOk(true);
-        setLoadedAt(Date.now());
-      }}
+      onFrameLoad={() => setFrameOk(true)}
       onFrameError={() => setFrameOk(false)}
     />
   );

@@ -338,15 +338,42 @@ function scheduleSync() {
 }
 
 let syncing = false;
+
+/**
+ * The registry as the cloud should see it, with each node's silence measured here.
+ *
+ * The registry keeps a node forever once seen, so every sync re-sends the last reading of a node
+ * that may have died hours ago. The cloud can't date that from our `lastSeen` — it's an ISO string
+ * off this box's clock, and subtracting it from the cloud's own now() inherits whatever skew we
+ * have. `ageMs` is a duration measured entirely on one clock, so it survives the trip: the cloud
+ * uses it to date the reading and to tell a live node from a quiet one.
+ */
+function nodesForSync() {
+  const now = Date.now();
+  return [...nodes.values()].map((n) => {
+    const seenAt = n.lastSeen ? Date.parse(n.lastSeen) : NaN;
+    return { ...n, ageMs: Number.isFinite(seenAt) ? Math.max(0, now - seenAt) : null };
+  });
+}
+
 // Push the current registry to Hearth Cloud, authenticated with the in-memory hub token.
 // No-op (LAN ingest keeps working) until paired. Serialized so a slow sync can't overlap.
 async function syncToCloud() {
   if (syncing || nodes.size === 0 || !hubToken) return;
   syncing = true;
   try {
-    const { ok, status, data } = await api('/hub/devices', { platform: platform(), nodes: [...nodes.values()] }, hubToken);
+    const { ok, status, data } = await api('/hub/devices', { platform: platform(), nodes: nodesForSync() }, hubToken);
     if (ok) {
       console.log(`[hub→cloud] synced ${data.nodes ?? '?'} node(s), ${data.readings ?? 0} reading(s)`);
+      // A node id another hub on this account already owns is refused rather than merged (merging
+      // interleaved two devices into one series). Say so here — otherwise it's a device the user
+      // installed, sees on this hub, and cannot find in the dashboard.
+      if (Array.isArray(data.conflicts) && data.conflicts.length) {
+        console.log(
+          `[hub→cloud] REFUSED ${data.conflicts.length} node(s) — another hub already owns: ${data.conflicts.join(', ')}\n` +
+            `            Give them unique ids (for the camera: HEARTH_CAM_ID=<something-unique>).`,
+        );
+      }
       // Absorb the account's desired per-node cadences + actuator states; each node picks
       // them up on its next ingest POST.
       applyCadences(data.cadences);

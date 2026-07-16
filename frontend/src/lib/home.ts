@@ -164,6 +164,30 @@ export function newerReading(a: Reading | null | undefined, b: Reading | null | 
   return b.ts >= a.ts ? b : a;
 }
 
+/** Fallback sample rate when the account hasn't tuned one — mirrors the hub's camera default. */
+const FALLBACK_CADENCE_MS = 5000;
+
+/**
+ * How long a sample may go unrefreshed before we stop calling it current.
+ *
+ * Four missed samples, and never less than a minute so a fast camera doesn't flicker to "no data"
+ * on one dropped frame or a slow round-trip. Scaled to the sensor's own cadence because a device
+ * asked to report hourly is not late at 10 minutes.
+ */
+export const staleAfterMs = (cadenceMs?: number): number => Math.max(4 * (cadenceMs ?? FALLBACK_CADENCE_MS), 60_000);
+
+/**
+ * Is this sample too old to show as a live value?
+ *
+ * Nothing upstream expires a reading: `read_input` with agg 'latest' has no window, and a camera
+ * frame lives at a fixed `latest.jpg`. So a dead sensor keeps serving its last value forever, and
+ * the ONLY thing separating that from a healthy one is its age. Callers show "no data" rather than
+ * render a number that stopped being true — a stale reading on screen is indistinguishable from a
+ * live one, which makes it worse than no reading at all.
+ */
+export const isStale = (ts: number | null | undefined, cadenceMs?: number, now = Date.now()): boolean =>
+  ts == null || now - ts > staleAfterMs(cadenceMs);
+
 export const describeHome = (token?: string | null) => call<HomeModel>('describe_home', {}, token);
 export const listWatches = (token?: string | null) => call<Watch[]>('list_questions', {}, token);
 export const listEvents = (limit = 20, token?: string | null) =>
@@ -178,10 +202,18 @@ export const readInput = (input: string, token?: string | null) =>
  *  up (via /hub/frame). `ossUrl` is null until a frame has actually been stored, or if OSS is off. */
 export interface Snapshot {
   input: string;
-  ts: number;
+  /**
+   * When the frame was actually captured, or null when no frame is stored. This is the frame's
+   * own age from OSS — NOT the time of this request. Render the age from it and never from a
+   * local clock: the stored key is a fixed `latest.jpg`, so a camera that died last week still
+   * returns a perfectly valid URL, and only this field can tell you so.
+   */
+  capturedAt: number | null;
+  ageMs?: number;
   ossUrl: string | null;
   mime: string;
   provisioned: boolean;
+  note?: string;
 }
 export const getSnapshot = (input: string, token?: string | null) =>
   call<Snapshot>('get_snapshot', { input }, token);

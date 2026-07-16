@@ -28,12 +28,34 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const iso = () => new Date().toISOString();
 const hhmmss = () => new Date().toISOString().slice(11, 19);
+
+/**
+ * A camera's node id, unique to this machine.
+ *
+ * Node ids are the key for readings, cadence downlinks and the stored frame, and nothing upstream
+ * makes them unique — ESP nodes only avoid collisions because theirs are MAC-derived. This one
+ * used to be the constant 'hub-cam', so every hub's camera was literally the same node: two hubs
+ * on an account overwrote each other's frames and interleaved into one reading series.
+ *
+ * Seeded from /etc/machine-id (hostname if absent) rather than the cloud-assigned hub id, because
+ * the camera starts before the hub has enrolled and must keep working with no network at all.
+ */
+function defaultCameraId() {
+  let seed;
+  try {
+    seed = readFileSync('/etc/machine-id', 'utf8').trim();
+  } catch {
+    seed = hostname();
+  }
+  return `cam-${createHash('sha256').update(seed || hostname()).digest('hex').slice(0, 8)}`;
+}
 
 // quality 1..100 → ffmpeg -q:v 2 (best) .. 31 (worst). Higher quality = more detail = more tokens.
 const qToQv = (q) => Math.max(2, Math.min(31, Math.round(31 - (Math.max(1, Math.min(100, q)) / 100) * 29)));
@@ -100,7 +122,7 @@ function detectCaptureDevice() {
  *   hub can push the bytes up to Hearth Cloud (→ OSS) where the dashboard and Qwen-VL read them.
  */
 export function createCamera({ ingest, onFrame }) {
-  const id = process.env.HEARTH_CAM_ID || 'hub-cam';
+  const id = process.env.HEARTH_CAM_ID || defaultCameraId();
   const requested = process.env.HEARTH_CAM_SOURCE || 'rtmp';
   // `auto` resolves once, at startup, to whatever camera is actually plugged into this
   // machine. No camera → rtmp, i.e. exactly the OBS behaviour, so a hub with no local

@@ -22,7 +22,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { makeStore } from '../src/store.ts';
 import { hasKey } from '../src/qwen.ts';
-import { ossProvisioned, putFrame } from '../src/oss.ts';
+import { framesFor, ossProvisioned } from '../src/oss.ts';
+// src/ has no exported mint for an AccountId — a script must say out loud that it's faking one.
+import type { AccountId } from '../src/auth.ts';
 import { judgeFrame } from '../src/vision-watch.ts';
 import type { Question } from '../src/domain.ts';
 
@@ -41,6 +43,7 @@ if (!LIVE) {
 }
 
 const CAM = 'node-cam.cam.frame';
+const ACCT = 'acct-vision-check' as unknown as AccountId; // frames are reachable only per-account — see oss.ts framesFor
 const store = await makeStore();
 
 // A node must own the input for the frame to be accepted, and for actuates to resolve.
@@ -95,8 +98,8 @@ let aOk = true;
 let attributedToQwen = true;
 if (LIVE) {
   await store.putQuestion(watch({}));
-  await putFrame(CAM, OTHER); // a stranger shows up
-  const [a] = await judgeFrame(store, CAM);
+  await framesFor(store, ACCT).write(CAM, OTHER, Date.now()); // a stranger shows up
+  const [a] = await judgeFrame(store, ACCT, CAM);
   console.log(`A) judged=${a?.judged} fired=${a?.fired} engine=${a?.engine} verdict=${a?.verdict}`);
   console.log(`   → ${a?.reasoning}`);
   const events = await store.listEvents(20);
@@ -124,7 +127,7 @@ await store.putQuestion(
     },
   }),
 );
-const gated = (await judgeFrame(store, CAM)).find((o) => o.questionId === 'q-gated');
+const gated = (await judgeFrame(store, ACCT, CAM)).find((o) => o.questionId === 'q-gated');
 line('B)', gated?.judged === false && gated?.skipped === 'gate', `false gate → no cloud call (skipped=${gated?.skipped})`);
 await store.deleteQuestion('q-gated');
 
@@ -143,7 +146,7 @@ await store.putQuestion(
   }),
 );
 await store.putRunState({ questionId: 'q-metered', lastJudgedAt: Date.now() - 60_000, lastFiredAt: 0, lastAnswer: false });
-const metered = (await judgeFrame(store, CAM)).find((o) => o.questionId === 'q-metered');
+const metered = (await judgeFrame(store, ACCT, CAM)).find((o) => o.questionId === 'q-metered');
 line('C)', metered?.judged === false && metered?.skipped === 'cadence', `looked 1m ago, floor 1h → refused before spending (skipped=${metered?.skipped})`);
 await store.deleteQuestion('q-metered');
 
@@ -159,7 +162,7 @@ await store.putQuestion(
   }),
 );
 await store.putRunState({ questionId: 'q-unmetered', lastJudgedAt: Date.now() - 500, lastFiredAt: 0, lastAnswer: false });
-const unmetered = (await judgeFrame(store, CAM)).find((o) => o.questionId === 'q-unmetered');
+const unmetered = (await judgeFrame(store, ACCT, CAM)).find((o) => o.questionId === 'q-unmetered');
 line('C2)', unmetered?.judged === false && unmetered?.skipped === 'cadence', `no maxCadence in spec → default floor still applies (skipped=${unmetered?.skipped})`);
 await store.deleteQuestion('q-unmetered');
 
@@ -169,8 +172,8 @@ if (LIVE) {
   await store.putHouseholdMember({ id: 'hm-sam', label: 'Sam', tags: ['family'], image: OTHER, addedAt: 2 });
   await store.putQuestion(watch({ id: 'q-linked', memoryIds: ['hm-sam'] }));
   // Frame IS Sam; with only Sam linked, Qwen-VL should recognise a household member → no fire.
-  await putFrame(CAM, OTHER);
-  const linked = (await judgeFrame(store, CAM)).find((o) => o.questionId === 'q-linked');
+  await framesFor(store, ACCT).write(CAM, OTHER, Date.now());
+  const linked = (await judgeFrame(store, ACCT, CAM)).find((o) => o.questionId === 'q-linked');
   console.log(`D) linked-to-Sam, frame is Sam → fired=${linked?.fired} verdict=${linked?.verdict}`);
   console.log(`   → ${linked?.reasoning}`);
   dOk = linked?.judged === true && linked?.fired === false;

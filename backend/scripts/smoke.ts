@@ -9,6 +9,8 @@ process.env.AUTH_SESSION_SECRET ??= 'smoke-test-session-secret-0123456789';
 
 import { MemoryStore } from '../src/store.ts';
 import { TOOL_BY_NAME, type ToolCtx } from '../src/tools.ts';
+// Only a verified token mints an AccountId in src/; a script has to say so explicitly.
+import type { AccountId } from '../src/auth.ts';
 
 let pass = 0;
 let fail = 0;
@@ -23,7 +25,7 @@ const ok = (name: string, cond: boolean) => {
 // Seed the legacy demo world so describe_home/list_inputs have zones+devices to
 // assert against (a fresh per-account home is intentionally empty — see MemoryStore).
 // The hub-sync block at the end covers the empty-home → real-device path.
-const ctx: ToolCtx = { store: new MemoryStore(true) };
+const ctx: ToolCtx = { store: new MemoryStore(true), accountId: 'acct-smoke' as unknown as AccountId };
 const call = (tool: string, args: Record<string, unknown> = {}) => TOOL_BY_NAME.get(tool)!.handler(args, ctx);
 
 const home = (await call('describe_home')) as { zones: unknown[]; nodes: unknown[]; capabilities: unknown[] };
@@ -178,7 +180,7 @@ ok('code is one-time-use', reuse.ok === false);
 //      and become visible/queryable through the existing tools -------------------
 const { syncHubDevices } = await import('../src/hub-devices.ts');
 const hubStore = new MemoryStore(); // an empty production home
-const hubCtx: ToolCtx = { store: hubStore };
+const hubCtx: ToolCtx = { store: hubStore, accountId: 'acct-smoke-hub' as unknown as AccountId };
 const hcall = (tool: string, args: Record<string, unknown> = {}) => TOOL_BY_NAME.get(tool)!.handler(args, hubCtx);
 
 const payload = {

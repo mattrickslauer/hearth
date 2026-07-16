@@ -31,7 +31,7 @@ import {
 import { enrollHub, pollHub, claimHub, heartbeatHub, listHubs, unpairHub, getHubStore, hubView } from './hubs';
 import { hubWatches, syncHubDevices } from './hub-devices';
 import { relayConfig, relayEnabled, publishToRelay } from './relay';
-import { putFrame, ossProvisioned } from './oss';
+import { framesFor, ossProvisioned, UnknownInputError } from './oss';
 import { applyNotifyConfig, deliverNotification, notifyChannels, redactNotifyConfig } from './notify';
 import { judgeFrame, type VisionOutcome } from './vision-watch';
 
@@ -196,7 +196,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const name = String(body.tool ?? '');
       const tool = TOOL_BY_NAME.get(name);
       if (!tool) return send(res, 404, { error: `unknown tool: ${name}` });
-      const ctx: ToolCtx = { store: await getStoreFor(session.sub) };
+      const ctx: ToolCtx = { store: await getStoreFor(session.sub), accountId: session.sub };
       const result = await tool.handler((body.args as Record<string, unknown>) ?? {}, ctx);
       return send(res, 200, { tool: name, result });
     }
@@ -287,10 +287,19 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       if (!input || !image) return send(res, 400, { error: 'input and image (data: URI) required' });
       if (!ossProvisioned()) return send(res, 200, { ok: true, provisioned: false, note: 'OSS not configured; frame not stored.' });
       const store = await getStoreFor(claims.acc);
-      const owns = (await store.listHubDevices()).some((s) => s.nodes.some((n) => input.startsWith(`${n.id}.`)));
-      if (!owns) return send(res, 404, { error: 'unknown input' });
-      const key = await putFrame(input, image).catch(() => null);
-      hub.lastSeenAt = Date.now();
+      // The hub pushes a frame the moment it snaps one, so arrival time is the capture time to
+      // within a network hop — and unlike a hub-supplied timestamp it can't be thrown off by a
+      // drifting clock on the box. This is what lets a reader tell a live frame from a dead one.
+      const capturedAt = Date.now();
+      // Ownership is enforced inside the handle, so this route cannot forget it.
+      let key: string | null;
+      try {
+        key = await framesFor(store, claims.acc).write(input, image, capturedAt);
+      } catch (e) {
+        if (e instanceof UnknownInputError) return send(res, 404, { error: 'unknown input' });
+        key = null;
+      }
+      hub.lastSeenAt = capturedAt;
       await getHubStore().save(hub);
       if (!key) return send(res, 400, { error: 'image must be a data: URI' });
 
@@ -301,7 +310,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       // fail the frame push — but guard anyway so storage stays the contract here.
       let watches: VisionOutcome[] = [];
       try {
-        watches = await judgeFrame(store, input);
+        watches = await judgeFrame(store, claims.acc, input);
       } catch (e) {
         console.warn('[hub/frame] vision eval failed:', (e as Error).message);
       }

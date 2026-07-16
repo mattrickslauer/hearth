@@ -27,9 +27,10 @@
 
 import { ReadingStore, evaluate, parseDuration, type PredicateNode, type Question } from './domain';
 import { deliverNotification } from './notify';
-import { frameKey, presignKey, resolveImage } from './oss';
+import { framesFor, resolveImage } from './oss';
 import { judge, type CallUsage } from './qwen';
 import type { HomeStore, RunEventRow, WatchRunState } from './store';
+import type { AccountId } from './auth';
 
 /** How far back to hydrate a gate's series. Covers any sane `sustained`/`delta` window. */
 const GATE_LOOKBACK_MS = 60 * 60 * 1000;
@@ -163,7 +164,7 @@ const watchesInput = (q: Question, input: string): boolean =>
  * *why* nothing was spent). Never throws: a frame push must still succeed even if
  * Qwen, OSS, or a notify channel is having a bad day.
  */
-export async function judgeFrame(store: HomeStore, input: string, now = Date.now()): Promise<VisionOutcome[]> {
+export async function judgeFrame(store: HomeStore, accountId: AccountId, input: string, now = Date.now()): Promise<VisionOutcome[]> {
   const questions = await store.listQuestions();
   const candidates = questions.filter((q) => q.compiledSpec?.kind === 'cloud' && watchesInput(q, input));
   if (!candidates.length) return [];
@@ -204,10 +205,16 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
       }
     }
 
-    // 3) The frame Qwen-VL will actually look at.
+    // 3) The frame Qwen-VL will actually look at. `read` returns null when no object is really
+    //    there, so we skip instead of billing a look at a URL that 404s.
     let frameUrl: string;
     try {
-      frameUrl = await presignKey(frameKey(input), FRAME_URL_TTL_S);
+      const frame = await framesFor(store, accountId).read(input, FRAME_URL_TTL_S);
+      if (!frame) {
+        await skip('no-frame'); // tallied like every other saved call — see pendingSkips
+        continue;
+      }
+      frameUrl = frame.url;
     } catch (e) {
       console.warn(`[vision] no frame URL for ${input}:`, (e as Error).message);
       await skip('no-frame');

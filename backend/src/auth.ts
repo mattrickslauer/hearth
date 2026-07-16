@@ -348,8 +348,23 @@ const JWT_HEADER = { alg: 'HS256', typ: 'JWT' } as const;
 const HUB_TOKEN_TTL_SEC = 180 * 24 * 60 * 60; // 180 days; revocation is via the hub-record check on heartbeat
 const WS_TICKET_TTL_SEC = 90; // realtime tickets are single-use-ish and short — just long enough to connect + register
 
+declare const accountIdBrand: unique symbol;
+/**
+ * An account id that came from a VERIFIED token — the tenant boundary, in the type system.
+ *
+ * It is a plain string at runtime, but nothing outside this module can produce one: there is no
+ * exported mint, so the only sources are verifySession / verifyHubToken below. Storage keyed by
+ * tenant asks for this type rather than `string` (see oss.ts framesFor), which is what makes
+ * "read another account's data" unwriteable rather than merely discouraged — a caller-supplied
+ * `args.input`, a hub id, or a swapped argument is a `string` and will not compile.
+ *
+ * It widens to string implicitly, so everything downstream that takes a `string` keeps working;
+ * only the reverse is blocked, and only where the brand is demanded.
+ */
+export type AccountId = string & { readonly [accountIdBrand]: 'AccountId' };
+
 interface SessionPayload {
-  sub: string; // account id
+  sub: AccountId; // account id
   email: string;
   iat: number; // issued-at (seconds since epoch)
   exp: number; // expiry (seconds since epoch)
@@ -357,7 +372,7 @@ interface SessionPayload {
 
 export interface HubTokenPayload {
   sub: string; // hub id
-  acc: string; // account id the hub is bound to
+  acc: AccountId; // account id the hub is bound to
   iat: number;
   exp: number;
 }
@@ -420,7 +435,8 @@ export function verifySession(token: string | undefined): SessionPayload | null 
   if (!p) return null;
   if (typeof p.sub !== 'string' || !p.sub) return null;
   return {
-    sub: p.sub,
+    // One of only two places an AccountId is minted, and it is downstream of a verified signature.
+    sub: p.sub as AccountId,
     email: typeof p.email === 'string' ? p.email : '',
     iat: typeof p.iat === 'number' ? p.iat : 0,
     exp: p.exp as number,
@@ -438,7 +454,9 @@ export function verifyHubToken(token: string | undefined): HubTokenPayload | nul
   if (!p) return null;
   if (typeof p.sub !== 'string' || !p.sub) return null;
   if (typeof p.acc !== 'string' || !p.acc) return null;
-  return { sub: p.sub, acc: p.acc, iat: typeof p.iat === 'number' ? p.iat : 0, exp: p.exp as number };
+  // The other mint point. `sub` is the HUB id and stays a plain string on purpose — passing it
+  // where an account is expected is exactly the confusion the brand exists to reject.
+  return { sub: p.sub, acc: p.acc as AccountId, iat: typeof p.iat === 'number' ? p.iat : 0, exp: p.exp as number };
 }
 
 /** Keyed HMAC-SHA256 (hex) over an arbitrary string — used to store enrollment-token hashes. */
