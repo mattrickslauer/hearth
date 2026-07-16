@@ -15,6 +15,7 @@
     "vision-watch-check": "tsx scripts/vision-watch-check.ts",
     "oss-check": "tsx scripts/oss-check.ts",
     "readings-check": "tsx scripts/readings-check.ts",
+    "hub-devices-check": "tsx scripts/hub-devices-check.ts",
     "mail-check": "tsx scripts/mail-check.ts",
     "notify-check": "tsx scripts/notify-check.ts",
     "typecheck": "tsc --noEmit",

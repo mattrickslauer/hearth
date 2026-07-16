@@ -18,7 +18,7 @@ ingests your ESP32 nodes, and the dashboard shows the hub **Online** with its de
 Manage the service any time:
 
 ```bash
-~/.hearth/hearthctl status     # running? paired? how many nodes ingested?
+~/.hearth/hearthctl status     # running? paired? how many nodes ingested? camera attached?
 ~/.hearth/hearthctl code       # reprint the pairing claim code (if still unpaired)
 ~/.hearth/hearthctl logs       # follow the log
 ~/.hearth/hearthctl restart    # e.g. after a reboot
@@ -26,6 +26,34 @@ Manage the service any time:
 ```
 
 To start on boot, add `~/.hearth/hearthctl start` to your crontab (`@reboot`) or a login script.
+
+### Attach a camera
+
+Plug a USB webcam into the hub (or use the built-in one, if the hub is a laptop), then:
+
+```bash
+~/.hearth/hearthctl camera on
+```
+
+The hub finds the camera, and it shows up in the dashboard under **Camera** — a vision sensor
+like any other, with the same two knobs (cadence, quality) and frames Qwen-VL can read. It stays
+on across restarts. `hearthctl camera off` detaches it.
+
+Needs `ffmpeg` on PATH (`dnf install ffmpeg` / `apt install ffmpeg`).
+
+> **Why it probes instead of asking you for a device.** A single webcam registers *several*
+> `/dev/video*` nodes and only one of them actually captures — on a typical laptop `/dev/video0`
+> is a metadata interface that fails with *"Not a video capture device"* and the real camera is
+> `/dev/video1`. The number isn't stable across machines, and guessing wrong is indistinguishable
+> from broken hardware, so `camera on` opens each node and keeps the first that hands over a frame.
+
+To pin a specific source instead of probing, pass raw ffmpeg input args:
+
+```bash
+~/.hearth/hearthctl camera on -f v4l2 -i /dev/video2   # a specific device
+~/.hearth/hearthctl camera on rtmp                     # OBS pushes to rtmp://<hub>:1935/live
+~/.hearth/hearthctl camera on test                     # synthetic source, verifies the pipeline
+```
 
 ### One process, both faces
 
@@ -162,7 +190,20 @@ hub                          cloud                         user (dashboard)
   on it (default `8000`)
 - `--reset` — forget stored identity and enroll fresh
 
-Identity persists to `~/.hearth/hub-state.json`, so restarting keeps the same hub.
+Camera (prefer `hearthctl camera on`, which writes these for you):
+
+- `HEARTH_CAM=1` — attach the camera sensor
+- `HEARTH_CAM_SOURCE` — `auto` (probe for the real capture device), `rtmp` (default — OBS pushes
+  to `rtmp://<hub>:1935/live`), `test` (synthetic), or raw ffmpeg input args (`-f v4l2 -i /dev/video1`)
+- `HEARTH_CAM_ID` — node id it self-describes as (default `hub-cam`)
+- `HEARTH_CAM_CADENCE_MS` — how often it snaps (default `5000`; the dashboard/cloud can retune it live)
+- `HEARTH_CAM_QUALITY` — JPEG quality 1..100 (default `70`) — the detail/token tradeoff
+- `HEARTH_CAM_WIDTH` — frame width (default `1280`)
+- `HEARTH_CAM_RTMP` — RTMP listen URL (default `rtmp://0.0.0.0:1935/live`)
+
+Identity persists to `~/.hearth/hub-state.json`, so restarting keeps the same hub. Settings written
+by `hearthctl camera` persist to `~/.hearth/config.env` and are loaded on every start; a real env
+var still overrides them for one-off runs.
 
 ## Local development
 

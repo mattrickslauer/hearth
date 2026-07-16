@@ -26,6 +26,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 import { hmacHex, issueHubToken, verifyHubToken } from './auth';
+import type { HomeStore } from './store';
 import { HOME_TABLE, ensureHomeTable, tsDeleteRow, tsGetRange, tsGetRow, tsPutRow } from './tablestore';
 
 /** A hub is "online" if we've heard a heartbeat within this window (heartbeat cadence ~30s). */
@@ -426,11 +427,18 @@ export async function listHubs(accountId: string): Promise<HubView[]> {
   return hubs.sort((a, b) => b.createdAt - a.createdAt).map((h) => hubView(h, now));
 }
 
-/** Unpair (delete) a hub the account owns. Returns false if it isn't theirs / doesn't exist. */
-export async function unpairHub(accountId: string, hubId: string): Promise<boolean> {
+/**
+ * Unpair (delete) a hub the account owns. Returns false if it isn't theirs / doesn't exist.
+ *
+ * Deleting the hub record alone used to leave its device snapshot behind, so the unpaired hub's
+ * nodes stayed in the Home Model forever — listed to Qwen as live sensors, and colliding with
+ * the next hub over shared node ids (every hub calls its camera `hub-cam`). Forget the devices too.
+ */
+export async function unpairHub(accountId: string, hubId: string, store: HomeStore): Promise<boolean> {
   const hub = await getHubStore().getById(hubId);
   if (!hub || hub.accountId !== accountId) return false;
   await getHubStore().remove(hubId);
+  await store.deleteHubDevices(hubId);
   return true;
 }
 

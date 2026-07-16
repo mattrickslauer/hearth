@@ -16,6 +16,9 @@
  *      ESP nodes use.
  *
  * Source is swappable (env HEARTH_CAM_SOURCE):
+ *   auto            — find a real USB/built-in camera on this machine and use it;
+ *                     falls back to `rtmp` if there isn't one. What `hearthctl
+ *                     camera on` uses, so plugging a camera in is the whole setup.
  *   rtmp  (default) — ffmpeg listens; OBS pushes to rtmp://<hub>:1935/live
  *   test            — ffmpeg lavfi testsrc, so the whole pipeline verifies with
  *                     no OBS running
@@ -24,8 +27,8 @@
  * Needs ffmpeg on PATH. If it's absent the hub logs and runs on without a camera.
  */
 
-import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -38,6 +41,55 @@ const qToQv = (q) => Math.max(2, Math.min(31, Math.round(31 - (Math.max(1, Math.
 // A whole JPEG ends with the EOI marker FF D9 — used to skip a frame ffmpeg is mid-write on.
 const isCompleteJpeg = (buf) => buf.length > 3 && buf[buf.length - 2] === 0xff && buf[buf.length - 1] === 0xd9;
 
+/** Human-readable name of a v4l2 node, e.g. "Integrated Camera". Best-effort. */
+const v4l2Name = (dev) => {
+  try {
+    return readFileSync(`/sys/class/video4linux/${dev}/name`, 'utf8').trim();
+  } catch {
+    return dev;
+  }
+};
+
+/**
+ * Find a v4l2 device that can actually hand us a frame, and return it as ffmpeg
+ * input args (or null if there's nothing usable).
+ *
+ * Why probe instead of just taking /dev/video0? Because on most modern laptops
+ * /dev/video0 is NOT the camera. A single UVC webcam registers several nodes —
+ * the extra ones are metadata/control interfaces that report "Not a video
+ * capture device" the moment you open them. The capture node is frequently
+ * video1. Numeric order tells you nothing, and guessing wrong looks identical
+ * to broken hardware, so the only honest test is to open each one and try to
+ * pull a frame.
+ *
+ * Linux-only (v4l2). Anywhere else we return null and the caller falls back to rtmp.
+ */
+function detectCaptureDevice() {
+  if (process.platform !== 'linux') return null;
+  let devs;
+  try {
+    devs = readdirSync('/dev')
+      .filter((f) => /^video\d+$/.test(f))
+      .sort((a, b) => Number(a.slice(5)) - Number(b.slice(5)));
+  } catch {
+    return null;
+  }
+  for (const dev of devs) {
+    // One real frame to null output: the cheapest proof the node is a capture device
+    // we have permission to read. timeout guards a device that opens but never delivers.
+    const r = spawnSync(
+      'ffmpeg',
+      ['-hide_banner', '-loglevel', 'error', '-f', 'v4l2', '-i', `/dev/${dev}`, '-frames:v', '1', '-f', 'null', '-'],
+      { timeout: 8000, stdio: 'ignore' },
+    );
+    if (r.status === 0) {
+      console.log(`[cam] auto-detected camera: /dev/${dev} — ${v4l2Name(dev)}`);
+      return `-f v4l2 -i /dev/${dev}`;
+    }
+  }
+  return null;
+}
+
 /**
  * Create the camera sensor. Wire it to the hub by passing the hub's `ingest`
  * (to fold DESCRIBE/READING into the registry like any node). Returns handles
@@ -49,7 +101,14 @@ const isCompleteJpeg = (buf) => buf.length > 3 && buf[buf.length - 2] === 0xff &
  */
 export function createCamera({ ingest, onFrame }) {
   const id = process.env.HEARTH_CAM_ID || 'hub-cam';
-  const source = process.env.HEARTH_CAM_SOURCE || 'rtmp';
+  const requested = process.env.HEARTH_CAM_SOURCE || 'rtmp';
+  // `auto` resolves once, at startup, to whatever camera is actually plugged into this
+  // machine. No camera → rtmp, i.e. exactly the OBS behaviour, so a hub with no local
+  // camera is unaffected.
+  const source =
+    requested === 'auto'
+      ? (detectCaptureDevice() ?? (console.log('[cam] auto: no local camera found — listening for OBS over rtmp instead'), 'rtmp'))
+      : requested;
   const rtmpUrl = process.env.HEARTH_CAM_RTMP || 'rtmp://0.0.0.0:1935/live';
   const width = Number(process.env.HEARTH_CAM_WIDTH || 1280);
   let quality = Number(process.env.HEARTH_CAM_QUALITY || 70);

@@ -75,6 +75,9 @@ export interface HubDeviceSnapshot {
   syncedAt: number;
 }
 
+/** Last-wins dedupe by id, preserving order. Callers put the entry that should win last. */
+const dedupeById = <T extends { id: string }>(items: T[]): T[] => [...new Map(items.map((i) => [i.id, i])).values()];
+
 /** Emoji marker for a sensor kind — mirrors the demo Capability.icon convention. */
 const iconFor = (kind?: string): string =>
   kind === 'temperature'
@@ -153,6 +156,8 @@ export interface HomeStore {
   putHubDevices(snap: HubDeviceSnapshot): Promise<void>;
   /** All paired hubs' latest device snapshots. */
   listHubDevices(): Promise<HubDeviceSnapshot[]>;
+  /** Forget a hub's devices (on unpair). Without this its nodes haunt the Home Model forever. */
+  deleteHubDevices(hubId: string): Promise<boolean>;
   /** The desired per-sensor sample cadence (input id "<node>.<key>" → ms) the account requested. */
   getCadences(): Promise<Record<string, number>>;
   /** Set (or clear, when ms is null) one sensor's desired sample cadence in milliseconds. */
@@ -277,13 +282,30 @@ export class MemoryStore implements HomeStore {
     this.runs = new Map((s.runs ?? []).map((r) => [r.questionId, r]));
   }
 
+  /**
+   * Hub snapshots oldest-sync-first, so that folding them into a map keyed by id leaves the
+   * FRESHEST hub owning any contested id.
+   *
+   * Node ids are only unique within a hub — a camera self-describes as `hub-cam` on every hub
+   * by default — so two hubs reporting one id is not a corrupt state, it's the default one.
+   * It happens routinely: a hub that re-enrolls (401 → fresh hubId) leaves its old snapshot
+   * behind, and both then claim `hub-cam.cam.frame`. Whoever synced most recently is the one
+   * still plugged in, so let them win.
+   */
+  private snapshotsOldestFirst(): HubDeviceSnapshot[] {
+    return [...this.hubDevices.values()].sort((a, b) => (a.syncedAt ?? 0) - (b.syncedAt ?? 0));
+  }
+
   /** Capabilities derived from every paired hub's real nodes (merged into the model). */
   private hubCapabilities(): Capability[] {
-    const caps: Capability[] = [];
-    for (const snap of this.hubDevices.values())
+    // Keyed by capability id: duplicates here reach the dashboard as two React children with
+    // the same key, and reach Qwen as the same sensor listed twice.
+    const byId = new Map<string, Capability>();
+    const add = (c: Capability) => byId.set(c.id, c);
+    for (const snap of this.snapshotsOldestFirst())
       for (const n of snap.nodes) {
         for (const s of n.sensors)
-          caps.push({
+          add({
             id: `${n.id}.${s.key}`,
             label: `${n.id} · ${s.key}`,
             kind: 'sensor',
@@ -293,7 +315,7 @@ export class MemoryStore implements HomeStore {
             vision: s.vision,
           });
         for (const a of n.actuators ?? [])
-          caps.push({
+          add({
             id: `${n.id}.${a.key}`,
             label: `${n.id} · ${a.key}`,
             kind: 'actuator',
@@ -301,14 +323,15 @@ export class MemoryStore implements HomeStore {
             describes: `commandable ${a.kind ?? 'actuator'} on hub node ${n.id}${snap.hubName ? ` (hub: ${snap.hubName})` : ''} — drive it with the actuate tool`,
           });
       }
-    return caps;
+    return [...byId.values()];
   }
   /** Home-Model nodes derived from paired hubs' real ESP32 nodes. */
   private hubModelNodes(): HomeNode[] {
-    const out: HomeNode[] = [];
-    for (const snap of this.hubDevices.values())
+    // Same contested-id story as hubCapabilities(): freshest hub wins the node.
+    const byId = new Map<string, HomeNode>();
+    for (const snap of this.snapshotsOldestFirst())
       for (const n of snap.nodes)
-        out.push({
+        byId.set(n.id, {
           id: n.id,
           name: n.id,
           // Real hub nodes aren't bound to the demo zones; label the zone by hub.
@@ -333,7 +356,7 @@ export class MemoryStore implements HomeStore {
             })),
           ],
         } as HomeNode);
-    return out;
+    return [...byId.values()];
   }
 
   private push(input: string, value: Scalar, ts: number) {
@@ -346,14 +369,15 @@ export class MemoryStore implements HomeStore {
   async describeHome(): Promise<HomeModel> {
     const hubNodes = this.hubModelNodes();
     if (!hubNodes.length) return this.model;
+    // Hub entries come last, so real hardware outranks a same-id model entry.
     return {
       zones: this.model.zones,
-      nodes: [...this.model.nodes, ...hubNodes],
-      capabilities: [...this.model.capabilities, ...this.hubCapabilities()],
+      nodes: dedupeById([...this.model.nodes, ...hubNodes]),
+      capabilities: dedupeById([...this.model.capabilities, ...this.hubCapabilities()]),
     };
   }
   async listInputs(filter?: 'sensor' | 'actuator'): Promise<Capability[]> {
-    const caps = [...this.model.capabilities, ...this.hubCapabilities()];
+    const caps = dedupeById([...this.model.capabilities, ...this.hubCapabilities()]);
     return caps.filter((c) => !filter || c.kind === filter);
   }
   async appendReading(input: string, value: Scalar, ts: number): Promise<void> {
@@ -403,6 +427,11 @@ export class MemoryStore implements HomeStore {
   }
   async listHubDevices(): Promise<HubDeviceSnapshot[]> {
     return [...this.hubDevices.values()];
+  }
+  async deleteHubDevices(hubId: string): Promise<boolean> {
+    const had = this.hubDevices.delete(hubId);
+    if (had) this.persist();
+    return had;
   }
   async getCadences(): Promise<Record<string, number>> {
     return Object.fromEntries(this.cadences);
@@ -787,6 +816,15 @@ class TablestoreStore extends MemoryStore {
       this.hubSigs.set(snap.hubId, sig);
       await this.putBlob(`hd#${snap.hubId}`, snap); // persist only when device identity changes
     }
+  }
+  async deleteHubDevices(hubId: string): Promise<boolean> {
+    await super.deleteHubDevices(hubId);
+    // Drop the cached signature too, or a hub that re-pairs and reports an identical device
+    // list would be treated as "unchanged" and never re-persisted.
+    this.hubSigs.delete(hubId);
+    if (!(await this.getBlob(`hd#${hubId}`))) return false;
+    await this.client.deleteRow({ tableName: TS_TABLE, condition: this.ignore(), primaryKey: this.pk(`hd#${hubId}`) });
+    return true;
   }
   async getCadences(): Promise<Record<string, number>> {
     // Read through so a cadence set on another FC instance is seen on the hub's next sync.
