@@ -111,3 +111,18 @@ export const Radius = {
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 1120;
+
+/**
+ * The z-axis, named once. Every layer of app chrome draws from this scale rather than
+ * inventing a local zIndex, so "what covers what" is decided here and nowhere else.
+ * Content sits at the bottom; chrome floats over it; a sheet covers everything but a toast.
+ */
+export const Layer = {
+  base: 0,
+  raised: 10, // sticky top bar over scrolling content
+  nav: 20, // bottom tab bar (mobile) / side rail (desktop)
+  fab: 30, // the floating primary action
+  scrim: 40, // the dimmer that makes a sheet modal
+  sheet: 50, // slide-up sheet / centered dialog
+  toast: 60, // transient messages, above even a sheet
+} as const;
