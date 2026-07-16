@@ -475,7 +475,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       const session = requireSession(req, res);
       if (!session) return;
       const id = decodeURIComponent(path.slice('/hubs/'.length));
-      const ok = await unpairHub(session.sub, id);
+      const ok = await unpairHub(session.sub, id, await getStoreFor(session.sub));
       return send(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'hub not found' });
     }
 
