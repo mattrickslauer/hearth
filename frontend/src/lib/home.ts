@@ -103,6 +103,45 @@ export interface RunEvent {
   answer?: boolean;
   reasoning?: string;
   evaluatedBy?: 'local' | 'qwen';
+  /** The watch's title at the time it ran — denormalised so search needs no join. */
+  title?: string;
+  /** Set only on rows that were actually billed. Measured from the API's usage block,
+   *  so this is what we PAID — not what `pricing.ts` forecast we would. */
+  model?: string;
+  tokens?: { in: number; out: number };
+  usd?: number;
+  ms?: number;
+  /** The model wasn't in the rate table, so `usd` understates the real charge. */
+  unrated?: boolean;
+}
+
+/** Filters for the run log. Everything optional — omitted means "don't filter". */
+export interface RunQuery {
+  sinceMs?: number;
+  from?: number;
+  to?: number;
+  questionId?: string;
+  kinds?: string[];
+  engine?: 'local' | 'qwen';
+  text?: string;
+  billedOnly?: boolean;
+  limit?: number;
+}
+
+/** A page of runs plus the spend for the WHOLE match (not just the page). */
+export interface RunSearch {
+  runs: RunEvent[];
+  totals: {
+    rows: number;
+    billed: number;
+    usd: number;
+    usdFormatted: string;
+    tokensIn: number;
+    tokensOut: number;
+    unrated: boolean;
+  };
+  truncated: boolean;
+  window: { from: number; to: number };
 }
 
 export interface Reading {
@@ -129,6 +168,9 @@ export const describeHome = (token?: string | null) => call<HomeModel>('describe
 export const listWatches = (token?: string | null) => call<Watch[]>('list_questions', {}, token);
 export const listEvents = (limit = 20, token?: string | null) =>
   call<RunEvent[]>('list_events', { limit }, token);
+/** Search the run log and get the measured spend for the match. */
+export const searchRuns = (q: RunQuery, token?: string | null) =>
+  call<RunSearch>('search_runs', { ...q }, token);
 export const readInput = (input: string, token?: string | null) =>
   call<Reading | null>('read_input', { input, agg: 'latest' }, token);
 

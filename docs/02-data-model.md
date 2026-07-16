@@ -303,6 +303,32 @@ interface DiscoveredDevice {  // found on LAN, not yet connected (user must init
 Tablestore notes: keep **reserved CU = 0** (pay-per-request); add a **Search Index** only if the app
 needs ad-hoc queries; use TTL for all observation tables to bound cost.
 
+### As built — the run log (`hearth_runs`)
+
+The shipped run log follows the shape above but not its keys, for the same reason the twin
+landed as `hearth_home` rather than `home_model`: one account-scoped table per retention class,
+PK `(account, sk)`. See `backend/src/store.ts`.
+
+| | As built |
+|---|---|
+| Table | `hearth_runs`, `sk = <13-digit-padded-ms>#<id>` — time-ordered range scan; id breaks ms ties between concurrent FC instances |
+| TTL | **365 days**, swept server-side (watches are forever, readings are 24h, spend history sits between) |
+| Grain | a row per **billed call** (`authored`/`edited`/`judged`) and per **outcome** (`fired`/`held`/`actuate`/`notify`) |
+| Cost | `model`, `tokens{in,out}`, `usd`, `ms` — **measured** from the model API's own `usage` block, priced with the same `MODEL_RATES` the quote uses |
+| Search | `search_runs` (MCP) — time window, watch, kind, engine, free text, billed-only. Filtered in memory after a time-bounded scan; the **Search Index** above is still the escape hatch if that stops being enough |
+
+Two invariants worth keeping:
+
+- **`usd` is set iff the row IS the billed call.** A judged look that fires writes two rows from
+  one Qwen call; pricing both would double the bill, and totals just sum `usd`.
+- **Skips are counters, never rows** (`WatchRunState.skips`). A vision watch is evaluated on every
+  frame and skipped cheaply by the cadence floor or local gate; a row each would be ~170k/day/watch
+  and the audit would cost more than the Looks it audits. They are approximate by construction —
+  nothing derived from money reads them.
+
+Absent `usd` ≠ `usd: 0`: one means we never paid, the other means we paid nothing. Search has to
+tell them apart, so unbilled rows carry no `usd` field at all.
+
 ---
 
 ## Sync & twin semantics (IoT Platform)

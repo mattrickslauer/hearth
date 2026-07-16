@@ -28,7 +28,7 @@
 import { ReadingStore, evaluate, parseDuration, type PredicateNode, type Question } from './domain';
 import { deliverNotification } from './notify';
 import { frameKey, presignKey, resolveImage } from './oss';
-import { judge } from './qwen';
+import { judge, type CallUsage } from './qwen';
 import type { HomeStore, RunEventRow, WatchRunState } from './store';
 
 /** How far back to hydrate a gate's series. Covers any sane `sustained`/`delta` window. */
@@ -100,6 +100,49 @@ const freshState = (questionId: string): WatchRunState => ({
   lastAnswer: false,
 });
 
+/**
+ * Skip tallies waiting to be written — "how many calls the gate saved you".
+ *
+ * The skip path is the HOT path (a frame every 0.5s per watch) and its entire purpose is
+ * to spend nothing, so it must not write. A putRow per skip would be ~170k writes/day/watch
+ * and the audit would cost more than the Looks it audits. So deltas accumulate here and
+ * ride along with a state write that was going to happen anyway.
+ *
+ * Consequences, accepted deliberately: an FC freeze drops the pending delta, and each
+ * instance holds its own. These counters are therefore APPROXIMATE and always
+ * under-count — which is why nothing derived from money reads them. Real spend is a `usd`
+ * on an immutable run row, written the moment it's incurred.
+ */
+const pendingSkips = new Map<string, Partial<Record<SkipReason, number>>>();
+
+/** Flush anyway once a watch has skipped this many times, so a watch whose gate never
+ *  opens still reports its savings. 1 write per 50 skips is ~2% of the write traffic a
+ *  per-skip counter would have cost. */
+const SKIP_FLUSH_EVERY = 50;
+
+const pendingTotal = (p: Partial<Record<SkipReason, number>>): number =>
+  Object.values(p).reduce((n: number, v) => n + (v ?? 0), 0);
+
+/** Record a skip in memory. Returns true when it's time to flush to the store. */
+function noteSkip(questionId: string, reason: SkipReason): boolean {
+  const p = pendingSkips.get(questionId) ?? {};
+  p[reason] = (p[reason] ?? 0) + 1;
+  pendingSkips.set(questionId, p);
+  return pendingTotal(p) >= SKIP_FLUSH_EVERY;
+}
+
+/** Fold pending skip deltas into a state row about to be written, and clear them. */
+function drainSkips(state: WatchRunState): WatchRunState {
+  const p = pendingSkips.get(state.questionId);
+  if (!p) return state;
+  const skips = { ...state.skips };
+  for (const [reason, n] of Object.entries(p)) {
+    skips[reason as SkipReason] = (skips[reason as SkipReason] ?? 0) + (n ?? 0);
+  }
+  pendingSkips.delete(state.questionId);
+  return { ...state, skips };
+}
+
 const ms = (d: unknown): number => {
   if (d == null) return 0;
   try {
@@ -134,10 +177,17 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
     const base = { questionId: q.id, title: q.title };
     const state = (await store.getRunState(q.id)) ?? freshState(q.id);
 
+    /* Tally a skip without paying for it — see pendingSkips. Only writes on the rare
+     * flush tick, never on the frame itself. */
+    const skip = async (reason: SkipReason): Promise<void> => {
+      if (noteSkip(q.id, reason)) await store.putRunState(drainSkips(state));
+      outcomes.push({ ...base, judged: false, skipped: reason });
+    };
+
     // 1) Budget floor — the spec's own "never look faster than this", or ours if it didn't say.
     const floor = ms(check.maxCadence) || DEFAULT_MAX_CADENCE_MS;
     if (state.lastJudgedAt && now - state.lastJudgedAt < floor) {
-      outcomes.push({ ...base, judged: false, skipped: 'cadence' });
+      await skip('cadence');
       continue;
     }
 
@@ -146,7 +196,7 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
       try {
         const rs = await hydrateGate(store, check.gate, now);
         if (!evaluate(check.gate, { store: rs, now }).value) {
-          outcomes.push({ ...base, judged: false, skipped: 'gate' });
+          await skip('gate');
           continue;
         }
       } catch (e) {
@@ -160,7 +210,7 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
       frameUrl = await presignKey(frameKey(input), FRAME_URL_TTL_S);
     } catch (e) {
       console.warn(`[vision] no frame URL for ${input}:`, (e as Error).message);
-      outcomes.push({ ...base, judged: false, skipped: 'no-frame' });
+      await skip('no-frame');
       continue;
     }
 
@@ -179,9 +229,9 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
     }
 
     // 5) Look.
-    let judgment, engine: 'qwen' | 'mock';
+    let judgment, engine: 'qwen' | 'mock', usage: CallUsage | undefined;
     try {
-      ({ judgment, engine } = await judge({
+      ({ judgment, engine, usage } = await judge({
         title: q.title,
         trigger: q.trigger,
         questions: [check.question],
@@ -192,27 +242,61 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
       }));
     } catch (e) {
       console.warn(`[vision] judge threw for ${q.id}:`, (e as Error).message);
-      outcomes.push({ ...base, judged: false, skipped: 'no-frame' });
+      await skip('no-frame');
       continue;
     }
 
     const answer = judgment.fired;
     const wasAnswer = state.lastAnswer;
+    /* One call, one priced row.
+     *
+     * `judged` carries the cost; `held`/`fired` describe what we did with the verdict and
+     * are deliberately COSTLESS. They all come from the same single Qwen call, so pricing
+     * more than one of them would make a fired look bill twice — `totals` just sums `usd`
+     * over matching rows and cannot tell a duplicate from a second call. The invariant is:
+     * usd is set iff this row IS the billed call. */
     const evRow = (kind: string): RunEventRow => ({
       id: `ev-${kind}-${q.id}-${now.toString(36)}`,
       ts: now,
       questionId: q.id,
       kind,
       answer,
+      title: q.title,
       reasoning: judgment.reasoning || judgment.verdict,
       evaluatedBy: engine === 'qwen' ? 'qwen' : 'local',
     });
 
+    /* The billed row. `usage` is what the API said it charged, so a Look's price is
+     * measured, not inferred from the quote. No `usage` (mock engine, no key) means no
+     * `usd` field at all rather than 0 — "free" and "unmeasured" must stay distinguishable. */
+    const judgedRow = (): RunEventRow => ({
+      ...evRow('judged'),
+      ...(usage
+        ? {
+            model: usage.model,
+            tokens: { in: usage.inTokens, out: usage.outTokens },
+            usd: usage.usd,
+            ms: usage.ms,
+            ...(usage.unrated ? { unrated: true } : {}),
+          }
+        : {}),
+    });
+
     // We spent the call — record that before deciding what to do with the verdict, so a
-    // throw further down can't leave the budget floor thinking we never looked.
-    state.lastJudgedAt = now;
-    state.lastAnswer = answer;
+    // throw further down can't leave the budget floor thinking we never looked. This is
+    // also where accumulated skip deltas land, since we're writing the row regardless.
+    const judged = drainSkips(state);
+    judged.lastJudgedAt = now;
+    judged.lastAnswer = answer;
+    judged.judged = (judged.judged ?? 0) + 1;
+    if (usage) judged.usd = (judged.usd ?? 0) + usage.usd;
+    Object.assign(state, judged);
     await store.putRunState(state);
+
+    /* A judged frame IS a run, whatever the verdict. Log it before the fire policy gets a
+     * say: `held`/`fired` describe what we DID, but this row is what we PAID, and a watch
+     * that looks 1000×/day and fires twice would otherwise show two rows and hide the bill. */
+    await store.appendEvent(judgedRow());
 
     // 6) Fire policy. `rising` fires once per false→true; `cooldown` rate-limits either way.
     if (!answer) {
@@ -222,12 +306,18 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
       outcomes.push({ ...base, judged: true, fired: false, verdict: judgment.verdict, reasoning: judgment.reasoning, engine });
       continue;
     }
+    /* `edge` and `cooldown` suppress the FIRE, not the call — the money was already spent
+     * above. They're tallied (they answer "why didn't my watch fire?") but they are not
+     * savings, so they never imply a cheaper bill. Counted with noteSkip rather than the
+     * `skip()` helper because that helper reports judged:false, which would be a lie here. */
     if (q.fire?.edge === 'rising' && wasAnswer) {
+      noteSkip(q.id, 'edge');
       outcomes.push({ ...base, judged: true, fired: false, skipped: 'edge', verdict: judgment.verdict, engine });
       continue;
     }
     const cooldown = ms(q.fire?.cooldown);
     if (cooldown && state.lastFiredAt && now - state.lastFiredAt < cooldown) {
+      noteSkip(q.id, 'cooldown');
       outcomes.push({ ...base, judged: true, fired: false, skipped: 'cooldown', verdict: judgment.verdict, engine });
       continue;
     }
@@ -254,6 +344,7 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
         ts: now,
         questionId: q.id,
         kind: 'actuate',
+        title: q.title,
         reasoning: `${actuated.join(', ')} := on — ${judgment.verdict}`,
       });
     }

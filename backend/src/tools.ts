@@ -11,9 +11,9 @@
  * final so wiring them later is fill-in-the-blank.
  */
 
-import { author as qwenAuthor, hasKey, validateQuestion } from './qwen';
-import { parseDuration, defaultRecord, type CloudModel, type Question, type RecordPolicy } from './domain';
-import type { Agg, HomeStore, Scalar } from './store';
+import { author as qwenAuthor, hasKey, validateQuestion, type CallUsage } from './qwen';
+import { formatUsd, parseDuration, defaultRecord, type CloudModel, type Question, type RecordPolicy } from './domain';
+import type { Agg, HomeStore, RunEventRow, RunQuery, Scalar } from './store';
 import { ossProvisioned, putImage, putFrame, presignKey, frameKey, resolveImage } from './oss';
 import { deliverNotification } from './notify';
 
@@ -36,6 +36,18 @@ const nextHmId = () => `hm-${Date.now().toString(36)}-${(hmseq += 1)}`;
 
 const str = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d);
 const num = (v: unknown, d = 0): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+
+/**
+ * Spread a measured call's cost onto a run row, or nothing at all when the call never
+ * reached the model. Absent `usd` ≠ `usd: 0` — one means "we didn't pay", the other
+ * means "we paid nothing", and search has to be able to tell them apart.
+ *
+ * Authoring is metered here even though the billing model says we never CHARGE for it
+ * (~$0.0016/wish, the acquisition moment): knowing the cost and passing it on are
+ * different decisions, and the meter shouldn't pre-empt the second one.
+ */
+const costOf = (u?: CallUsage): Partial<RunEventRow> =>
+  u ? { model: u.model, tokens: { in: u.inTokens, out: u.outTokens }, usd: u.usd, ms: u.ms, ...(u.unrated ? { unrated: true } : {}) } : {};
 /** Coerce an actuate value (true/1/"on"/"open"/"high"…) to a boolean desired state. */
 const truthy = (v: unknown): boolean => {
   if (typeof v === 'boolean') return v;
@@ -193,6 +205,50 @@ export const TOOLS: Tool[] = [
     handler: (a, { store }) => store.listEvents(num(a.limit, 20) || 20),
   },
   {
+    name: 'search_runs',
+    description:
+      'Search the run log of compiled watches and total what they SPENT. Filter by time window, watch, kind (authored/edited/judged/fired/held/actuate/notify), engine, or free text, and get back the matching runs plus measured token/USD totals for the whole match. Costs are what the model API actually billed, not an estimate. Use this for "what did my watches cost me", "what ran last night", "which watch is expensive".',
+    mode: ['authoring', 'runtime'],
+    parameters: {
+      type: 'object',
+      properties: {
+        sinceMs: { type: 'number', description: 'Look back this many ms from now (e.g. 86400000 = last day). Default 7 days.' },
+        from: { type: 'number', description: 'Absolute epoch-ms lower bound; overrides sinceMs.' },
+        to: { type: 'number', description: 'Absolute epoch-ms upper bound. Default now.' },
+        questionId: { type: 'string', description: 'Only runs of this watch.' },
+        kinds: { type: 'array', items: { type: 'string' }, description: 'Match any of these kinds.' },
+        engine: { type: 'string', enum: ['qwen', 'local'], description: 'Who evaluated it.' },
+        text: { type: 'string', description: 'Case-insensitive substring over title, reasoning and model.' },
+        billedOnly: { type: 'boolean', description: 'Only runs that actually cost money.' },
+        limit: { type: 'number', description: 'Max rows returned (default 50). Totals always cover the full match.' },
+      },
+      additionalProperties: false,
+    },
+    handler: async (a, { store }) => {
+      const now = Date.now();
+      const since = num(a.sinceMs, 7 * 86_400_000) || 7 * 86_400_000;
+      const q: RunQuery = {
+        from: a.from != null ? num(a.from) : now - since,
+        to: a.to != null ? num(a.to) : now,
+        ...(a.questionId ? { questionId: str(a.questionId) } : {}),
+        ...(Array.isArray(a.kinds) ? { kinds: a.kinds.map((k) => String(k)) } : {}),
+        ...(a.engine === 'qwen' || a.engine === 'local' ? { engine: a.engine } : {}),
+        ...(a.text ? { text: str(a.text) } : {}),
+        ...(a.billedOnly ? { billedOnly: true } : {}),
+        limit: num(a.limit, 50) || 50,
+      };
+      const { rows, totals } = await store.searchRuns(q);
+      return {
+        runs: rows,
+        totals: { ...totals, usdFormatted: formatUsd(totals.usd) },
+        // Say so when the page is short of the match, so a reader never mistakes the
+        // rows they can see for the spend they actually incurred.
+        truncated: totals.rows > rows.length,
+        window: { from: q.from, to: q.to },
+      };
+    },
+  },
+  {
     name: 'author_question',
     description:
       'Program synthesis: compile a plain-language wish into a runnable Question (local predicate or cloud/VL check) and persist it. The hero authoring path.',
@@ -204,14 +260,23 @@ export const TOOLS: Tool[] = [
       additionalProperties: false,
     },
     handler: async (a, { store }) => {
-      const { question, engine } = await qwenAuthor(str(a.wish));
+      const { question, engine, usage } = await qwenAuthor(str(a.wish));
       const q: Question = { ...question, id: nextQid() };
       if (q.compiledSpec.kind === 'cloud' && !q.record) {
         const inputId = q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0] ?? 'camera.frame';
         q.record = defaultRecord(inputId, q.compiledSpec.cloud.maxCadence ?? '10s');
       }
       await store.putQuestion(q);
-      await store.appendEvent({ id: `ev-${q.id}`, ts: Date.now(), questionId: q.id, kind: 'authored', reasoning: `authored by ${engine}` });
+      await store.appendEvent({
+        id: `ev-${q.id}`,
+        ts: Date.now(),
+        questionId: q.id,
+        kind: 'authored',
+        title: q.title,
+        reasoning: `authored by ${engine}`,
+        evaluatedBy: engine === 'qwen' ? 'qwen' : 'local',
+        ...costOf(usage),
+      });
       return { questionId: q.id, question: q, engine };
     },
   },
@@ -232,14 +297,23 @@ export const TOOLS: Tool[] = [
       if (!existing) throw new Error(`unknown question: ${id}`);
       // Recompile from scratch — same path as author_question — but keep the id and any
       // reference-memory links the homeowner attached (those are their choice, not the brain's).
-      const { question, engine } = await qwenAuthor(str(a.wish));
+      const { question, engine, usage } = await qwenAuthor(str(a.wish));
       const q: Question = { ...question, id, memoryIds: existing.memoryIds };
       if (q.compiledSpec.kind === 'cloud' && !q.record) {
         const inputId = q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0] ?? 'camera.frame';
         q.record = defaultRecord(inputId, q.compiledSpec.cloud.maxCadence ?? '10s');
       }
       await store.putQuestion(q);
-      await store.appendEvent({ id: `ev-edit-${id}-${Date.now().toString(36)}`, ts: Date.now(), questionId: id, kind: 'edited', reasoning: `re-compiled by ${engine}` });
+      await store.appendEvent({
+        id: `ev-edit-${id}-${Date.now().toString(36)}`,
+        ts: Date.now(),
+        questionId: id,
+        kind: 'edited',
+        title: q.title,
+        reasoning: `re-compiled by ${engine}`,
+        evaluatedBy: engine === 'qwen' ? 'qwen' : 'local',
+        ...costOf(usage),
+      });
       return { questionId: q.id, question: q, engine };
     },
   },

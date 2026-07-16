@@ -96,6 +96,23 @@ const iconFor = (kind?: string): string =>
 const actuatorIconFor = (kind?: string): string =>
   kind === 'relay' ? '🔌' : kind === 'motor' ? '🌀' : kind === 'servo' ? '⚙️' : '🎛️';
 
+/**
+ * One consequential thing a compiled watch did — the searchable run log.
+ *
+ * Grain: we write a row per BILLED call (`authored`, `edited`, `judged`) and per
+ * OUTCOME (`fired`, `held`, `actuate`, `notify`). We deliberately do NOT write a row
+ * per evaluation: a vision watch is evaluated on every frame (up to 2/sec) and is
+ * skipped cheaply by the cadence floor or the local gate long before any token is
+ * spent. Those skips are counted on `WatchRunState`, not stored — at 0.5s cadence a
+ * row each would be ~170k rows/day/watch, and the log would cost more than the looks
+ * it audits. Every row here has a real cost or a real consequence.
+ *
+ * `usd`/`tokens` are MEASURED (`qwen.ts` reads the API's own `usage` block), unlike
+ * `pricing.ts`'s quote, which is a forecast from the config. Comparing the two is the
+ * point: drift between them is a bug worth seeing.
+ *
+ * Shape follows `docs/02-data-model.md:241`.
+ */
 export interface RunEventRow {
   id: string;
   ts: number;
@@ -104,6 +121,67 @@ export interface RunEventRow {
   answer?: boolean;
   reasoning?: string;
   evaluatedBy?: 'local' | 'qwen';
+  /** Denormalised watch title — so search can match text without joining every q# row. */
+  title?: string;
+  /** The model the API said it billed. Absent on rows that spent nothing. */
+  model?: string;
+  tokens?: { in: number; out: number };
+  /** Measured USD for this row's call. Absent (not 0) when nothing was billed. */
+  usd?: number;
+  /** Wall-clock of the billed call. */
+  ms?: number;
+  /** True when the model was unknown to MODEL_RATES, so `usd` understates the truth. */
+  unrated?: boolean;
+}
+
+/** A run-log query. Every field is optional; omitted means "don't filter on this". */
+export interface RunQuery {
+  /** Inclusive lower/upper bounds on `ts`. */
+  from?: number;
+  to?: number;
+  questionId?: string;
+  /** Match any of these kinds. */
+  kinds?: string[];
+  engine?: 'local' | 'qwen';
+  /** Case-insensitive substring over title + reasoning + model. */
+  text?: string;
+  /** Only rows that actually cost money. */
+  billedOnly?: boolean;
+  limit?: number;
+}
+
+/** What a run search answers: the page of rows, plus the spend they represent. */
+export interface RunSearchResult {
+  rows: RunEventRow[];
+  /** Totals over every row MATCHING the query — not just the returned page. */
+  totals: { rows: number; billed: number; usd: number; tokensIn: number; tokensOut: number; unrated: boolean };
+}
+
+/** Does one row satisfy a query? Pure, so store adapters and tests share one definition. */
+export function matchesRun(ev: RunEventRow, q: RunQuery): boolean {
+  if (q.from != null && ev.ts < q.from) return false;
+  if (q.to != null && ev.ts > q.to) return false;
+  if (q.questionId && ev.questionId !== q.questionId) return false;
+  if (q.kinds?.length && !q.kinds.includes(ev.kind)) return false;
+  if (q.engine && ev.evaluatedBy !== q.engine) return false;
+  if (q.billedOnly && !ev.usd) return false;
+  if (q.text) {
+    const hay = `${ev.title ?? ''} ${ev.reasoning ?? ''} ${ev.model ?? ''} ${ev.kind}`.toLowerCase();
+    if (!hay.includes(q.text.toLowerCase())) return false;
+  }
+  return true;
+}
+
+/** Roll a matched set up into the spend line. */
+export function totalRuns(rows: RunEventRow[]): RunSearchResult['totals'] {
+  return {
+    rows: rows.length,
+    billed: rows.filter((r) => r.usd != null).length,
+    usd: rows.reduce((n, r) => n + (r.usd ?? 0), 0),
+    tokensIn: rows.reduce((n, r) => n + (r.tokens?.in ?? 0), 0),
+    tokensOut: rows.reduce((n, r) => n + (r.tokens?.out ?? 0), 0),
+    unrated: rows.some((r) => r.unrated),
+  };
 }
 
 /**
@@ -136,6 +214,16 @@ export interface WatchRunState {
   lastJudgedAt: number; // when we last spent a cloud call (0 = never)
   lastFiredAt: number; // when it last fired (0 = never)
   lastAnswer: boolean; // the previous verdict — the rising edge compares against this
+  /**
+   * Lifetime tallies. These are the cheap half of the run log: skips are far too
+   * numerous to store a row each (see RunEventRow), but "the gate saved you 40,000
+   * calls" is the single most valuable number the cost UI can show — it's the savings
+   * the local gate actually delivered. Counters, not rows: O(1) storage, O(1) read.
+   */
+  skips?: Partial<Record<'cadence' | 'gate' | 'no-frame' | 'cooldown' | 'edge', number>>;
+  /** Lifetime billed calls and measured spend for this watch — running totals. */
+  judged?: number;
+  usd?: number;
 }
 
 export interface HomeStore {
@@ -152,6 +240,10 @@ export interface HomeStore {
   listRecords(): Promise<RecordPolicy[]>;
   appendEvent(ev: RunEventRow): Promise<void>;
   listEvents(limit: number): Promise<RunEventRow[]>;
+  /** Search the run log by time/watch/kind/text and get the spend for the match. */
+  searchRuns(q: RunQuery): Promise<RunSearchResult>;
+  /** Bump a watch's skip tally — the calls the cadence floor and gate did NOT spend. */
+  countSkip(questionId: string, reason: string): Promise<void>;
   /** Upsert a paired hub's device snapshot (keyed by hubId). Feeds the Home Model. */
   putHubDevices(snap: HubDeviceSnapshot): Promise<void>;
   /** All paired hubs' latest device snapshots. */
@@ -431,6 +523,32 @@ export class MemoryStore implements HomeStore {
   async listEvents(limit: number): Promise<RunEventRow[]> {
     return this.events.slice(0, limit);
   }
+  /**
+   * Heap scan. Correct here because MemoryStore's feed is capped at 500 rows anyway —
+   * TablestoreStore overrides this with a bounded range scan over the real log.
+   */
+  async searchRuns(q: RunQuery): Promise<RunSearchResult> {
+    const hits = this.events.filter((ev) => matchesRun(ev, q));
+    return { rows: hits.slice(0, q.limit ?? 50), totals: totalRuns(hits) };
+  }
+  /**
+   * Read-modify-write, so two FC instances skipping the same watch in the same instant
+   * can lose an increment. Accepted knowingly: this is a "the gate saved you ~40k calls"
+   * display counter, not a ledger — every number that becomes money is a `usd` on an
+   * immutable run row instead. Tablestore's atomic increment would need a numeric column
+   * per reason, which is a schema change for a stat nobody reads to the unit.
+   */
+  async countSkip(questionId: string, reason: string): Promise<void> {
+    const prev = (await this.getRunState(questionId)) ?? {
+      questionId,
+      lastJudgedAt: 0,
+      lastFiredAt: 0,
+      lastAnswer: false,
+    };
+    const skips = { ...prev.skips };
+    skips[reason as keyof typeof skips] = (skips[reason as keyof typeof skips] ?? 0) + 1;
+    await this.putRunState({ ...prev, skips });
+  }
   async putHubDevices(snap: HubDeviceSnapshot): Promise<void> {
     this.hubDevices.set(snap.hubId, snap);
     this.persist();
@@ -582,6 +700,21 @@ const TS_TABLE = 'hearth_home';
 const TS_READINGS_TABLE = 'hearth_readings';
 const READING_TTL_SEC = 24 * 60 * 60;
 
+/* The run log lives in its OWN table for the same reason readings do: retention is a
+ * per-table property. Watches are forever (hearth_home, ttl -1) and readings are
+ * transient (24h), but spend history wants a middle life — long enough to answer "what
+ * did this watch cost me last quarter", bounded enough that an append-only log can't
+ * grow without end. A year, swept server-side by Tablestore: no cron, no sweeper.
+ *
+ * Rows are keyed account / "<13-digit-padded-ms>#<id>", so a plain range scan returns
+ * the log in chronological order and BACKWARD+limit gives "newest first" for free. The
+ * id tie-breaks events landing in the same millisecond, which two FC instances writing
+ * concurrently will absolutely do. Time-first (not questionId-first) because every read
+ * path — the feed, the search, the month's spend — is bounded by time first and filters
+ * by watch second. */
+const TS_RUNS_TABLE = 'hearth_runs';
+const RUN_TTL_SEC = 365 * 24 * 60 * 60;
+
 /** ms → fixed-width key component, so string order == time order (13 digits holds to y2286). */
 const tsKey = (ts: number) => String(Math.max(0, Math.floor(ts))).padStart(13, '0');
 
@@ -638,6 +771,8 @@ class TablestoreStore extends MemoryStore {
     await this.createTable(TS_TABLE, -1);
     // Readings: same key shape, but Tablestore expires rows 24h after write for us.
     await this.createTable(TS_READINGS_TABLE, READING_TTL_SEC);
+    // Runs: same again, on a one-year life. See TS_RUNS_TABLE.
+    await this.createTable(TS_RUNS_TABLE, RUN_TTL_SEC);
   }
 
   private async createTable(tableName: string, timeToLive: number): Promise<void> {
@@ -717,6 +852,77 @@ class TablestoreStore extends MemoryStore {
 
   async history(input: string, from: number, to: number): Promise<Reading[]> {
     return this.scanReadings(input, from, to);
+  }
+
+  /* ---- durable run log (365d, own table, server-side TTL) ------------------------
+   * Exactly the same fix as readings above, applied to the thing that was still on the
+   * heap: MemoryStore.appendEvent pushed onto an array capped at 500 and TablestoreStore
+   * never overrode it. On Function Compute that meant run history was per-instance and
+   * vanished on freeze — so the activity feed silently disagreed with itself between
+   * requests, and any spend it implied was fiction. Now every append and every read goes
+   * through to Tablestore. No heap copy, for the same reason as readings. */
+
+  /**
+   * Scan the log in [from, to]. Backward yields newest-first, which is what every
+   * caller wants; `stopAt` bounds the work when the caller only needs a page.
+   */
+  private async scanRuns(from: number, to: number, stopAt?: number): Promise<RunEventRow[]> {
+    // Keys are `<padded ts>#<id>`; `tsKey(to+1)` is an exclusive upper bound that still
+    // includes every row AT `to`, whatever its id suffix.
+    const lo = tsKey(from);
+    const hi = tsKey(to + 1);
+    const out: RunEventRow[] = [];
+    // BACKWARD scans from the high key down, so start/end swap relative to a forward scan.
+    let start: unknown[] | null = [{ account: this.account }, { sk: hi }];
+    const end = [{ account: this.account }, { sk: lo }];
+    while (start) {
+      const res = await this.client.getRange({
+        tableName: TS_RUNS_TABLE,
+        direction: this.ts.Direction.BACKWARD,
+        inclusiveStartPrimaryKey: start,
+        exclusiveEndPrimaryKey: end,
+        limit: 500,
+      });
+      for (const row of res.rows ?? []) {
+        const data = this.dataOf(row.attributes);
+        if (!data) continue;
+        const ev = JSON.parse(data) as RunEventRow;
+        if (ev.ts >= from && ev.ts <= to) out.push(ev);
+      }
+      if (stopAt != null && out.length >= stopAt) return out.slice(0, stopAt);
+      start = res.next_start_primary_key ?? null;
+    }
+    return out;
+  }
+
+  async appendEvent(ev: RunEventRow): Promise<void> {
+    await this.client.putRow({
+      tableName: TS_RUNS_TABLE,
+      condition: this.ignore(),
+      primaryKey: this.pk(`${tsKey(ev.ts)}#${ev.id}`),
+      attributeColumns: [{ data: JSON.stringify(ev) }],
+    });
+  }
+
+  async listEvents(limit: number): Promise<RunEventRow[]> {
+    return this.scanRuns(0, Date.now(), limit);
+  }
+
+  /**
+   * Range-scan the window, then filter in memory.
+   *
+   * Tablestore has no secondary index here, so `questionId`/`kind`/`text` can't be
+   * pushed into the key — but the time bound is, and it's the one that matters: a
+   * month of a real home's log is O(1k) rows, not O(1M), precisely because we don't
+   * store skips. If ad-hoc query ever outgrows this, docs/02-data-model.md:303 is the
+   * escape hatch (add a Search Index) — deliberately not paid for yet.
+   *
+   * `totals` covers every MATCHING row in the window, not just the returned page, so
+   * the spend line stays truthful when the page is capped.
+   */
+  async searchRuns(q: RunQuery): Promise<RunSearchResult> {
+    const hits = (await this.scanRuns(q.from ?? 0, q.to ?? Date.now())).filter((ev) => matchesRun(ev, q));
+    return { rows: hits.slice(0, q.limit ?? 50), totals: totalRuns(hits) };
   }
 
   async putQuestion(q: Question): Promise<void> {
