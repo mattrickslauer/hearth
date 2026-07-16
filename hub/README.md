@@ -82,9 +82,17 @@ node (ESP32)                      hub (hub.mjs + runtime.mjs)
   - **Reference inputs as `<nodeId>.<sensorKey>`** (e.g. `node-a1b2.board.temp`) — the same id the
     cloud uses. A bare `board.temp` resolves only while exactly one node reports it; with two, the
     hub warns and reads no-data rather than firing on whichever node reported last.
-- **Notifications** (`notify.mjs`): set `NTFY_TOPIC` (install the free **ntfy** app, no account) or
-  `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`. With neither set, fires still actuate + log; you just
-  don't get a push. Nothing is faked — a channel reports delivered only when the provider accepts it.
+- **Notifications** (`notify.mjs`): set them up in the **dashboard** — *Notify me* takes a Telegram
+  chat and/or an email address, saved per account, and every hub you pair uses them. The hub POSTs a
+  fire to the cloud (`/hub/notify`), which does the delivery, so your bot token stays in the cloud
+  rather than on this box.
+  This machine can also push **directly**, configured by whoever runs the hub: set `NTFY_TOPIC`
+  (install the free **ntfy** app, no account) or `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`. These
+  are independent of the account's channels and **both sets fire on every watch** — so a direct
+  push still lands when the cloud is unreachable (the off-grid guarantee), and adding an email in
+  the dashboard never silently switches your ntfy push off. With nothing configured anywhere, fires
+  still actuate + log; you just don't get a push. Nothing is faked — a channel reports delivered
+  only when the provider accepts it. Prove it with `npm run notify-selftest`.
 - **It works offline.** Evaluation and actuation happen on the hub; cutting the internet doesn't stop a local watch from firing.
 
 Try the whole loop with no hardware:
@@ -146,8 +154,12 @@ hub                          cloud                         user (dashboard)
 - `HEARTH_NO_MDNS=1` — install/run without mDNS
 - `HUB_WATCHES_FILE` — compiled watches to run (default `~/.hearth/watches.json`)
 - `HUB_TICK_MS` — watch re-evaluation cadence for time-based predicates (default `1000`)
-- `NTFY_TOPIC` (+ optional `NTFY_URL`) — phone push via ntfy on a watch firing
-- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` — phone push via Telegram on a watch firing
+- `NTFY_TOPIC` (+ optional `NTFY_URL`) — direct phone push via ntfy on a watch firing
+- `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` — direct phone push via Telegram on a watch firing
+  (these are this machine's own channels, additional to the account's — set those in the dashboard
+  under *Notify me*; both sets fire)
+- `HUB_NOTIFY_TIMEOUT_MS` — how long a cloud notify may take before the direct push stops waiting
+  on it (default `8000`)
 - `--reset` — forget stored identity and enroll fresh
 
 Identity persists to `~/.hearth/hub-state.json`, so restarting keeps the same hub.

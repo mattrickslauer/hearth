@@ -239,7 +239,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   closeText: { fontFamily: Fonts?.sans, fontSize: 14, fontWeight: '700' },
-  body: { flexGrow: 0 },
+  // flexGrow keeps a short sheet hugging its content; flexShrink lets a tall one scroll instead
+  // of pushing its own footer past maxHeight. Web gets flexShrink: 1 free from react-native-web's
+  // ScrollView base style, but Yoga defaults it to 0, so on native it has to be said out loud.
+  body: { flexGrow: 0, flexShrink: 1 },
   bodyContent: { paddingHorizontal: Spacing.four, paddingBottom: Spacing.three, gap: Spacing.three },
   footer: {
     flexDirection: 'row',

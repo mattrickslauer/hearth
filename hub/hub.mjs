@@ -39,6 +39,7 @@ import { dirname, join } from 'node:path';
 import { attachWebSocket } from './ws.mjs';
 
 import { createRuntime } from './runtime.mjs';
+import { setCloudNotifier } from './notify.mjs';
 import { createCamera } from './camera.mjs';
 
 // ── config ──────────────────────────────────────────────────────────────────
@@ -271,7 +272,7 @@ function readJson(req) {
 }
 
 // ── cloud calls ───────────────────────────────────────────────────────────────
-async function api(path, body, token) {
+async function api(path, body, token, timeoutMs) {
   try {
     const res = await fetch(`${BACKEND_URL}${path}`, {
       method: 'POST',
@@ -280,6 +281,9 @@ async function api(path, body, token) {
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(body),
+      // Callers that sit in front of a time-critical fallback pass a bound; the rest keep
+      // the default (the pairing/heartbeat loops back off on their own).
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     });
     const data = await res.json().catch(() => ({}));
     return { ok: res.ok, status: res.status, data };
@@ -289,6 +293,26 @@ async function api(path, body, token) {
     return { ok: false, status: 0, data: { error: e.message || 'network error' } };
   }
 }
+
+// Route fired-watch notifications through Hearth Cloud, which delivers to the channels this
+// account saved in the dashboard (Telegram / email). Reads `hubToken` at call time, so this
+// starts working the moment we pair and stops if we're unpaired — no re-registration needed.
+// Bounded: a backend that accepts the connection then hangs must not hold a fire's notification
+// open for undici's multi-minute default while the local channels wait behind it.
+const NOTIFY_TIMEOUT_MS = Number(process.env.HUB_NOTIFY_TIMEOUT_MS || 8000);
+setCloudNotifier(
+  async (title, message, meta = {}) => {
+    if (!hubToken) return null;
+    const { ok, data } = await api(
+      '/hub/notify',
+      { title, message, questionId: meta.questionId },
+      hubToken,
+      NOTIFY_TIMEOUT_MS,
+    );
+    return ok ? data : null;
+  },
+  { ready: () => Boolean(hubToken) },
+);
 
 // Coalesce reading bursts into at most one cloud sync per debounce window, so remote
 // dashboards get near-realtime updates without a POST per reading. The window ADAPTS to the

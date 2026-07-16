@@ -26,7 +26,7 @@
  */
 
 import { ReadingStore, evaluate, parseDuration, type PredicateNode, type Question } from './domain';
-import { deliver, defaultChannel } from './notify';
+import { deliverNotification } from './notify';
 import { frameKey, presignKey, resolveImage } from './oss';
 import { judge } from './qwen';
 import type { HomeStore, RunEventRow, WatchRunState } from './store';
@@ -261,15 +261,11 @@ export async function judgeFrame(store: HomeStore, input: string, now = Date.now
     let notified = false;
     if (q.push) {
       const message = `${q.action || q.title} — ${judgment.reasoning || judgment.verdict}`;
-      const res = await deliver(defaultChannel(), message);
-      notified = res.delivered;
-      await store.appendEvent({
-        id: `ev-notify-${q.id}-${now.toString(36)}`,
-        ts: now,
-        questionId: q.id,
-        kind: 'notify',
-        reasoning: `${defaultChannel()}: ${message}`,
-      });
+      // Same per-account channels the hub and the notify tool use (Telegram / email, set in
+      // the dashboard) — a cloud watch and a local one reach the same phone. deliverNotification
+      // writes the kind:'notify' event itself, so there's no appendEvent here to double-log it.
+      const res = await deliverNotification(store, `🔥 ${q.title}`, message, { questionId: q.id });
+      notified = res.delivered > 0;
     }
 
     outcomes.push({

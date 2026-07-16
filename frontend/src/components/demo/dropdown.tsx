@@ -1,13 +1,53 @@
-import { useState, type ReactNode } from 'react';
-import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useRef, useState, type ReactNode } from 'react';
+import { Dimensions, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
+/** Gap between the trigger and the menu, and the minimum breathing room at a screen edge. */
+const GAP = 6;
+const EDGE = 8;
+/** Below this, "there's room underneath" stops being true enough to be worth it. */
+const MIN_ROOM = 140;
+
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Where the menu goes, in window coords, plus how tall it may grow before scrolling. */
+function place(r: Rect, width: number, align: 'left' | 'right') {
+  const win = Dimensions.get('window');
+
+  // Keep the menu on screen horizontally even when the trigger sits near an edge.
+  const wanted = align === 'right' ? r.x + r.w - width : r.x;
+  const left = Math.max(EDGE, Math.min(wanted, win.width - width - EDGE));
+
+  const roomBelow = win.height - (r.y + r.h) - GAP - EDGE;
+  const roomAbove = r.y - GAP - EDGE;
+  // Prefer opening downward, but flip up rather than run off the bottom of the
+  // screen — the case that made the model picker unusable.
+  if (roomBelow >= MIN_ROOM || roomBelow >= roomAbove) {
+    return { top: r.y + r.h + GAP, left, maxHeight: Math.max(MIN_ROOM, roomBelow) };
+  }
+  return { bottom: win.height - r.y + GAP, left, maxHeight: Math.max(MIN_ROOM, roomAbove) };
+}
+
 /**
  * A lightweight dropdown menu for the world-settings bar. Trigger shows the
- * current value; pressing it opens a popover below. A full-viewport backdrop
- * catches outside clicks so the menu closes cleanly.
+ * current value; pressing it opens a popover next to it, with a full-viewport
+ * backdrop to catch outside clicks.
+ *
+ * The menu is measured and placed in window coords inside a Modal, rather than
+ * laid out inline beneath the trigger. Inline it could only ever open downward,
+ * so a trigger near the bottom of the screen — the deployment card's model
+ * picker is the last control on the card — pushed its options off the bottom
+ * edge, leaving the model unchangeable. Placing it explicitly lets it flip up
+ * when there's no room below; the Modal also portals it out of the subtree, so
+ * an ancestor's `overflow: 'hidden'` (the demo console's frame sets it) can't
+ * clip it and no `zIndex` juggling is needed.
  */
 export function Dropdown({
   icon,
@@ -25,13 +65,22 @@ export function Dropdown({
   children: (close: () => void) => ReactNode;
 }) {
   const theme = useTheme();
-  const [open, setOpen] = useState(false);
-  const close = () => setOpen(false);
+  const triggerRef = useRef<View>(null);
+  // The measured trigger doubles as the open flag: there is no sensible place to
+  // draw the menu until we know where the trigger is.
+  const [rect, setRect] = useState<Rect | null>(null);
+  const open = rect !== null;
+  const close = () => setRect(null);
+
+  const openMenu = () => {
+    triggerRef.current?.measureInWindow((x, y, w, h) => setRect({ x, y, w, h }));
+  };
 
   return (
-    <View style={{ zIndex: open ? 1000 : 1 }}>
+    <View>
       <Pressable
-        onPress={() => setOpen((o) => !o)}
+        ref={triggerRef}
+        onPress={() => (open ? close() : openMenu())}
         style={[
           styles.trigger,
           { borderColor: open ? theme.ember : theme.border, backgroundColor: theme.card },
@@ -46,19 +95,24 @@ export function Dropdown({
         <Text style={[styles.caret, { color: open ? theme.ember : theme.textMuted }]}>▾</Text>
       </Pressable>
 
-      {open ? (
-        <>
-          <Pressable onPress={close} style={backdrop} />
-          <View
-            style={[
-              styles.popover,
-              align === 'right' ? { right: 0 } : { left: 0 },
-              { width, borderColor: theme.borderStrong, backgroundColor: theme.cardElevated },
-            ]}>
-            {children(close)}
-          </View>
-        </>
-      ) : null}
+      <Modal visible={open} transparent animationType="none" onRequestClose={close}>
+        <Pressable style={styles.backdrop} onPress={close}>
+          {rect ? (
+            /* Swallow taps inside the menu so only the backdrop dismisses. */
+            <Pressable
+              style={[
+                styles.popover,
+                place(rect, width, align),
+                { width, borderColor: theme.borderStrong, backgroundColor: theme.cardElevated },
+              ]}
+              onPress={() => {}}>
+              <ScrollView style={styles.menu} contentContainerStyle={styles.menuContent}>
+                {children(close)}
+              </ScrollView>
+            </Pressable>
+          ) : null}
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -87,12 +141,10 @@ export function Option({
   );
 }
 
-const backdrop =
-  Platform.OS === 'web'
-    ? ({ position: 'fixed', inset: 0, zIndex: 900 } as object)
-    : { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 900 };
-
 const styles = StyleSheet.create({
+  // The Modal already covers the viewport, so the backdrop is just a full-bleed
+  // click target; the menu is positioned against it in window coords.
+  backdrop: { flex: 1 },
   trigger: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -116,18 +168,19 @@ const styles = StyleSheet.create({
   caret: { fontSize: 11, fontWeight: '700' },
   popover: {
     position: 'absolute',
-    top: '100%',
-    marginTop: 6,
     borderRadius: Radius.md,
     borderWidth: 1,
     padding: Spacing.one,
-    zIndex: 1001,
-    gap: 2,
+    overflow: 'hidden',
     shadowColor: '#000',
     shadowOpacity: 0.3,
     shadowRadius: 24,
     shadowOffset: { width: 0, height: 14 },
   },
+  // flexShrink is 0 by default in React Native, so without it a long list would
+  // push past the popover's maxHeight on native instead of scrolling inside it.
+  menu: { flexGrow: 0, flexShrink: 1 },
+  menuContent: { gap: 2 },
   option: {
     flexDirection: 'row',
     alignItems: 'center',

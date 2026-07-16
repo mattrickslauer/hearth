@@ -11,6 +11,7 @@
     "start": "node hub.mjs",
     "reset": "node hub.mjs --reset",
     "selftest": "node tools/selftest.mjs",
+    "notify-selftest": "node tools/notify-selftest.mjs",
     "fake-node": "node tools/fake-node.mjs"
   },
   "dependencies": {

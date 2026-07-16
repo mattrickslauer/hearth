@@ -66,7 +66,7 @@ Generality comes from typed inputs + composition. ~11 tools cover the house.
 | `capture_now(inputId)` | Force a fresh snapshot — **active sensing** | runtime |
 | `aim_sensor(deviceId, angle, reason)` | Move servo to look closer — **active sensing** | runtime |
 | `actuate(inputId, value, reason)` | Command an actuator (→ shadow desired, veto-gated) | runtime |
-| `notify(channelId, message)` | Send an Action via a channel | runtime |
+| `notify(message)` | Push to the account's configured channels (Telegram / email) | runtime |
 | `set_record(inputId, policy)` | Create/adjust a capture policy | authoring |
 | `create_question(spec)` | Persist a compiled Question | authoring |
 | `suggest_runs()` | Propose useful questions from the world model | authoring |
@@ -93,7 +93,10 @@ capture_now(input: string) -> { ossUrl: string, ts: number }
 // act (veto-gated, logged with rationale)
 actuate(input: string, value: unknown, reason: string)
   -> { status: "sent"|"applied"|"vetoed", vetoReason?: string }
-notify(channelId: string, message: string) -> { ok: boolean }
+// Channels are per-account (dashboard → "Notify me"), so the model picks the words, not
+// the destination. Delivers nothing (with a note) when the account configured no channel.
+notify(message: string)
+  -> { ok: boolean, delivered: boolean, channels?: { channel, delivered }[] }
 
 // author (program synthesis output)
 create_question(spec: {

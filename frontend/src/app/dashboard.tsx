@@ -26,6 +26,7 @@ import { SensorSheetBody, SensorTile } from '@/components/dashboard/sensors';
 import { LiveIndicator, PillButton, SectionLabel, Stat } from '@/components/dashboard/shared';
 import { WatchCard, WatchEditBody, WatchSheetBody } from '@/components/dashboard/watches';
 import { GlowOrb, Wordmark, useResponsive } from '@/components/landing/ui';
+import { NotifyChannelsCard } from '@/components/notify-channels-card';
 import { TuneWatch, type TunePatch } from '@/components/tune-watch';
 import { ActionFab } from '@/components/ui/action-fab';
 import { Rail, TabBar, type NavTab } from '@/components/ui/nav';
@@ -478,6 +479,10 @@ export default function DashboardScreen() {
                       </Text>
                     </Pressable>
                   )}
+
+                  {/* Where a fired "notify me" watch actually lands. Per-account, so it sits with
+                      the hubs rather than inside any one of them. */}
+                  <NotifyChannelsCard token={token} />
                 </View>
 
                 {visionSensors.length ? (
