@@ -19,9 +19,7 @@ import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/auth/context';
 import { useTheme } from '@/hooks/use-theme';
 import { addMemoryObject, listMemory, removeMemoryObject, type MemoryObject } from '@/lib/home';
-
-const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
-const webFullHeight = Platform.OS === 'web' ? ({ height: '100vh' } as object) : null;
+import { webFullHeight, webNoOutline } from '@/lib/web-style';
 
 // Quick-pick tags — the categories Qwen-VL reasons over. Custom tags can be typed too.
 const SUGGESTED_TAGS = ['family', 'pet', 'vehicle', 'package', 'allowed', 'watch'];

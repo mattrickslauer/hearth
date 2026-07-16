@@ -41,6 +41,7 @@ import { attachWebSocket } from './ws.mjs';
 import { createRuntime } from './runtime.mjs';
 import { setCloudNotifier } from './notify.mjs';
 import { createCamera } from './camera.mjs';
+import { parseEnabled } from './wire.mjs';
 
 // ── config ──────────────────────────────────────────────────────────────────
 const DEFAULT_BACKEND = 'https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run';
@@ -60,6 +61,15 @@ const BIND = process.env.HUB_BIND || '0.0.0.0';
 // (header `x-hearth-token` or `?token=`), closing the unauthenticated LAN surface.
 // Unset = open (backward compatible with nodes that don't present a token).
 const INGEST_TOKEN = process.env.HUB_INGEST_TOKEN || '';
+// Cross-origin policy for the browser dashboard. Camera frames and config are sensitive — pixels
+// off your LAN and the live device list — so we do NOT wildcard them: an `access-control-allow-
+// origin: *` let ANY web page you happened to visit read GET /frame cross-origin. Default is no
+// ACAO header at all (same-origin, and native-app fetch which isn't subject to CORS, both still
+// work). Set HUB_DASHBOARD_ORIGIN to the dashboard's web origin (e.g. http://192.168.1.10:19006)
+// to allow exactly that one origin.
+const DASHBOARD_ORIGIN = process.env.HUB_DASHBOARD_ORIGIN || '';
+const corsHeaders = () =>
+  DASHBOARD_ORIGIN ? { 'access-control-allow-origin': DASHBOARD_ORIGIN, vary: 'origin' } : {};
 const SERVICE_TYPE = 'hearth'; // advertised as _hearth._tcp.local
 const INGEST_PATH = '/ingest';
 
@@ -131,14 +141,40 @@ function cadencesForNode(nodeId) {
 // and the node converges its output to match. Keyed by full input id; handed to the node by key.
 const desiredState = new Map();
 
+// LAN-direct camera-power overrides, keyed by camera id (there is only ever one camera, but keying
+// by id keeps the precedence rule explicit). Set by `POST /camera {enabled}`, which — unlike the
+// cloud shadow — talks straight to the hub and does NOT write the cloud's `desired`. Without
+// tracking it here, the next syncToCloud would find no `<camId>.power` entry and the old `?? true`
+// would resurrect a capture the user just stopped LAN-direct — the stop never sticks and Looks get
+// re-billed, exactly in the off-grid/LAN-only scenario. An entry here means "the LAN spoke last";
+// it is cleared only when the cloud EXPLICITLY commands the camera's power.
+const localPowerOverride = new Map();
+
 // Replace our view of desired actuator states with the cloud's latest (input id → bool).
+//
+// Camera-power precedence (least-surprise; documented here so it can't drift):
+//   1. Cloud sent an explicit `<camId>.power` entry  → cloud wins, and clears any LAN override.
+//   2. Cloud silent AND a LAN-direct override is set → keep the LAN state (do NOT resurrect).
+//   3. Cloud silent AND no override                  → default ON (uncommanded ⇒ capture runs).
+//
+// An omitted `desired` and an empty `{}` are treated as the SAME thing — "the cloud commanded
+// nothing" — so neither can stomp a LAN-direct override (finding 3): both clear the shadow and
+// fall through to rules 2/3.
 function applyDesired(desired) {
-  if (!desired || typeof desired !== 'object') return;
+  const shadow = desired && typeof desired === 'object' ? desired : {};
   desiredState.clear();
-  for (const [input, on] of Object.entries(desired)) desiredState.set(input, !!on);
-  // The camera's capture switch is just another actuator: apply its shadow entry through the
-  // same downlink the ESP nodes converge on. No entry = never commanded = capture runs.
-  if (camera) camera.setPower(desiredState.get(`${camera.id}.power`) ?? true);
+  for (const [input, on] of Object.entries(shadow)) desiredState.set(input, !!on);
+  // The camera's capture switch is just another actuator, but with a second (LAN-direct) writer,
+  // so it gets the precedence rules above rather than a blind `?? true`.
+  if (!camera) return;
+  const powerKey = `${camera.id}.power`;
+  if (Object.prototype.hasOwnProperty.call(shadow, powerKey)) {
+    localPowerOverride.delete(camera.id); // cloud spoke explicitly → it is authoritative again
+    camera.setPower(!!shadow[powerKey]);
+  } else if (!localPowerOverride.has(camera.id)) {
+    camera.setPower(true); // uncommanded by both cloud and LAN ⇒ capture runs
+  }
+  // else: cloud silent, LAN override in force → leave capture exactly where the LAN set it.
 }
 
 // The desired actuator states for one node, keyed by bare actuator key ("on"/"off" strings the
@@ -341,6 +377,10 @@ function scheduleSync() {
 }
 
 let syncing = false;
+// Set when a debounced sync fires while another is still in flight: instead of silently dropping
+// that burst's sync (it would then wait out the next reading or the 15s timer), we remember it and
+// re-schedule one in syncToCloud's `finally` so the burst still reaches the cloud promptly.
+let resyncPending = false;
 
 /**
  * The registry as the cloud should see it, with each node's silence measured here.
@@ -362,7 +402,14 @@ function nodesForSync() {
 // Push the current registry to Hearth Cloud, authenticated with the in-memory hub token.
 // No-op (LAN ingest keeps working) until paired. Serialized so a slow sync can't overlap.
 async function syncToCloud() {
-  if (syncing || nodes.size === 0 || !hubToken) return;
+  // Nothing to send / not paired yet: a real "no-op", not a coincidence with an in-flight sync,
+  // so no resync is owed.
+  if (nodes.size === 0 || !hubToken) return;
+  // Already syncing: don't drop this trigger — record it so `finally` re-schedules once we're free.
+  if (syncing) {
+    resyncPending = true;
+    return;
+  }
   syncing = true;
   try {
     const { ok, status, data } = await api('/hub/devices', { platform: platform(), nodes: nodesForSync() }, hubToken);
@@ -401,6 +448,12 @@ async function syncToCloud() {
     console.log(`[hub→cloud] failed: ${e.message}`);
   } finally {
     syncing = false;
+    // A trigger arrived mid-sync (reading burst or the 15s timer) — coalesce it into a fresh
+    // debounced sync now that we're free, instead of waiting for the next one.
+    if (resyncPending) {
+      resyncPending = false;
+      scheduleSync();
+    }
   }
 }
 
@@ -513,8 +566,10 @@ const server = http.createServer(async (req, res) => {
   // answer the CORS preflight BEFORE the auth gate — browser preflights carry no token.
   // Frames are LAN-only.
   if (req.method === 'OPTIONS') {
+    // Only advertise cross-origin access when a dashboard origin is configured; otherwise the
+    // preflight carries no ACAO and the browser keeps the endpoints same-origin (the safe default).
     res.writeHead(204, {
-      'access-control-allow-origin': '*',
+      ...corsHeaders(),
       'access-control-allow-methods': 'GET, POST, OPTIONS',
       'access-control-allow-headers': 'content-type, x-hearth-token',
       'access-control-max-age': '86400',
@@ -547,7 +602,7 @@ const server = http.createServer(async (req, res) => {
       'content-length': f.bytes,
       'cache-control': 'no-store',
       'x-frame-at': String(f.at),
-      'access-control-allow-origin': '*',
+      ...corsHeaders(), // no wildcard — a frame is only shared cross-origin with a configured origin
     });
     res.end(f.buf);
     return;
@@ -556,7 +611,7 @@ const server = http.createServer(async (req, res) => {
   // (LAN-direct control, complements the cloud cadence downlink).
   if (req.url === '/camera') {
     if (!camera) {
-      res.writeHead(404, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      res.writeHead(404, { 'content-type': 'application/json', ...corsHeaders() });
       res.end(JSON.stringify({ error: 'camera disabled' }));
       return;
     }
@@ -564,16 +619,21 @@ const server = http.createServer(async (req, res) => {
       const body = (await readJson(req)) || {};
       if (body.quality != null) camera.setQuality(Number(body.quality));
       if (body.cadenceMs != null) camera.setCadence(Number(body.cadenceMs));
-      // Stop/start capture LAN-direct (the dashboard's toggle when it talks straight to the
-      // hub). Forgiving parse to match the node convention: 0/'0'/false/'off' all mean off.
-      if (body.enabled != null)
-        camera.setPower(!(body.enabled === false || body.enabled === 0 || body.enabled === '0' || body.enabled === 'off'));
+      // Stop/start capture LAN-direct (the dashboard's toggle when it talks straight to the hub).
+      // parseEnabled() is the ONE shared forgiving parse (hub/wire.mjs) — 0/'0'/false/'off' all
+      // mean off — so this and camera.setPower() can't drift. Record the LAN override so the next
+      // cloud sync doesn't `?? true` capture back on (see applyDesired's precedence note).
+      if (body.enabled != null) {
+        const on = parseEnabled(body.enabled);
+        localPowerOverride.set(camera.id, on);
+        camera.setPower(on);
+      }
     } else if (req.method !== 'GET') {
-      res.writeHead(405, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+      res.writeHead(405, { 'content-type': 'application/json', ...corsHeaders() });
       res.end(JSON.stringify({ error: 'method not allowed' }));
       return;
     }
-    res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
+    res.writeHead(200, { 'content-type': 'application/json', ...corsHeaders() });
     res.end(JSON.stringify(camera.config()));
     return;
   }
@@ -613,6 +673,18 @@ async function startMdns() {
 async function main() {
   console.log(`[hearth-hub] backend ${BACKEND_URL}  name "${HUB_NAME}"  state ${STATE_DIR}`);
 
+  // Opt-in hard gate: an operator who sets HUB_REQUIRE_TOKEN=1 is telling us never to open an
+  // unauthenticated LAN surface. Refuse to start (before we bind the port) rather than serve open.
+  // Default (unset) preserves the documented first-run "just works" local-dev experience — we only
+  // warn, loudly, below.
+  if (!INGEST_TOKEN && process.env.HUB_REQUIRE_TOKEN === '1') {
+    console.error(
+      '[hub] FATAL: HUB_REQUIRE_TOKEN=1 but HUB_INGEST_TOKEN is unset — refusing to start with an open LAN surface.\n' +
+        '      Set HUB_INGEST_TOKEN to a shared secret (nodes + dashboard present it as x-hearth-token or ?token=).',
+    );
+    process.exit(1);
+  }
+
   await new Promise((resolve) => server.listen(PORT, BIND, resolve));
   // Realtime LAN channel: a browser on the same network subscribes at ws://<hub>:PORT/live
   // and gets a snapshot of the current registry, then a live push on every reading.
@@ -622,8 +694,12 @@ async function main() {
     onConnect: (send) => send({ type: 'snapshot', at: Date.now(), nodes: [...nodes.values()] }),
   });
   console.log(`[hub] ingest listening on ${BIND}:${PORT} (POST ${INGEST_PATH}, GET /nodes, WS /live)`);
-  if (!INGEST_TOKEN)
-    console.log('[hub] WARNING: HUB_INGEST_TOKEN unset — /ingest, /nodes and /live are open to the LAN. Set it to require a token.');
+  if (!INGEST_TOKEN) {
+    console.log('[hub] ⚠  SECURITY: HUB_INGEST_TOKEN is unset — /ingest, /nodes, /live AND the camera /frame,/camera');
+    console.log('[hub]    are OPEN to everyone on this LAN. Anyone who can reach this host can read your live node list');
+    console.log('[hub]    and pull camera frames. Set HUB_INGEST_TOKEN to require a token, or HUB_REQUIRE_TOKEN=1 to refuse');
+    console.log('[hub]    to start without one.');
+  }
   const bonjour = await startMdns();
 
   // Optional camera sensor. Enabled with HEARTH_CAM=1 — it registers itself as a node via the

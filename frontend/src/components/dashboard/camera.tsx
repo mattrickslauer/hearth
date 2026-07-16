@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Fonts, Radius, Spacing } from '@/constants/theme';
@@ -143,16 +143,30 @@ export function CloudCameraCard({
   const effectiveMs = cadenceMs ?? DEFAULT_CADENCE_MS;
   const on = powerOn !== false;
 
+  // Guard the async fetch callbacks against a card that unmounted mid-flight (same pattern as
+  // notify-channels-card / auth context) — otherwise a late getSnapshot resolve sets state on a
+  // gone component.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
   const refresh = useCallback(() => {
     getSnapshot(cap.id, token)
       .then((s) => {
+        if (!alive.current) return;
         setSnap(s);
         // Once the backend stops handing back a frame, drop the "we drew one" verdict with it —
         // otherwise the card keeps its last onLoad forever and still calls itself live. A frame
         // that's still there keeps the verdict, so re-pulls don't flicker; onFrameError clears it.
         setFrameOk((ok) => ok && !!s?.ossUrl);
       })
-      .catch(() => setSnap(null));
+      .catch(() => {
+        if (alive.current) setSnap(null);
+      });
   }, [cap.id, token]);
 
   useEffect(() => {
@@ -295,6 +309,16 @@ export function useHubCamera(hubUrl: string): HubCamera {
   const quality = cfg?.quality ?? 70;
   const enabled = cfg?.enabled !== false;
 
+  // Guard the async fetch callbacks against an unmount mid-flight, so a late resolve never sets
+  // state on a gone hook (same pattern as notify-channels-card / auth context).
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
   // No LAN hub configured: stay inert. Hooks can't be called conditionally, so the caller
   // always calls this one and passes '' when there's nothing to talk to.
   useEffect(() => {
@@ -302,10 +326,13 @@ export function useHubCamera(hubUrl: string): HubCamera {
     fetch(`${hubUrl}/camera`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((c: CamConfig) => {
+        if (!alive.current) return;
         setCfg(c);
         setReachable(true);
       })
-      .catch(() => setReachable(false));
+      .catch(() => {
+        if (alive.current) setReachable(false);
+      });
   }, [hubUrl]);
 
   // Re-pull the frame on the snap cadence — a photo every N seconds, not a stream. A stopped
@@ -324,7 +351,9 @@ export function useHubCamera(hubUrl: string): HubCamera {
         body: JSON.stringify(patch),
       })
         .then((r) => r.json())
-        .then((c: CamConfig) => setCfg(c))
+        .then((c: CamConfig) => {
+          if (alive.current) setCfg(c);
+        })
         .catch(() => {});
     },
     [hubUrl],

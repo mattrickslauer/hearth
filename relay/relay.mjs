@@ -27,8 +27,9 @@
 import http from 'node:http';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-// One RFC 6455 implementation, shared with the hub's LAN channel. Deploying the relay must
-// therefore copy hub/ws-frame.mjs alongside relay/ — see backend/docs/realtime-relay.md.
+// One RFC 6455 implementation. Vendored into relay/ (ws-frame.mjs) as a byte-for-byte copy of the
+// hub's codec, so the relay imports only from within its own package instead of reaching into
+// ../hub — see backend/docs/realtime-relay.md. Keep the vendored copy in sync with hub/ws-frame.mjs.
 import {
   acceptKey,
   decodeFrames,
@@ -38,7 +39,7 @@ import {
   OP_PING,
   OP_PONG,
   OP_TEXT,
-} from '../hub/ws-frame.mjs';
+} from './ws-frame.mjs';
 
 const PORT = Number(process.env.PORT || 8790);
 // The key that signs/verifies browser tickets — set to the identical value on the backend's

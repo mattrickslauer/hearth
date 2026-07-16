@@ -29,12 +29,13 @@ import {
   type QuoteInput,
 } from '@/demo/engine/pricing';
 import { recommend } from '@/demo/engine/recommend';
-import { dutyForGate as catalogDuty, gatesFor as catalogGates } from '@/demo/gates';
+import { dutyForGate as catalogDuty } from '@/demo/gates';
 import { MODELS, type CloudModel, type RecordPolicy } from '@/demo/engine/types';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { dutyForGate, gatesFromHome } from '@/lib/gates';
+import { dutyForGate } from '@/lib/gates';
 import type { HomeModel, Watch } from '@/lib/home';
+import { perDay, resolveGates } from '@/lib/watch-cost';
 
 /** Sample rates offered, fastest first. Mirrors the demo's RATES plus slower budget stops. */
 const RATES = ['2s', '10s', '30s', '2m', '5m'];
@@ -81,8 +82,7 @@ export function TuneWatch({
   if (!watch || !spec || !cloud) return null;
 
   const draftSpec = { kind: 'cloud' as const, cloud: { ...cloud, model } };
-  const homeGates = gatesFromHome(home, watch.boundInputs);
-  const gates = homeGates.length ? homeGates : catalogGates(watch.boundInputs);
+  const gates = resolveGates(watch, home);
   const gateDuty = dutyForGate(home, cloud.gate) ?? catalogDuty(cloud.gate);
 
   const input: QuoteInput = {
@@ -231,14 +231,6 @@ export function TuneWatch({
 {error ? <Text style={[styles.err, { color: theme.ember }]}>{error}</Text> : null}
     </Sheet>
   );
-}
-
-/** Checks a day, rounded for humans — "<1" beats a misleading "0". */
-function perDay(callsPerMonth: number): string {
-  const d = callsPerMonth / 30;
-  if (d === 0) return '0';
-  if (d < 1) return '<1';
-  return String(Math.round(d));
 }
 
 function Section({

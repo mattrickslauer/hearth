@@ -51,6 +51,11 @@ const getStoreFor = (accountId: string): Promise<HomeStore> => {
   }
   const s = makeStore(accountId);
   stores.set(accountId, s);
+  // Don't let a rejected open() poison this account: evict the cached promise on failure so the
+  // next request retries instead of re-throwing the same cached rejection forever.
+  void s.catch(() => {
+    if (stores.get(accountId) === s) stores.delete(accountId);
+  });
   if (stores.size > STORE_CACHE_MAX) {
     const oldest = stores.keys().next().value;
     if (oldest !== undefined) stores.delete(oldest);
@@ -60,7 +65,17 @@ const getStoreFor = (accountId: string): Promise<HomeStore> => {
 
 let authPromise: Promise<AuthDeps> | null = null;
 const accounts = makeAccountStore();
-const getAuth = (): Promise<AuthDeps> => (authPromise ??= makeOtpStore().then((otp) => ({ otp, accounts })));
+const getAuth = (): Promise<AuthDeps> => {
+  if (!authPromise) {
+    authPromise = makeOtpStore().then((otp) => ({ otp, accounts }));
+    // Clear the memoized promise if it rejects, so a transient store-open failure doesn't
+    // wedge auth for the life of the instance.
+    void authPromise.catch(() => {
+      authPromise = null;
+    });
+  }
+  return authPromise;
+};
 
 // CORS: set CORS_ORIGINS (comma-separated) to reflect only known app origins instead
 // of the wildcard. Unset keeps '*' for backward compatibility with existing deploys.
@@ -400,10 +415,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       if (!input) return send(res, 400, { error: 'input required' });
       const store = await getStoreFor(session.sub);
       // Only accept cadence for a sensor this account actually owns (via a paired hub).
-      const owns = (await store.listHubDevices()).some((s) =>
-        s.nodes.some((n) => n.sensors.some((se) => `${n.id}.${se.key}` === input)),
-      );
-      if (!owns) return send(res, 404, { error: 'unknown input' });
+      if (!(await store.ownsInput(input))) return send(res, 404, { error: 'unknown input' });
       const raw = Number(body.intervalMs);
       if (!Number.isFinite(raw)) return send(res, 400, { error: 'intervalMs must be a number' });
       const intervalMs = Math.round(clampCadence(raw));
@@ -431,10 +443,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
       if (!input) return send(res, 400, { error: 'input required' });
       const store = await getStoreFor(session.sub);
       // Only accept a command for an ACTUATOR this account actually owns (via a paired hub).
-      const owns = (await store.listHubDevices()).some((s) =>
-        s.nodes.some((n) => (n.actuators ?? []).some((ac) => `${n.id}.${ac.key}` === input)),
-      );
-      if (!owns) return send(res, 404, { error: 'unknown actuator' });
+      if (!(await store.ownsActuator(input))) return send(res, 404, { error: 'unknown actuator' });
       const on = body.on === true || body.on === 'on' || body.on === 1;
       await store.setDesired(input, on);
       return send(res, 200, { ok: true, input, on });
@@ -512,6 +521,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
 /** FC custom-runtime + local both boot the same server. */
 export function start(): void {
   assertAuthConfig(); // fail loud at boot if AUTH_SESSION_SECRET is missing/weak
+  // Warn once at boot when CORS is left wide open. The '*' fallback keeps local dev working, but
+  // in a deploy it lets any origin call the API — set CORS_ORIGINS to the known app origins.
+  if (!ALLOWED_ORIGINS.length) {
+    console.warn('[hearth-cloud] CORS_ORIGINS is unset — answering Access-Control-Allow-Origin: * (dev fallback). Set CORS_ORIGINS to your app origins in production.');
+  }
   const port = Number(process.env.FC_SERVER_PORT ?? process.env.PORT ?? 9000);
   // FC custom-runtime requires binding 0.0.0.0 (not localhost) or requests time out.
   createServer(handle).listen(port, '0.0.0.0', () => {

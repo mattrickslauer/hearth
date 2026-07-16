@@ -50,7 +50,14 @@
 #define ACTUATOR_ACTIVE_HIGH 1  // 1: HIGH = on (built-in LED / transistor-driven coil). 0: active-low relay modules.
 #define ACTUATOR_KEY "led"      // the name this output advertises to the hub ("motor" for a motor node)
 #define ACTUATOR_PORT 8080      // the node listens here for POST /actuate
+// Shared secret guarding the actuator endpoints. Leave EMPTY to keep the endpoint open (default,
+// back-compat: any LAN device can drive the output). Set a non-empty token to require callers to
+// present it in the X-Hearth-Token header — POST /actuate and GET / then return 401 without it.
+// IMPORTANT: if you set this, the HUB must be configured to send the same header/value, or it
+// won't be able to actuate this node. Example: #define ACTUATOR_TOKEN "change-me-please"
+#define ACTUATOR_TOKEN ""
 // Node-side safety veto: force the output OFF after this many ms of continuous ON, no matter
 // what the cloud last commanded, and IGNORE further "on" until it is commanded off (an explicit
 // re-arm). A motor you can't see shouldn't run forever on a stuck command. 0 = no limit.
-#define ACTUATOR_MAX_ON_MS 0
+// Default 5 min: a sane ceiling so a stuck/lost "on" can't hold a real load forever.
+#define ACTUATOR_MAX_ON_MS 300000

@@ -27,6 +27,8 @@ import {
 } from './domain';
 // Type-only, so the notify ↔ store cycle is erased at compile time (no runtime import).
 import type { NotifyConfig } from './notify';
+// The ONE Tablestore client singleton + table-creation helpers, shared with auth.ts/hubs.ts.
+import { ensureHomeTable, ensureTable, getTablestore } from './tablestore';
 
 export type Scalar = number | string | boolean;
 export interface Reading {
@@ -166,7 +168,9 @@ export function matchesRun(ev: RunEventRow, q: RunQuery): boolean {
   if (q.engine && ev.evaluatedBy !== q.engine) return false;
   if (q.billedOnly && !ev.usd) return false;
   if (q.text) {
-    const hay = `${ev.title ?? ''} ${ev.reasoning ?? ''} ${ev.model ?? ''} ${ev.kind}`.toLowerCase();
+    // Title / reasoning / model only — matching `kind` too would contradict the documented
+    // text-search fields (see RunQuery.text and the search_runs tool description).
+    const hay = `${ev.title ?? ''} ${ev.reasoning ?? ''} ${ev.model ?? ''}`.toLowerCase();
     if (!hay.includes(q.text.toLowerCase())) return false;
   }
   return true;
@@ -269,6 +273,11 @@ export interface HomeStore {
    * lets a node id reach inputs its node never declared.
    */
   ownsInput(input: string): Promise<boolean>;
+  /**
+   * Does this account have an ACTUATOR with this exact input id? The actuator twin of ownsInput —
+   * same account-boundary reasoning, exact match against an actuator a paired hub's node declared.
+   */
+  ownsActuator(input: string): Promise<boolean>;
   /** The desired per-sensor sample cadence (input id "<node>.<key>" → ms) the account requested. */
   getCadences(): Promise<Record<string, number>>;
   /** Set (or clear, when ms is null) one sensor's desired sample cadence in milliseconds. */
@@ -585,6 +594,10 @@ export class MemoryStore implements HomeStore {
     const snaps = await this.listHubDevices();
     return snaps.some((snap) => snap.nodes.some((n) => n.sensors.some((s) => `${n.id}.${s.key}` === input)));
   }
+  async ownsActuator(input: string): Promise<boolean> {
+    const snaps = await this.listHubDevices();
+    return snaps.some((snap) => snap.nodes.some((n) => (n.actuators ?? []).some((a) => `${n.id}.${a.key}` === input)));
+  }
   async getCadences(): Promise<Record<string, number>> {
     return Object.fromEntries(this.cadences);
   }
@@ -694,14 +707,19 @@ export class FileStore extends MemoryStore {
  * across FC's multiple, recycled instances. The home model + live readings stay
  * in-memory (the model is static; readings are transient telemetry that repopulate
  * from sensors), so only the durable, low-volume authored config hits Tablestore.
+ *
+ * Consolidation (audit): this adapter used to build its OWN ts.Client and its own
+ * TablestoreConfig/must(), a second integration layer alongside tablestore.ts (auth.ts/hubs.ts).
+ * It now shares tablestore.ts's ONE client singleton (getTablestore) and routes table creation
+ * through its helpers — hearth_home via ensureHomeTable (its single memoized owner), and the
+ * readings/runs tables via ensureTable(..., ttl). DEFERRED, on purpose: the per-row ops below
+ * (getRow/putRow/getRange) still call the shared client directly rather than tablestore.ts's
+ * promisified tsGetRow/tsPutRow/tsGetRange helpers. They use the SDK's promise mode with raw
+ * `data`-column JSON blobs and the backward, exclusive-end-key window scans (scanReadings /
+ * scanRuns) that the forward-only callback helpers don't express — rewriting them onto those
+ * helpers risks the very window/TTL correctness the audit says to preserve, for no client-count
+ * win (the client is already shared). Left as-is deliberately.
  */
-export interface TablestoreConfig {
-  endpoint: string;
-  instance: string;
-  accessKeyId: string;
-  accessKeySecret: string;
-}
-
 const TS_TABLE = 'hearth_home';
 
 /* Live readings live in their OWN table, separate from hearth_home, because retention is a
@@ -756,15 +774,9 @@ class TablestoreStore extends MemoryStore {
     super(false);
   }
 
-  static async open(ts: TsModule, cfg: TablestoreConfig, account: string): Promise<TablestoreStore> {
-    const client = new ts.Client({
-      accessKeyId: cfg.accessKeyId,
-      secretAccessKey: cfg.accessKeySecret,
-      endpoint: cfg.endpoint,
-      instancename: cfg.instance,
-    });
+  static async open(ts: TsModule, client: TsClient, account: string): Promise<TablestoreStore> {
     const store = new TablestoreStore(ts, client, account);
-    await store.ensureTable();
+    await store.ensureTables();
     return store;
   }
 
@@ -780,30 +792,13 @@ class TablestoreStore extends MemoryStore {
   }
 
   /** Create the shared tables on first use; pre-existing tables are the steady state. */
-  private async ensureTable(): Promise<void> {
-    await this.createTable(TS_TABLE, -1);
+  private async ensureTables(): Promise<void> {
+    // hearth_home is shared with auth.ts/hubs.ts, so let its single memoized owner create it.
+    await ensureHomeTable();
     // Readings: same key shape, but Tablestore expires rows 24h after write for us.
-    await this.createTable(TS_READINGS_TABLE, READING_TTL_SEC);
+    await ensureTable(TS_READINGS_TABLE, ['account', 'sk'], READING_TTL_SEC);
     // Runs: same again, on a one-year life. See TS_RUNS_TABLE.
-    await this.createTable(TS_RUNS_TABLE, RUN_TTL_SEC);
-  }
-
-  private async createTable(tableName: string, timeToLive: number): Promise<void> {
-    try {
-      await this.client.createTable({
-        tableMeta: {
-          tableName,
-          primaryKey: [
-            { name: 'account', type: 'STRING' },
-            { name: 'sk', type: 'STRING' },
-          ],
-        },
-        reservedThroughput: { capacityUnit: { read: 0, write: 0 } },
-        tableOptions: { timeToLive, maxVersions: 1 },
-      });
-    } catch (e) {
-      if (!/already exist/i.test((e as Error).message || '')) throw e;
-    }
+    await ensureTable(TS_RUNS_TABLE, ['account', 'sk'], RUN_TTL_SEC);
   }
 
   /* ---- durable live readings (24h, own table, server-side TTL) --------------------
@@ -1159,20 +1154,13 @@ class TablestoreStore extends MemoryStore {
   }
 }
 
-export async function createTablestore(cfg: TablestoreConfig, accountId: string): Promise<HomeStore> {
-  let mod: unknown;
-  try {
-    // optional dependency — only needed when actually deploying against Tablestore
-    mod = await import('tablestore');
-  } catch {
-    throw new Error(
-      "Tablestore selected but the 'tablestore' SDK is not installed. Run `npm i tablestore` in backend/, " +
-        'or unset HEARTH_STORE=tablestore to use the in-memory store.',
-    );
-  }
-  // tablestore ships CommonJS; under esbuild's interop the namespace may nest it in `.default`.
-  const ts = ((mod as { default?: unknown }).default ?? mod) as TsModule;
-  return TablestoreStore.open(ts, cfg, accountId);
+export async function createTablestore(accountId: string): Promise<HomeStore> {
+  // Route through tablestore.ts's ONE client singleton (it lazily imports the SDK, reads config
+  // from env, and throws a clear hint if the optional dependency is missing) instead of building
+  // a second ts.Client here. `TableStore` is the resolved SDK namespace; `client` is the shared
+  // client both integration layers now use.
+  const { TableStore, client } = await getTablestore();
+  return TablestoreStore.open(TableStore as TsModule, client as TsClient, accountId);
 }
 
 /** Root dir for file-backed persistence (HEARTH_STORE=file). */
@@ -1194,29 +1182,12 @@ function safeId(id: string): string {
 export async function makeStore(accountId = 'default'): Promise<HomeStore> {
   const mode = process.env.HEARTH_STORE;
   if (mode === 'tablestore') {
-    return createTablestore(
-      {
-        endpoint: must('TABLESTORE_ENDPOINT'),
-        instance: must('TABLESTORE_INSTANCE'),
-        accessKeyId: must('ALI_ACCESS_KEY_ID', 'ALIBABA_ACCESS_KEY_ID'),
-        accessKeySecret: must('ALI_ACCESS_KEY_SECRET', 'ALIBABA_ACCESS_KEY_SECRET'),
-      },
-      accountId,
-    );
+    return createTablestore(accountId);
   }
   if (mode === 'file') {
     return FileStore.open(join(dataDir(), 'homes', `${safeId(accountId)}.json`));
   }
   return new MemoryStore();
-}
-
-/** First present env var among the given names, else throw with a clear hint. */
-function must(...names: string[]): string {
-  for (const n of names) {
-    const v = process.env[n];
-    if (v) return v;
-  }
-  throw new Error(`missing env ${names.join('/')} (required for HEARTH_STORE=tablestore)`);
 }
 
 export { parseDuration };
