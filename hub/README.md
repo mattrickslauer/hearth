@@ -39,6 +39,10 @@ The hub finds the camera, and it shows up in the dashboard under **Camera** — 
 like any other, with the same two knobs (cadence, quality) and frames Qwen-VL can read. It stays
 on across restarts. `hearthctl camera off` detaches it.
 
+Both toggle the *running* hub in place — no restart, nodes stay registered — and `off` stops the
+capture process immediately (webcam LED goes dark now, not at the next restart). The installer
+offers to attach a detected camera on fresh installs; a re-install keeps whatever you had.
+
 Needs `ffmpeg` on PATH (`dnf install ffmpeg` / `apt install ffmpeg`).
 
 > **Why it probes instead of asking you for a device.** A single webcam registers *several*
