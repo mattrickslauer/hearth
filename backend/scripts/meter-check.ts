@@ -154,6 +154,8 @@ const { judge, author } = await import('../src/qwen.ts');
   const { TOOLS } = await import('../src/tools.ts');
   const { MemoryStore } = await import('../src/store.ts');
   const store = new MemoryStore(false);
+// src/ has no exported mint for an AccountId — a script must say out loud that it's faking one.
+const ctx = { store, accountId: 'acct-meter-check' as unknown as import('../src/auth.ts').AccountId };
   const tool = (name: string) => TOOLS.find((t) => t.name === name)!;
 
   const good = JSON.stringify({
@@ -168,10 +170,10 @@ const { judge, author } = await import('../src/qwen.ts');
   replies = [{ content: good, promptTokens: 430, completionTokens: 140, model: 'qwen-plus' }];
   received = 0;
 
-  await tool('author_question').handler({ wish: 'watch the front door' }, { store });
+  await tool('author_question').handler({ wish: 'watch the front door' }, ctx);
   check('E1 authoring hit the model once', received === 1, `${received} request(s)`);
 
-  const res = (await tool('search_runs').handler({ sinceMs: 60_000 }, { store })) as {
+  const res = (await tool('search_runs').handler({ sinceMs: 60_000 }, ctx)) as {
     runs: { kind: string; usd?: number; model?: string; title?: string }[];
     totals: { rows: number; billed: number; usd: number; usdFormatted: string; tokensIn: number };
     truncated: boolean;
@@ -188,13 +190,13 @@ const { judge, author } = await import('../src/qwen.ts');
   check('E8 tokens are the server’s', res.totals.tokensIn === 430, `${res.totals.tokensIn}in`);
 
   // The filters the dashboard chips send must actually reach the log.
-  const byText = (await tool('search_runs').handler({ sinceMs: 60_000, text: 'front door' }, { store })) as { totals: { rows: number } };
+  const byText = (await tool('search_runs').handler({ sinceMs: 60_000, text: 'front door' }, ctx)) as { totals: { rows: number } };
   check('E9 text search finds it', byText.totals.rows === 1, `${byText.totals.rows} row(s)`);
-  const miss = (await tool('search_runs').handler({ sinceMs: 60_000, text: 'garage' }, { store })) as { totals: { rows: number } };
+  const miss = (await tool('search_runs').handler({ sinceMs: 60_000, text: 'garage' }, ctx)) as { totals: { rows: number } };
   check('E10 text search excludes non-matches', miss.totals.rows === 0, `${miss.totals.rows} row(s)`);
-  const billed = (await tool('search_runs').handler({ sinceMs: 60_000, billedOnly: true }, { store })) as { totals: { rows: number } };
+  const billed = (await tool('search_runs').handler({ sinceMs: 60_000, billedOnly: true }, ctx)) as { totals: { rows: number } };
   check('E11 billedOnly keeps the paid run', billed.totals.rows === 1, `${billed.totals.rows} row(s)`);
-  const old = (await tool('search_runs').handler({ from: 0, to: 1000 }, { store })) as { totals: { rows: number } };
+  const old = (await tool('search_runs').handler({ from: 0, to: 1000 }, ctx)) as { totals: { rows: number } };
   check('E12 a window that excludes it returns nothing', old.totals.rows === 0, `${old.totals.rows} row(s)`);
 }
 

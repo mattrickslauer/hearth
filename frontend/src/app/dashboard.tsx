@@ -219,7 +219,15 @@ export default function DashboardScreen() {
     }, []),
   );
 
-  const allSensors = useMemo(() => home?.capabilities.filter((c) => c.kind === 'sensor') ?? [], [home]);
+  // Dedupe by id: a hub that reports the same capability twice (e.g. `hub-cam.cam.frame`
+  // arriving both as a device capability and as the attached camera) would otherwise render
+  // two cards with the same React key and duplicate/omit children on update.
+  const allSensors = useMemo(() => {
+    const seen = new Set<string>();
+    return (home?.capabilities ?? []).filter(
+      (c) => c.kind === 'sensor' && !seen.has(c.id) && !!seen.add(c.id),
+    );
+  }, [home]);
   // Camera (vision) sensors render as their own frame card, not a generic value tile.
   const visionSensors = useMemo(() => allSensors.filter((c) => c.vision), [allSensors]);
   const sensors = useMemo(() => allSensors.filter((c) => !c.vision), [allSensors]);
