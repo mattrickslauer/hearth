@@ -136,6 +136,9 @@ function applyDesired(desired) {
   if (!desired || typeof desired !== 'object') return;
   desiredState.clear();
   for (const [input, on] of Object.entries(desired)) desiredState.set(input, !!on);
+  // The camera's capture switch is just another actuator: apply its shadow entry through the
+  // same downlink the ESP nodes converge on. No entry = never commanded = capture runs.
+  if (camera) camera.setPower(desiredState.get(`${camera.id}.power`) ?? true);
 }
 
 // The desired actuator states for one node, keyed by bare actuator key ("on"/"off" strings the
@@ -561,6 +564,10 @@ const server = http.createServer(async (req, res) => {
       const body = (await readJson(req)) || {};
       if (body.quality != null) camera.setQuality(Number(body.quality));
       if (body.cadenceMs != null) camera.setCadence(Number(body.cadenceMs));
+      // Stop/start capture LAN-direct (the dashboard's toggle when it talks straight to the
+      // hub). Forgiving parse to match the node convention: 0/'0'/false/'off' all mean off.
+      if (body.enabled != null)
+        camera.setPower(!(body.enabled === false || body.enabled === 0 || body.enabled === '0' || body.enabled === 'off'));
     } else if (req.method !== 'GET') {
       res.writeHead(405, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
       res.end(JSON.stringify({ error: 'method not allowed' }));
