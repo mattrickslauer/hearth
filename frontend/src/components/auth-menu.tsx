@@ -3,7 +3,7 @@ import { Linking, StyleSheet, Text, View } from 'react-native';
 
 import { useAuth } from '@/auth/context';
 import { Dropdown, Option } from '@/components/demo/dropdown';
-import { Fonts, Spacing } from '@/constants/theme';
+import { Fonts } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 
 const REPO_URL = 'https://github.com/mattrickslauer/hearth';
@@ -43,6 +43,22 @@ export function AuthMenu({ align = 'right', width = 210 }: { align?: 'left' | 'r
           <View style={[styles.divider, { backgroundColor: theme.border }]} />
 
           <Option icon="🏠" label="Home" onPress={() => { close(); router.push((signedIn ? '/dashboard' : '/') as never); }} />
+          {signedIn ? (
+            <>
+              {/* The phone tab bar only carries the four live tabs — billing and settings
+                  ride the account menu and deep-link into the dashboard via ?tab=. */}
+              <Option
+                icon="💳"
+                label="Usage & billing"
+                onPress={() => { close(); router.push({ pathname: '/dashboard', params: { tab: 'billing' } } as never); }}
+              />
+              <Option
+                icon="⚙️"
+                label="Settings"
+                onPress={() => { close(); router.push({ pathname: '/dashboard', params: { tab: 'settings' } } as never); }}
+              />
+            </>
+          ) : null}
           <Option icon="🔥" label="Live demo" onPress={() => { close(); router.push('/demo'); }} />
           <Option icon="↗" label="GitHub" onPress={() => { close(); void Linking.openURL(REPO_URL); }} />
 
