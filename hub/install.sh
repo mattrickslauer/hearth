@@ -46,11 +46,12 @@ NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 
 # EVERY module hub.mjs imports, transitively, must be listed here — a missing one makes the
 # hub die on startup with ERR_MODULE_NOT_FOUND. The import graph is:
 #   hub.mjs → ws.mjs → ws-frame.mjs
-#           → camera.mjs
+#           → node.mjs → camera.mjs       (the embedded camera node, HEARTH_CAM=1;
+#                                          node.mjs also runs standalone: a laptop as a node)
 #           → runtime.mjs → engine.mjs, notify.mjs
 # `hearthctl start` verifies the process actually survives, so if this list ever falls behind
 # again the installer fails loudly instead of leaving a hub that silently won't boot.
-HUB_FILES="hub.mjs ws.mjs ws-frame.mjs runtime.mjs engine.mjs notify.mjs camera.mjs hearthctl"
+HUB_FILES="hub.mjs ws.mjs ws-frame.mjs runtime.mjs engine.mjs notify.mjs node.mjs camera.mjs hearthctl"
 
 say "Installing the Hearth hub into $DIR"
 mkdir -p "$DIR"

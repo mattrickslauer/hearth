@@ -9,8 +9,10 @@
   },
   "scripts": {
     "start": "node hub.mjs",
+    "node": "node node.mjs",
     "reset": "node hub.mjs --reset",
     "selftest": "node tools/selftest.mjs",
+    "camera-selftest": "node tools/camera-selftest.mjs",
     "notify-selftest": "node tools/notify-selftest.mjs",
     "fake-node": "node tools/fake-node.mjs"
   },
