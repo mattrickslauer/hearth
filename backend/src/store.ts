@@ -158,6 +158,16 @@ export interface HomeStore {
   listHubDevices(): Promise<HubDeviceSnapshot[]>;
   /** Forget a hub's devices (on unpair). Without this its nodes haunt the Home Model forever. */
   deleteHubDevices(hubId: string): Promise<boolean>;
+  /**
+   * Drop a node from every hub snapshot reporting it; resolves to the number of snapshots
+   * changed (0 = no such node). Deliberately not scoped to one hub: the case this exists for
+   * is a node duplicated ACROSS snapshots, where naming the right hub is precisely what the
+   * user can't do — the stale hub isn't in the registry to be named.
+   *
+   * A node still physically attached comes back on its hub's next sync, by design: this
+   * prunes the RECORD, and only records with no hardware behind them stay pruned.
+   */
+  removeHubNode(nodeId: string): Promise<number>;
   /** The desired per-sensor sample cadence (input id "<node>.<key>" → ms) the account requested. */
   getCadences(): Promise<Record<string, number>>;
   /** Set (or clear, when ms is null) one sensor's desired sample cadence in milliseconds. */
@@ -432,6 +442,17 @@ export class MemoryStore implements HomeStore {
     const had = this.hubDevices.delete(hubId);
     if (had) this.persist();
     return had;
+  }
+  async removeHubNode(nodeId: string): Promise<number> {
+    let changed = 0;
+    for (const [hubId, snap] of this.hubDevices) {
+      const nodes = snap.nodes.filter((n) => n.id !== nodeId);
+      if (nodes.length === snap.nodes.length) continue;
+      this.hubDevices.set(hubId, { ...snap, nodes });
+      changed++;
+    }
+    if (changed) this.persist();
+    return changed;
   }
   async getCadences(): Promise<Record<string, number>> {
     return Object.fromEntries(this.cadences);
@@ -825,6 +846,24 @@ class TablestoreStore extends MemoryStore {
     if (!(await this.getBlob(`hd#${hubId}`))) return false;
     await this.client.deleteRow({ tableName: TS_TABLE, condition: this.ignore(), primaryKey: this.pk(`hd#${hubId}`) });
     return true;
+  }
+  async removeHubNode(nodeId: string): Promise<number> {
+    await this.hydrate();
+    const before = await super.listHubDevices();
+    const changed = await super.removeHubNode(nodeId);
+    if (!changed) return 0;
+    // Re-persist only the snapshots that actually lost the node. Their identity changed by
+    // definition, so the sig check in putHubDevices can't help us here — write through directly.
+    const touched = before.filter((s) => s.nodes.some((n) => n.id === nodeId)).map((s) => s.hubId);
+    await Promise.all(
+      touched.map(async (hubId) => {
+        const snap = (await super.listHubDevices()).find((s) => s.hubId === hubId);
+        if (!snap) return;
+        this.hubSigs.set(hubId, TablestoreStore.sig(snap));
+        await this.putBlob(`hd#${hubId}`, snap);
+      }),
+    );
+    return changed;
   }
   async getCadences(): Promise<Record<string, number>> {
     // Read through so a cadence set on another FC instance is seen on the hub's next sync.
