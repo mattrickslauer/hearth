@@ -23,6 +23,19 @@ const require = createRequire(import.meta.url);
 const tablestoreVersion = require('tablestore/package.json').version;
 const aliOssVersion = require('ali-oss/package.json').version;
 
+// Stamp the build with its git sha + time, surfaced at /health. The frontend auto-deploys on
+// every merge while this backend deploys by hand, so the two skew silently — a deploy from a
+// stale branch has now twice rolled back the API shape and blanked the dashboard. The tools
+// count can miss that (equal counts, different code); the sha cannot.
+let sha = 'unknown';
+try {
+  sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+  if (execSync('git status --porcelain -- src', { encoding: 'utf8' }).trim()) sha += '-dirty';
+} catch {
+  /* not a git checkout (CI tarball) — 'unknown' is honest */
+}
+const buildInfo = `${sha} @ ${new Date().toISOString()}`;
+
 await build({
   entryPoints: ['src/server.ts'],
   outfile: 'dist/server.cjs', // .cjs = CommonJS everywhere, regardless of package.json type
@@ -32,6 +45,7 @@ await build({
   target: 'node20',
   external: ['ali-oss', 'tablestore'],
   logLevel: 'info',
+  define: { 'process.env.BUILD_INFO': JSON.stringify(buildInfo) },
 });
 
 // Ship tablestore (+ its deps) as a real node_module in the code dir so `require`

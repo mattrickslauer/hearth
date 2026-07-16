@@ -161,20 +161,59 @@ let live = null;
 // its snap cadence. Null when disabled — every use is guarded.
 let camera = null;
 
+// Frame-push health. The stream IS the retry — a fresh frame replaces a failed one at the
+// next snap, so per-frame retries would only double-send. Healing instead means:
+//   1. notice state TRANSITIONS (ok→failing, failing→ok) without logging twice a second,
+//   2. treat an auth rejection as "re-pair now" instead of failing quietly until the next
+//      heartbeat happens to notice,
+//   3. expose the state (GET /camera, hearthctl status) so "no frames on the dashboard"
+//      is a one-command diagnosis instead of a mystery.
+const pushHealth = { ok: null, failures: 0, lastOkAt: 0, failingSince: 0, lastError: '' };
+function markPush(ok, error) {
+  if (ok) {
+    if (pushHealth.ok === false)
+      console.log(`[cam→cloud] frame pushes recovered after ${pushHealth.failures} failure(s) (down ${Math.round((Date.now() - pushHealth.failingSince) / 1000)}s)`);
+    pushHealth.ok = true;
+    pushHealth.failures = 0;
+    pushHealth.lastOkAt = Date.now();
+    pushHealth.lastError = '';
+    return;
+  }
+  pushHealth.failures += 1;
+  pushHealth.lastError = error;
+  if (pushHealth.ok !== false) {
+    pushHealth.failingSince = Date.now();
+    console.log(`[cam→cloud] frame pushes FAILING (${error}) — will keep trying at the snap cadence`);
+  }
+  pushHealth.ok = false;
+}
+
 // Bring the camera up. Idempotent — shared by boot (HEARTH_CAM=1) and a live
 // POST /camera {enabled:true}, so attaching a camera never requires a hub restart.
 function startCamera(sourceOverride) {
   if (camera) return;
   // Push each snapped frame up to the cloud (→ OSS) so any dashboard, on any network, and the
   // Qwen-VL judge pull it by presigned URL — the scalable path, no per-hub URL to hardcode.
-  // No-op until paired (the LAN GET /frame still serves it); errors are logged, never fatal.
+  // No-op until paired (the LAN GET /frame still serves it); errors are tracked, never fatal.
   const pushFrame = async (input, dataUri) => {
     if (!hubToken) return;
     try {
       const { ok, status, data } = await api('/hub/frame', { input, image: dataUri }, hubToken);
-      if (!ok) console.log(`[cam→cloud] frame push rejected ${status}: ${data.error || 'unknown'}`);
+      if (ok) return markPush(true);
+      markPush(false, `rejected ${status}: ${data.error || 'unknown'}`);
+      // Auth rejection = this hub is no longer paired. Hand the dead token to the heartbeat
+      // loop NOW — it re-enrolls and surfaces a fresh claim code — rather than dripping a
+      // rejected push per snap until the next beat notices.
+      if (status === 401 || status === 403) {
+        console.log('[cam→cloud] hub token rejected — clearing it so the pairing loop re-pairs');
+        hubToken = null;
+        accountId = null;
+        delete state.hubToken;
+        delete state.accountId;
+        saveState(state);
+      }
     } catch (e) {
-      console.log(`[cam→cloud] frame push failed: ${e.message}`);
+      markPush(false, e.message);
     }
   };
   camera = createCamera({ ingest, onFrame: pushFrame, source: sourceOverride });
@@ -620,7 +659,16 @@ const server = http.createServer(async (req, res) => {
     if (body.power != null)
       camera.setPower(!(body.power === false || body.power === 0 || body.power === '0' || body.power === 'off'));
     res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*' });
-    res.end(JSON.stringify(camera.config()));
+    // `push` is the cloud-side health of the frame stream — so "no frames on the dashboard"
+    // is answerable from the hub itself (hearthctl status prints this object).
+    res.end(
+      JSON.stringify({
+        ...camera.config(),
+        push: hubToken
+          ? { ok: pushHealth.ok, failures: pushHealth.failures, lastOkAt: pushHealth.lastOkAt || null, error: pushHealth.lastError || null }
+          : { ok: null, note: 'not paired — frames stay LAN-only until the hub is claimed' },
+      }),
+    );
     return;
   }
   if (req.method === 'POST' && req.url === INGEST_PATH) {

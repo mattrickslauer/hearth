@@ -181,6 +181,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse): Promise
         brain: hasKey() ? 'qwen' : 'mock',
         store: process.env.HEARTH_STORE === 'tablestore' ? 'tablestore' : 'memory',
         tools: TOOL_BY_NAME.size,
+        // Which code is actually live — stamped by build.mjs. `curl /health` after every
+        // deploy; equal tool counts have already hidden a stale deploy twice.
+        build: process.env.BUILD_INFO ?? 'dev',
       });
     }
 
