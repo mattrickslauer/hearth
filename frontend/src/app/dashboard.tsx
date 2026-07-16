@@ -42,6 +42,7 @@ import {
   describeHome,
   linkWatchMemory,
   listCadences,
+  listDesired,
   listEvents,
   listMemory,
   listWatches,
@@ -49,8 +50,10 @@ import {
   readInput,
   removeSensor,
   setCadence,
+  setDesired,
   updateWatch,
   type Cadences,
+  type DesiredStates,
   type ContextSuggestion,
   type HomeCapability,
   type HomeModel,
@@ -129,6 +132,9 @@ export default function DashboardScreen() {
   const [events, setEvents] = useState<RunEvent[] | null>(null);
   const [readings, setReadings] = useState<Record<string, Reading | null>>({});
   const [cadences, setCadences] = useState<Cadences>({});
+  // The desired half of the device shadow — carries the camera's `power` switch (and any other
+  // actuator the dashboard learns to drive). No entry for an input = never commanded = device default.
+  const [desired, setDesiredMap] = useState<DesiredStates>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -166,12 +172,13 @@ export default function DashboardScreen() {
     setLoading(true);
     setError(null);
     try {
-      const [h, w, e, hb, cd, mem] = await Promise.all([
+      const [h, w, e, hb, cd, ds, mem] = await Promise.all([
         describeHome(token),
         listWatches(token),
         listEvents(20, token),
         listHubs(token).catch(() => [] as HubView[]),
         listCadences(token).catch(() => ({}) as Cadences),
+        listDesired(token).catch(() => ({}) as DesiredStates),
         listMemory(token).catch(() => [] as MemoryObject[]),
       ]);
       setHome(h);
@@ -179,6 +186,7 @@ export default function DashboardScreen() {
       setEvents(e);
       setHubs(hb);
       setCadences(cd);
+      setDesiredMap(ds);
       setMemory(mem);
       const sensors = h.capabilities.filter((c) => c.kind === 'sensor');
       const pairs = await Promise.all(
@@ -420,6 +428,36 @@ export default function DashboardScreen() {
     }
   };
 
+  /**
+   * The camera's capture switch, resolved from the home model: the `power` actuator on the
+   * node that owns this vision sensor. Older hub firmware doesn't describe one — then this is
+   * null and the camera renders without a toggle, rather than with a switch that does nothing.
+   */
+  const cameraPowerInput = useCallback(
+    (cap: HomeCapability): string | null => {
+      const node = home?.nodes.find((n) => n.capabilities.some((c) => c.id === cap.id));
+      return node?.capabilities.find((c) => c.kind === 'actuator' && c.id === `${node.id}.power`)?.id ?? null;
+    },
+    [home],
+  );
+
+  // Command an actuator on/off (the camera's stop/start). Optimistic, same shape as
+  // changeCadence: flip the shadow locally, POST it, roll back if the write is refused.
+  const changeDesired = async (input: string, on: boolean) => {
+    const prev = desired[input];
+    setDesiredMap((d) => ({ ...d, [input]: on }));
+    try {
+      await setDesired(input, on, token);
+    } catch {
+      setDesiredMap((d) => {
+        const next = { ...d };
+        if (prev == null) delete next[input];
+        else next[input] = prev;
+        return next;
+      });
+    }
+  };
+
   if (status === 'loading') {
     return (
       <View style={[styles.fill, { backgroundColor: theme.background }]}>
@@ -545,15 +583,20 @@ export default function DashboardScreen() {
                 {visionSensors.length ? (
                   <View style={styles.section}>
                     <SectionLabel>Camera</SectionLabel>
-                    {visionSensors.map((c) => (
-                      <CloudCameraCard
-                        key={c.id}
-                        cap={c}
-                        token={token}
-                        cadenceMs={cadences[c.id]}
-                        onPress={() => setSheet({ kind: 'camera', id: c.id })}
-                      />
-                    ))}
+                    {visionSensors.map((c) => {
+                      const power = cameraPowerInput(c);
+                      return (
+                        <CloudCameraCard
+                          key={c.id}
+                          cap={c}
+                          token={token}
+                          cadenceMs={cadences[c.id]}
+                          powerOn={power ? (desired[power] ?? true) : true}
+                          onTogglePower={power ? (on) => changeDesired(power, on) : undefined}
+                          onPress={() => setSheet({ kind: 'camera', id: c.id })}
+                        />
+                      );
+                    })}
                   </View>
                 ) : showHubCam ? (
                   <View style={styles.section}>
@@ -796,10 +839,17 @@ export default function DashboardScreen() {
           ) : null
         }>
         {sheetCamera ? (
-          <CloudCameraSheetBody
-            cadenceMs={cadences[sheetCamera.id]}
-            onChangeCadence={(ms) => changeCadence(sheetCamera.id, ms)}
-          />
+          (() => {
+            const power = cameraPowerInput(sheetCamera);
+            return (
+              <CloudCameraSheetBody
+                cadenceMs={cadences[sheetCamera.id]}
+                powerOn={power ? (desired[power] ?? true) : true}
+                onTogglePower={power ? (on) => changeDesired(power, on) : undefined}
+                onChangeCadence={(ms) => changeCadence(sheetCamera.id, ms)}
+              />
+            );
+          })()
         ) : null}
       </Sheet>
 

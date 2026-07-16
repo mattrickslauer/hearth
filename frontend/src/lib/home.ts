@@ -281,13 +281,16 @@ export const addMemoryObject = (
 export const removeMemoryObject = (id: string, token?: string | null) =>
   call<{ ok: boolean; id: string }>('remove_household_member', { id }, token);
 
-/* --- per-sensor sample cadence (REST, not an MCP tool) ------------------------- */
+/* --- per-input tuning: cadence + actuator state (REST, not MCP tools) ----------- */
 
 /** How fast each sensor is asked to sample, keyed by input id "<node>.<key>" → interval in ms. */
 export type Cadences = Record<string, number>;
 
-async function cadenceReq<T>(init: RequestInit, token?: string | null): Promise<T> {
-  const res = await fetch(`${backendBase}/inputs/cadence`, {
+/** Desired on/off per actuator, keyed by input id "<node>.<key>". No entry = never commanded. */
+export type DesiredStates = Record<string, boolean>;
+
+async function inputsReq<T>(kind: 'cadence' | 'desired', init: RequestInit, token?: string | null): Promise<T> {
+  const res = await fetch(`${backendBase}/inputs/${kind}`, {
     ...init,
     headers: {
       'content-type': 'application/json',
@@ -296,17 +299,31 @@ async function cadenceReq<T>(init: RequestInit, token?: string | null): Promise<
     },
   });
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok) throw new Error((data.error as string) || `cadence request failed (${res.status})`);
+  if (!res.ok) throw new Error((data.error as string) || `${kind} request failed (${res.status})`);
   return data as T;
 }
 
 /** Read the account's desired per-sensor sample cadences. */
 export const listCadences = (token?: string | null) =>
-  cadenceReq<{ cadences: Cadences }>({ method: 'GET' }, token).then((r) => r.cadences);
+  inputsReq<{ cadences: Cadences }>('cadence', { method: 'GET' }, token).then((r) => r.cadences);
 
 /** Ask a sensor to sample every `intervalMs` (clamped server-side). Takes effect within a few seconds. */
 export const setCadence = (input: string, intervalMs: number, token?: string | null) =>
-  cadenceReq<{ ok: boolean; input: string; intervalMs: number }>(
+  inputsReq<{ ok: boolean; input: string; intervalMs: number }>(
+    'cadence',
     { method: 'POST', body: JSON.stringify({ input, intervalMs }) },
+    token,
+  );
+
+/** Read the account's desired actuator states — the device shadow the hub converges hardware to. */
+export const listDesired = (token?: string | null) =>
+  inputsReq<{ desired: DesiredStates }>('desired', { method: 'GET' }, token).then((r) => r.desired);
+
+/** Command an actuator on/off (the camera's `power` switch rides this too). The owning hub
+ *  applies it on its next sync — a few seconds, same latency story as setCadence. */
+export const setDesired = (input: string, on: boolean, token?: string | null) =>
+  inputsReq<{ ok: boolean; input: string; on: boolean }>(
+    'desired',
+    { method: 'POST', body: JSON.stringify({ input, on }) },
     token,
   );
