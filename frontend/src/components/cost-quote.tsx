@@ -12,7 +12,7 @@
 
 import { StyleSheet, Text, View } from 'react-native';
 
-import { cheapestPlan, estimate, formatUsd, type QuoteInput } from '@/demo/engine/pricing';
+import { cheapestPlan, estimate, formatUsd, type Quote, type QuoteInput } from '@/demo/engine/pricing';
 import { recommend } from '@/demo/engine/recommend';
 import { dutyForGate as catalogDuty, gatesFor as catalogGates } from '@/demo/gates';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
@@ -35,31 +35,44 @@ function perDay(callsPerMonth: number): string {
   return String(Math.round(d));
 }
 
-export function CostQuote({ watch, home }: { watch: Watch; home: HomeModel | null }) {
-  const theme = useTheme();
-
-  // No compiledSpec means an older stored row we can't price — say nothing rather
-  // than guess a number someone might believe.
+/**
+ * The QuoteInput for a stored watch, or null for an older row with no compiledSpec —
+ * we say nothing rather than guess a number someone might believe.
+ *
+ * Two gate sources, deliberately. `describe_home` is authoritative when a hub has actually
+ * reported its devices, but it is EMPTY until one does — while authoring always binds
+ * against the static capability catalog (`qwen.ts` → domain `CAPABILITIES`). So a
+ * brain-emitted `entry.presence` gate resolves from the catalog even on a home with no
+ * hub. Without this fallback a gated watch is priced as if its gate never fires — a
+ * 50× overstatement on the very watch the demo authors.
+ */
+export function quoteInputFor(watch: Watch, home: HomeModel | null): QuoteInput | null {
   if (!watch.compiledSpec) return null;
-
-  // Two sources, deliberately. `describe_home` is authoritative when a hub has actually
-  // reported its devices, but it is EMPTY until one does — while authoring always binds
-  // against the static capability catalog (`qwen.ts` → domain `CAPABILITIES`). So a
-  // brain-emitted `entry.presence` gate resolves from the catalog even on a home with no
-  // hub. Without this fallback a gated watch is priced as if its gate never fires — a
-  // 50× overstatement on the very watch the demo authors.
-  const homeGates = gatesFromHome(home, watch.boundInputs);
-  const gates = homeGates.length ? homeGates : catalogGates(watch.boundInputs);
   const gate = watch.compiledSpec.kind === 'cloud' ? watch.compiledSpec.cloud.gate : undefined;
   const gateDuty = dutyForGate(home, gate) ?? catalogDuty(gate);
-
-  const input: QuoteInput = {
+  return {
     spec: watch.compiledSpec,
     record: watch.record,
     // An empty/absent link list means "use all of memory", not "no references".
     references: watch.memoryIds?.length || undefined,
     gateDuty,
   };
+}
+
+/** Price a stored watch — the same arithmetic on every surface (quote sheet, billing page). */
+export function quoteForWatch(watch: Watch, home: HomeModel | null): Quote | null {
+  const input = quoteInputFor(watch, home);
+  return input ? estimate(input) : null;
+}
+
+export function CostQuote({ watch, home }: { watch: Watch; home: HomeModel | null }) {
+  const theme = useTheme();
+
+  const input = quoteInputFor(watch, home);
+  if (!input) return null;
+
+  const homeGates = gatesFromHome(home, watch.boundInputs);
+  const gates = homeGates.length ? homeGates : catalogGates(watch.boundInputs);
   const quote = estimate(input);
   const plan = cheapestPlan(quote);
   const recs = quote.local ? [] : recommend(input, { gates, slower: SLOWER });

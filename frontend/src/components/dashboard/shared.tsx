@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Fonts, Radius, Spacing } from '@/constants/theme';
@@ -273,6 +273,58 @@ export function PillButton({
         {busy ? '…' : label}
       </Text>
     </Pressable>
+  );
+}
+
+/**
+ * A destructive PillButton that asks once. First press arms it — the label flips to
+ * `confirmLabel` for a few seconds — and only a second press fires. Unpair/delete/remove
+ * used to be one tap from done, which is fine for a demo and wrong for a product: the
+ * confirm lives in the button itself, so no extra dialog joins the z-axis.
+ */
+export function ConfirmPillButton({
+  label,
+  confirmLabel = 'Tap again to confirm',
+  onConfirm,
+  disabled,
+  busy,
+  grow,
+}: {
+  label: string;
+  confirmLabel?: string;
+  onConfirm: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+  grow?: boolean;
+}) {
+  const [armed, setArmed] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Disarm on unmount so a stale timer never touches state after the sheet closes.
+  useEffect(
+    () => () => {
+      if (timer.current) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const press = () => {
+    if (!armed) {
+      setArmed(true);
+      timer.current = setTimeout(() => setArmed(false), 3500);
+      return;
+    }
+    if (timer.current) clearTimeout(timer.current);
+    setArmed(false);
+    onConfirm();
+  };
+  return (
+    <PillButton
+      label={armed ? confirmLabel : label}
+      tone="danger"
+      disabled={disabled}
+      busy={busy}
+      grow={grow}
+      onPress={press}
+    />
   );
 }
 
