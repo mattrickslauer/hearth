@@ -205,6 +205,13 @@ interface Action {
 }
 ```
 
+> **What shipped:** `Channel` is not a separate addressable entity. Channels are a single
+> per-account record (`backend/src/notify.ts` → `NotifyConfig`: one Telegram chat + one email,
+> set in the dashboard under *Notify me*) — which still satisfies `HOME ||--o{ CHANNEL` above,
+> since a Home ≈ an account. So there is no `channelId` to reference: a notify Action carries
+> only its `message`, and delivery fans out to whatever the homeowner turned on. Watches
+> express this as `push: true` on a Question rather than a separate Action row.
+
 **Authoring flow:** user NL intent → Qwen (in FC) reads the twin's device/input catalog →
 emits a `Question` with `boundInputs`, `compiledTo`, `compiledSpec`, sensible `Record` cadence,
 and `actions`. Qwen decides local-vs-cloud (§budget) — *admitting when the LLM isn't needed is a feature.*

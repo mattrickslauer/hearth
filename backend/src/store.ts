@@ -25,6 +25,8 @@ import {
   type RecordPolicy,
   type Zone,
 } from './domain';
+// Type-only, so the notify ↔ store cycle is erased at compile time (no runtime import).
+import type { NotifyConfig } from './notify';
 
 export type Scalar = number | string | boolean;
 export interface Reading {
@@ -169,6 +171,10 @@ export interface HomeStore {
   getDesired(): Promise<Record<string, boolean>>;
   /** Set (or clear, when on is null) one actuator's desired state — the cloud→node command. */
   setDesired(input: string, on: boolean | null): Promise<void>;
+  /** Where this account's "notify me" pushes are delivered (Telegram / email). */
+  getNotifyConfig(): Promise<NotifyConfig>;
+  /** Replace this account's notification channels. Holds a live bot token — backend only. */
+  setNotifyConfig(config: NotifyConfig): Promise<void>;
 }
 
 /** Compute an aggregate over a window ending at `now` (numbers only for mean/min/max). */
@@ -197,6 +203,7 @@ interface StoreSnapshot {
   cadences: [string, number][];
   household: HouseholdMember[];
   desired: [string, boolean][];
+  notifyConfig: NotifyConfig;
   runs: WatchRunState[];
 }
 
@@ -218,6 +225,10 @@ export class MemoryStore implements HomeStore {
   // device shadow. Set by the actuate tool; delivered to the node the same way cadences are
   // (hub device sync → node ingest response), where the node converges its output to match.
   protected desired = new Map<string, boolean>();
+  // Where this account's "notify me" pushes land (Telegram chat / email address). Read by
+  // the /hub/notify fan-out and the notify tool; set from the dashboard. Holds a live bot
+  // token, so it is redacted on the way out (notify.ts redactNotifyConfig).
+  protected notifyConfig: NotifyConfig = { telegram: null, email: null, updatedAt: 0 };
   // Per-cloud-watch eval bookkeeping — see WatchRunState on why this isn't derived from events.
   protected runs = new Map<string, WatchRunState>();
 
@@ -248,6 +259,7 @@ export class MemoryStore implements HomeStore {
       cadences: [...this.cadences.entries()],
       household: [...this.household.values()],
       desired: [...this.desired.entries()],
+      notifyConfig: this.notifyConfig,
       runs: [...this.runs.values()],
     };
   }
@@ -261,6 +273,7 @@ export class MemoryStore implements HomeStore {
     this.cadences = new Map(s.cadences ?? []);
     this.household = new Map((s.household ?? []).map((m) => [m.id, m]));
     this.desired = new Map(s.desired ?? []);
+    this.notifyConfig = s.notifyConfig ?? { telegram: null, email: null, updatedAt: 0 };
     this.runs = new Map((s.runs ?? []).map((r) => [r.questionId, r]));
   }
 
@@ -424,6 +437,13 @@ export class MemoryStore implements HomeStore {
   async setDesired(input: string, on: boolean | null): Promise<void> {
     if (on == null) this.desired.delete(input);
     else this.desired.set(input, on);
+    this.persist();
+  }
+  async getNotifyConfig(): Promise<NotifyConfig> {
+    return this.notifyConfig;
+  }
+  async setNotifyConfig(config: NotifyConfig): Promise<void> {
+    this.notifyConfig = config;
     this.persist();
   }
 }
@@ -808,6 +828,22 @@ class TablestoreStore extends MemoryStore {
   async setDesired(input: string, on: boolean | null): Promise<void> {
     await super.setDesired(input, on); // in-memory
     await this.putBlob('desired', Object.fromEntries(this.desired));
+  }
+  async getNotifyConfig(): Promise<NotifyConfig> {
+    // Read through: the hub's fire lands on whichever FC instance answers, which is rarely
+    // the one the dashboard saved on. A stale in-memory copy would notify the old channel.
+    const d = await this.getBlob('notify');
+    if (!d) return { telegram: null, email: null, updatedAt: 0 };
+    try {
+      const parsed = JSON.parse(d) as Partial<NotifyConfig>;
+      return { telegram: parsed.telegram ?? null, email: parsed.email ?? null, updatedAt: parsed.updatedAt ?? 0 };
+    } catch {
+      return { telegram: null, email: null, updatedAt: 0 };
+    }
+  }
+  async setNotifyConfig(config: NotifyConfig): Promise<void> {
+    await super.setNotifyConfig(config); // in-memory
+    await this.putBlob('notify', config);
   }
   // Run state persists per-question (`rs#<id>`), read/write-through: two FC instances
   // must agree on when a watch last looked, or each would meter against its own clock

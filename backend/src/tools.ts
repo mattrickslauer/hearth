@@ -15,7 +15,7 @@ import { author as qwenAuthor, hasKey, validateQuestion } from './qwen';
 import { parseDuration, defaultRecord, type CloudModel, type Question, type RecordPolicy } from './domain';
 import type { Agg, HomeStore, Scalar } from './store';
 import { ossProvisioned, putImage, putFrame, presignKey, frameKey, resolveImage } from './oss';
-import { deliver } from './notify';
+import { deliverNotification } from './notify';
 
 export interface ToolCtx {
   store: HomeStore;
@@ -495,19 +495,33 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'notify',
-    description: 'Deliver an Action to a channel (Expo push / Telegram / SMS / email).',
+    description:
+      "Push a message to the homeowner on every notification channel they configured (Telegram / email). No-op with a note if they haven't set one up.",
     mode: ['runtime'],
     parameters: {
       type: 'object',
-      properties: { channelId: { type: 'string' }, message: { type: 'string' } },
-      required: ['channelId', 'message'],
+      properties: { message: { type: 'string', description: 'What to tell the homeowner.' } },
+      required: ['message'],
       additionalProperties: false,
     },
     handler: async (a, { store }) => {
-      const channelId = str(a.channelId);
       const message = str(a.message);
-      await store.appendEvent({ id: `ev-notify-${Date.now().toString(36)}`, ts: Date.now(), questionId: 'runtime', kind: 'notify', reasoning: `${channelId}: ${message}` });
-      return deliver(channelId, message);
+      // Channels come from the ACCOUNT's saved config (dashboard → /notify/config), not from
+      // process env — so a notification reaches this homeowner's Telegram/inbox rather than
+      // one hard-coded destination shared by every account. The model picks the words; the
+      // homeowner picks the destination, so there's no channel argument to get wrong.
+      const result = await deliverNotification(store, '🔥 Hearth', message);
+      if (!result.channels.length) {
+        return {
+          ok: true,
+          delivered: false,
+          note: 'No notification channel configured for this account — add Telegram or an email in the dashboard.',
+        };
+      }
+      // ok:false when every channel errored — a caller branching on `ok` must never report
+      // "told the homeowner" for a message that never left the building.
+      return { ok: result.ok, delivered: result.delivered > 0, channels: result.channels };
+
     },
   },
   {

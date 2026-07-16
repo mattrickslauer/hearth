@@ -19,6 +19,7 @@ import { AuthMenu } from '@/components/auth-menu';
 import { CostQuote } from '@/components/cost-quote';
 import { TuneWatch, type TunePatch } from '@/components/tune-watch';
 import { Card, GlowOrb, Pill, Wordmark, useResponsive } from '@/components/landing/ui';
+import { NotifyChannelsCard } from '@/components/notify-channels-card';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/auth/context';
 import { useTheme } from '@/hooks/use-theme';
@@ -542,6 +543,10 @@ export default function DashboardScreen() {
                 </Text>
               </Text>
             </Card>
+
+            {/* Where a fired "notify me" watch actually lands. Per-account, so it sits with the
+                hubs rather than inside any one of them. */}
+            <NotifyChannelsCard token={token} />
           </View>
 
           {/* describe a new watch */}
