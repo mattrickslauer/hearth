@@ -40,8 +40,6 @@ import { attachWebSocket } from './ws.mjs';
 
 import { createRuntime } from './runtime.mjs';
 import { setCloudNotifier } from './notify.mjs';
-import { createCamera } from './camera.mjs';
-import { parseEnabled } from './wire.mjs';
 
 // ── config ──────────────────────────────────────────────────────────────────
 const DEFAULT_BACKEND = 'https://hearth-mcp-gqfuhlkzpo.ap-southeast-1.fcapp.run';
@@ -141,40 +139,18 @@ function cadencesForNode(nodeId) {
 // and the node converges its output to match. Keyed by full input id; handed to the node by key.
 const desiredState = new Map();
 
-// LAN-direct camera-power overrides, keyed by camera id (there is only ever one camera, but keying
-// by id keeps the precedence rule explicit). Set by `POST /camera {enabled}`, which — unlike the
-// cloud shadow — talks straight to the hub and does NOT write the cloud's `desired`. Without
-// tracking it here, the next syncToCloud would find no `<camId>.power` entry and the old `?? true`
-// would resurrect a capture the user just stopped LAN-direct — the stop never sticks and Looks get
-// re-billed, exactly in the off-grid/LAN-only scenario. An entry here means "the LAN spoke last";
-// it is cleared only when the cloud EXPLICITLY commands the camera's power.
-const localPowerOverride = new Map();
-
 // Replace our view of desired actuator states with the cloud's latest (input id → bool).
 //
-// Camera-power precedence (least-surprise; documented here so it can't drift):
-//   1. Cloud sent an explicit `<camId>.power` entry  → cloud wins, and clears any LAN override.
-//   2. Cloud silent AND a LAN-direct override is set → keep the LAN state (do NOT resurrect).
-//   3. Cloud silent AND no override                  → default ON (uncommanded ⇒ capture runs).
-//
-// An omitted `desired` and an empty `{}` are treated as the SAME thing — "the cloud commanded
-// nothing" — so neither can stomp a LAN-direct override (finding 3): both clear the shadow and
-// fall through to rules 2/3.
+// Note there is deliberately NO camera-power special case (and no LAN-override map) here any
+// more: the camera is a real node now, so its `power` rides the same reply downlink as any ESP
+// actuator, where the firmware rule already gives the right precedence for free — only a key
+// the cloud EXPLICITLY sent is converged; an omitted key leaves the output exactly where the
+// LAN (POST /camera, a watch's /actuate) last set it. The stop that used to be resurrected by
+// a blind `?? true` can't be, structurally.
 function applyDesired(desired) {
   const shadow = desired && typeof desired === 'object' ? desired : {};
   desiredState.clear();
   for (const [input, on] of Object.entries(shadow)) desiredState.set(input, !!on);
-  // The camera's capture switch is just another actuator, but with a second (LAN-direct) writer,
-  // so it gets the precedence rules above rather than a blind `?? true`.
-  if (!camera) return;
-  const powerKey = `${camera.id}.power`;
-  if (Object.prototype.hasOwnProperty.call(shadow, powerKey)) {
-    localPowerOverride.delete(camera.id); // cloud spoke explicitly → it is authoritative again
-    camera.setPower(!!shadow[powerKey]);
-  } else if (!localPowerOverride.has(camera.id)) {
-    camera.setPower(true); // uncommanded by both cloud and LAN ⇒ capture runs
-  }
-  // else: cloud silent, LAN override in force → leave capture exactly where the LAN set it.
 }
 
 // The desired actuator states for one node, keyed by bare actuator key ("on"/"off" strings the
@@ -192,10 +168,27 @@ function desiredForNode(nodeId) {
 // HTTP server exists; guarded everywhere so ingest works whether or not anyone's watching.
 let live = null;
 
-// Optional camera sensor (HEARTH_CAM=1). A camera is just another node to the registry;
-// this handle only exists so GET /frame can serve its latest JPEG and the cloud can retune
-// its snap cadence. Null when disabled — every use is guarded.
-let camera = null;
+// Latest sampled JPEG per vision input ("<nodeId>.<key>"), folded out of reading documents
+// that carry a `frames` field. A camera is just another node — ANY node that describes a
+// vision sensor and rides frames on its readings lands here, whether it's the hub's own
+// embedded camera node, a laptop across the room, or an ESP32-CAM. GET /frame serves from
+// this store; each frame is also forwarded to the cloud (→ OSS) for remote dashboards and
+// the Qwen-VL judge.
+const frames = new Map(); // input → { buf, at, bytes }
+let lastFrameInput = null;
+// Bound it the same way the registry is bounded — a flood of distinct vision inputs must
+// not grow memory without limit. Far above any real home.
+const MAX_FRAME_INPUTS = 32;
+
+// The most recently seen node that describes a vision sensor — the target for the hub's
+// /camera proxy (the dashboard keeps talking to the hub; the camera lives on a node).
+function findCameraNode() {
+  let hit = null;
+  for (const n of nodes.values()) {
+    if ((n.describe?.sensors || []).some((s) => s.vision || s.kind === 'camera')) hit = n;
+  }
+  return hit;
+}
 
 // The watch runtime: evaluates compiled watches against live node readings and fires
 // (actuate a node + push a phone notification) on a rising edge. It shares the `nodes`
@@ -238,6 +231,31 @@ function ingest(doc, addr) {
     // Tell live dashboards a (possibly new) node exists so its sensor tiles appear at once.
     if (live) live.broadcast({ type: 'describe', node: id, at: Date.now(), describe: doc });
   } else if (doc.type === 'hearth.node.reading') {
+    // A vision node rides its sampled JPEG on the reading document (`frames`). Fold the
+    // pixels into the frame store + forward to the cloud; they deliberately do NOT enter
+    // the registry entry — /hub/devices syncs metadata, frames go up via /hub/frame.
+    if (doc.frames && typeof doc.frames === 'object') {
+      for (const [key, uri] of Object.entries(doc.frames)) {
+        const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(uri));
+        if (!m) continue;
+        let buf;
+        try {
+          buf = Buffer.from(m[1], 'base64');
+        } catch {
+          continue;
+        }
+        if (!buf.length) continue;
+        const input = `${id}.${key}`;
+        frames.delete(input); // move-to-end so recency == Map order
+        frames.set(input, { buf, at: Date.now(), bytes: buf.length });
+        lastFrameInput = input;
+        if (frames.size > MAX_FRAME_INPUTS) {
+          const oldest = frames.keys().next().value;
+          if (oldest !== undefined && oldest !== input) frames.delete(oldest);
+        }
+        void pushFrameToCloud(input, uri);
+      }
+    }
     // Merge, don't replace: with per-sensor cadence a reading doc may carry only the sensors
     // that were due, so keep the last value of the others in our snapshot.
     entry.lastReading = { ...(entry.lastReading || {}), ...(doc.readings || {}) };
@@ -277,15 +295,14 @@ function applyCadences(cadences) {
     }
   }
   fastestCadenceMs = Number.isFinite(fastest) ? fastest : 0;
-  // The camera is just another sensor: if the account set a cadence for its frame input,
-  // retune the snap rate through the very same downlink the ESP nodes use.
-  if (camera) camera.setCadence(desiredCadence.get(`${camera.id}.cam.frame`));
 }
 
 // Cap the ingest body — /ingest is unauthenticated and LAN-facing, so an
-// unbounded string concat here is a trivial OOM vector. 256 KB is far above
-// any real DESCRIBE/READING document.
-const MAX_BODY_BYTES = 256 * 1024;
+// unbounded string concat here is a trivial OOM vector. Vision nodes ride a
+// base64 JPEG on their reading documents, so the cap must clear a full frame
+// (~250 KB at q70/1280px, ~×1.37 in base64) with generous headroom; 8 MB still
+// bounds a single request far below anything that could hurt a hub.
+const MAX_BODY_BYTES = Number(process.env.HUB_MAX_BODY_BYTES || 8 * 1024 * 1024);
 function readJson(req) {
   return new Promise((resolve) => {
     let data = '';
@@ -352,6 +369,19 @@ setCloudNotifier(
   },
   { ready: () => Boolean(hubToken) },
 );
+
+// Forward a vision node's sampled frame to the cloud (→ OSS) so any dashboard, anywhere,
+// and the Qwen-VL judge can pull it by presigned URL — no reach-in to the LAN. No-op until
+// paired (the LAN GET /frame still serves it); errors are logged, never fatal.
+async function pushFrameToCloud(input, dataUri) {
+  if (!hubToken) return;
+  try {
+    const { ok, status, data } = await api('/hub/frame', { input, image: dataUri }, hubToken);
+    if (!ok) console.log(`[cam→cloud] frame push rejected ${status}: ${data.error || 'unknown'}`);
+  } catch (e) {
+    console.log(`[cam→cloud] frame push failed: ${e.message}`);
+  }
+}
 
 // Coalesce reading bursts into at most one cloud sync per debounce window, so remote
 // dashboards get near-realtime updates without a POST per reading. The window ADAPTS to the
@@ -587,11 +617,14 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify([...nodes.values()], null, 2));
     return;
   }
-  // The camera's latest snapped frame, pulled on demand (never streamed). This is
+  // The latest snapped frame of a vision node, pulled on demand (never streamed). This is
   // what the dashboard tile and the Qwen-VL judge fetch — the pixels stay on the hub
-  // until something actually asks for a frame.
+  // until something actually asks for a frame. `?input=<node>.<key>` picks a camera when
+  // several report; default is the most recently updated one.
   if (req.method === 'GET' && (req.url === '/frame' || req.url?.startsWith('/frame?'))) {
-    const f = camera?.getFrame();
+    const url = new URL(req.url, 'http://localhost');
+    const input = url.searchParams.get('input') || lastFrameInput;
+    const f = input ? frames.get(input) : null;
     if (!f) {
       res.writeHead(503, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'no frame yet' }));
@@ -607,34 +640,40 @@ const server = http.createServer(async (req, res) => {
     res.end(f.buf);
     return;
   }
-  // Camera config: GET seeds the dashboard's sliders; POST retunes quality/cadence live
-  // (LAN-direct control, complements the cloud cadence downlink).
+  // Camera config: GET seeds the dashboard's sliders; POST retunes quality/cadence/power
+  // live. The camera is a NODE now, so this proxies to whichever registered node describes
+  // a vision sensor — the dashboard keeps one stable URL (the hub) while the camera lives
+  // wherever the hardware is: the hub's own embedded camera node, a laptop, an ESP32-CAM.
   if (req.url === '/camera') {
-    if (!camera) {
+    const camNode = findCameraNode();
+    const addr = camNode?.describe?.ip || camNode?.addr;
+    if (!camNode || !addr) {
       res.writeHead(404, { 'content-type': 'application/json', ...corsHeaders() });
       res.end(JSON.stringify({ error: 'camera disabled' }));
       return;
     }
-    if (req.method === 'POST') {
-      const body = (await readJson(req)) || {};
-      if (body.quality != null) camera.setQuality(Number(body.quality));
-      if (body.cadenceMs != null) camera.setCadence(Number(body.cadenceMs));
-      // Stop/start capture LAN-direct (the dashboard's toggle when it talks straight to the hub).
-      // parseEnabled() is the ONE shared forgiving parse (hub/wire.mjs) — 0/'0'/false/'off' all
-      // mean off — so this and camera.setPower() can't drift. Record the LAN override so the next
-      // cloud sync doesn't `?? true` capture back on (see applyDesired's precedence note).
-      if (body.enabled != null) {
-        const on = parseEnabled(body.enabled);
-        localPowerOverride.set(camera.id, on);
-        camera.setPower(on);
-      }
-    } else if (req.method !== 'GET') {
+    if (req.method !== 'GET' && req.method !== 'POST') {
       res.writeHead(405, { 'content-type': 'application/json', ...corsHeaders() });
       res.end(JSON.stringify({ error: 'method not allowed' }));
       return;
     }
-    res.writeHead(200, { 'content-type': 'application/json', ...corsHeaders() });
-    res.end(JSON.stringify(camera.config()));
+    // The node's control server is where its `power` actuator listens (ESP convention:
+    // actuators carry port+path in the DESCRIBE).
+    const port = (camNode.describe?.actuators || []).find((a) => a.key === 'power')?.port || 8080;
+    try {
+      const body = req.method === 'POST' ? JSON.stringify((await readJson(req)) || {}) : undefined;
+      const r = await fetch(`http://${addr}:${port}/camera`, {
+        method: req.method,
+        ...(body ? { headers: { 'content-type': 'application/json' }, body } : {}),
+        signal: AbortSignal.timeout(5000),
+      });
+      const data = await r.text();
+      res.writeHead(r.status, { 'content-type': 'application/json', ...corsHeaders() });
+      res.end(data);
+    } catch (e) {
+      res.writeHead(502, { 'content-type': 'application/json', ...corsHeaders() });
+      res.end(JSON.stringify({ error: `camera node unreachable: ${e.message}` }));
+    }
     return;
   }
   if (req.method === 'POST' && req.url === INGEST_PATH) {
@@ -702,24 +741,21 @@ async function main() {
   }
   const bonjour = await startMdns();
 
-  // Optional camera sensor. Enabled with HEARTH_CAM=1 — it registers itself as a node via the
-  // same ingest path, so it flows to the registry, /live, and the cloud like any ESP node.
+  // Optional camera. Enabled with HEARTH_CAM=1 — the hub starts the SAME node code a
+  // laptop runs (node.mjs), pointed at its own loopback ingest. The camera is a real node
+  // on the same rails as any ESP32: it DESCRIBEs over HTTP, rides frames on its readings,
+  // and converges power/cadence from the reply downlink. No camera-shaped special case.
+  let embeddedCam = null;
   if (process.env.HEARTH_CAM === '1') {
-    // Push each snapped frame up to the cloud (→ OSS) so any dashboard, on any network, and the
-    // Qwen-VL judge pull it by presigned URL — the scalable path, no per-hub URL to hardcode.
-    // No-op until paired (the LAN GET /frame still serves it); errors are logged, never fatal.
-    const pushFrame = async (input, dataUri) => {
-      if (!hubToken) return;
-      try {
-        const { ok, status, data } = await api('/hub/frame', { input, image: dataUri }, hubToken);
-        if (!ok) console.log(`[cam→cloud] frame push rejected ${status}: ${data.error || 'unknown'}`);
-      } catch (e) {
-        console.log(`[cam→cloud] frame push failed: ${e.message}`);
-      }
-    };
-    camera = createCamera({ ingest, onFrame: pushFrame });
-    camera.start();
-    console.log(`[hub] camera enabled — frames pushed to cloud + served locally at GET http://<hub>:${PORT}/frame`);
+    const { startNode } = await import('./node.mjs');
+    embeddedCam = startNode({
+      hubUrl: `http://127.0.0.1:${PORT}`,
+      token: INGEST_TOKEN,
+      embedded: true,
+      peripherals: ['camera'],
+      port: Number(process.env.HEARTH_CAM_PORT || 8898),
+    });
+    console.log(`[hub] camera enabled — embedded node "${embeddedCam.id}", frames at GET http://<hub>:${PORT}/frame`);
   }
 
   if (hubToken) console.log(`  Already paired (hub ${state.hubId}, account ${accountId}). Heartbeating + syncing.\n`);
@@ -735,7 +771,7 @@ async function main() {
     console.log('\n[hub] shutting down…');
     clearInterval(syncTimer);
     if (syncDebounce) clearTimeout(syncDebounce);
-    if (camera) camera.stop();
+    if (embeddedCam) embeddedCam.stop();
     if (live) live.close();
     if (bonjour) bonjour.unpublishAll(() => bonjour.destroy());
     server.close(() => process.exit(0));

@@ -1,63 +1,36 @@
 /**
- * Hearth hub camera — a camera is just another sensor.
+ * Hearth camera capture engine — the ffmpeg half of a camera peripheral.
  *
- * It self-describes a single `cam.frame` sensor and, on a cadence, "snaps a
- * photo": one JPEG sampled from a live source. The design mirrors an ESP32
- * node exactly (DESCRIBE once, READING on a cadence) so the rest of the hub —
- * registry, /live broadcast, cloud sync, the watch runtime — treats it with no
- * special cases. Two things stay TRUE to the thesis:
+ * This module knows how to turn a video source into a stream of sampled JPEGs.
+ * It deliberately knows NOTHING about the Hearth node protocol: no node id, no
+ * DESCRIBE, no ingest. That wiring lives in node.mjs, where a camera is exactly
+ * what it should be — one peripheral of a node, described and streamed the same
+ * way an ESP32 describes its thermistor. Two things stay TRUE to the thesis:
  *
- *   1. Frames are sampled at intervals, never streamed. The READING is tiny
- *      metadata (`"q70 1280x720 @14:03:12"`); the actual pixels are pulled on
- *      demand from GET /frame. So cloud sync stays cheap and no video leaves.
+ *   1. Frames are sampled at intervals, never streamed. Each fresh JPEG is
+ *      handed to `onFrame`; the node turns it into a tiny READING plus the
+ *      frame bytes for the hub. So sync stays cheap and no video leaves.
  *   2. Two knobs, like any sensor: cadence (how often it snaps) and quality
- *      (resolution + JPEG quality — the token/detail tradeoff). Cadence can be
- *      retuned live from the cloud via the same per-sensor cadence downlink the
- *      ESP nodes use.
+ *      (resolution + JPEG quality — the token/detail tradeoff). Both retune
+ *      live via the same per-sensor downlink the ESP nodes use.
  *
- * Source is swappable (env HEARTH_CAM_SOURCE):
- *   auto            — find a real USB/built-in camera on this machine and use it;
- *                     falls back to `rtmp` if there isn't one. What `hearthctl
- *                     camera on` uses, so plugging a camera in is the whole setup.
- *   rtmp  (default) — ffmpeg listens; OBS pushes to rtmp://<hub>:1935/live
+ * Source is swappable (`source` option / HEARTH_CAM_SOURCE):
+ *   auto            — find a real camera on this machine (v4l2 on Linux,
+ *                     avfoundation on macOS) and use it.
+ *   rtmp            — ffmpeg listens; OBS pushes to rtmp://<host>:1935/live
  *   test            — ffmpeg lavfi testsrc, so the whole pipeline verifies with
- *                     no OBS running
+ *                     no camera and no OBS
  *   <string>        — raw ffmpeg input args, e.g. "-f v4l2 -i /dev/video0"
  *
- * Needs ffmpeg on PATH. If it's absent the hub logs and runs on without a camera.
+ * Needs ffmpeg on PATH. If it's absent the engine logs and stays down.
  */
 
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { mkdtempSync, readFileSync, statSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { parseEnabled } from './wire.mjs';
-
-const iso = () => new Date().toISOString();
-const hhmmss = () => new Date().toISOString().slice(11, 19);
-
-/**
- * A camera's node id, unique to this machine.
- *
- * Node ids are the key for readings, cadence downlinks and the stored frame, and nothing upstream
- * makes them unique — ESP nodes only avoid collisions because theirs are MAC-derived. This one
- * used to be the constant 'hub-cam', so every hub's camera was literally the same node: two hubs
- * on an account overwrote each other's frames and interleaved into one reading series.
- *
- * Seeded from /etc/machine-id (hostname if absent) rather than the cloud-assigned hub id, because
- * the camera starts before the hub has enrolled and must keep working with no network at all.
- */
-function defaultCameraId() {
-  let seed;
-  try {
-    seed = readFileSync('/etc/machine-id', 'utf8').trim();
-  } catch {
-    seed = hostname();
-  }
-  return `cam-${createHash('sha256').update(seed || hostname()).digest('hex').slice(0, 8)}`;
-}
 
 // quality 1..100 → ffmpeg -q:v 2 (best) .. 31 (worst). Higher quality = more detail = more tokens.
 const qToQv = (q) => Math.max(2, Math.min(31, Math.round(31 - (Math.max(1, Math.min(100, q)) / 100) * 29)));
@@ -74,18 +47,18 @@ const v4l2Name = (dev) => {
   }
 };
 
-// Per-device probe timeout. A working capture node hands back a frame in well under a second; this
-// only guards a device that opens but never delivers. Kept modest (was 8s) so `auto` on a box with
-// several dead video nodes still resolves quickly — and, being async now, without blocking anyway.
+// Per-device probe timeout. A working capture device hands back a frame in well under a second;
+// this only guards a device that opens but never delivers. Kept modest so `auto` on a box with
+// several dead video nodes still resolves quickly — and, being async, without blocking anyway.
 const DETECT_TIMEOUT_MS = Number(process.env.HEARTH_CAM_DETECT_MS || 4000);
 
 /**
- * Try to pull ONE frame from a v4l2 node to a null output — the cheapest proof it's a capture
- * device we have permission to read. Resolves true on ffmpeg exit 0, false on any error/non-zero
- * exit/timeout. Async (spawn, not spawnSync) so probing never blocks the event loop: pairing,
- * heartbeat and LAN serving proceed while we probe.
+ * Try to pull ONE frame from an input to a null output — the cheapest proof it's a capture
+ * source we have permission to read. Resolves true on ffmpeg exit 0, false on any error /
+ * non-zero exit / timeout. Async (spawn, not spawnSync) so probing never blocks the event
+ * loop: a node keeps serving /actuate, and an embedding hub keeps pairing, while we probe.
  */
-function probeDevice(dev) {
+function probeInput(args) {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (ok) => {
@@ -96,11 +69,11 @@ function probeDevice(dev) {
     };
     const proc = spawn(
       'ffmpeg',
-      ['-hide_banner', '-loglevel', 'error', '-f', 'v4l2', '-i', `/dev/${dev}`, '-frames:v', '1', '-f', 'null', '-'],
+      ['-hide_banner', '-loglevel', 'error', ...args, '-frames:v', '1', '-f', 'null', '-'],
       { stdio: 'ignore' },
     );
     const timer = setTimeout(() => {
-      proc.kill('SIGKILL'); // opened but never delivered a frame — give up on this node
+      proc.kill('SIGKILL'); // opened but never delivered a frame — give up on this input
       finish(false);
     }, DETECT_TIMEOUT_MS);
     proc.on('error', () => finish(false)); // ffmpeg missing / spawn failure
@@ -109,20 +82,28 @@ function probeDevice(dev) {
 }
 
 /**
- * Find a v4l2 device that can actually hand us a frame, and return it as ffmpeg
- * input args (or null if there's nothing usable).
+ * Find a camera on this machine and return it as ffmpeg input args (or null).
  *
- * Why probe instead of just taking /dev/video0? Because on most modern laptops
- * /dev/video0 is NOT the camera. A single UVC webcam registers several nodes —
- * the extra ones are metadata/control interfaces that report "Not a video
- * capture device" the moment you open them. The capture node is frequently
- * video1. Numeric order tells you nothing, and guessing wrong looks identical
- * to broken hardware, so the only honest test is to open each one and try to
- * pull a frame — which we now do async, one node at a time (finding 2).
+ * Linux (v4l2): why probe instead of just taking /dev/video0? Because on most
+ * modern laptops /dev/video0 is NOT the camera. A single UVC webcam registers
+ * several nodes — the extra ones are metadata/control interfaces that report
+ * "Not a video capture device" the moment you open them. The capture node is
+ * frequently video1. Numeric order tells you nothing, and guessing wrong looks
+ * identical to broken hardware, so the only honest test is to open each one and
+ * try to pull a frame — async, one node at a time.
  *
- * Linux-only (v4l2). Anywhere else we resolve null and the caller falls back to rtmp.
+ * macOS (avfoundation): device 0 is the built-in camera on effectively every
+ * Mac; probe it the same honest way (it also surfaces the missing-permission
+ * case as a clean "no camera" instead of a hung capture).
  */
-async function detectCaptureDevice() {
+export async function detectCaptureDevice() {
+  if (process.platform === 'darwin') {
+    if (await probeInput(['-f', 'avfoundation', '-framerate', '30', '-i', '0'])) {
+      console.log('[cam] auto-detected camera: avfoundation device 0');
+      return '-f avfoundation -framerate 30 -i 0';
+    }
+    return null;
+  }
   if (process.platform !== 'linux') return null;
   let devs;
   try {
@@ -133,7 +114,7 @@ async function detectCaptureDevice() {
     return null;
   }
   for (const dev of devs) {
-    if (await probeDevice(dev)) {
+    if (await probeInput(['-f', 'v4l2', '-i', `/dev/${dev}`])) {
       console.log(`[cam] auto-detected camera: /dev/${dev} — ${v4l2Name(dev)}`);
       return `-f v4l2 -i /dev/${dev}`;
     }
@@ -142,67 +123,35 @@ async function detectCaptureDevice() {
 }
 
 /**
- * Create the camera sensor. Wire it to the hub by passing the hub's `ingest`
- * (to fold DESCRIBE/READING into the registry like any node). Returns handles
- * the hub uses for GET /frame and live cadence retuning.
+ * Create the capture engine. Call `start()` to begin snapping; every fresh,
+ * complete JPEG is handed to `onFrame(latest)` where latest is
+ * `{ buf, at, w, quality, bytes }`. `latest()` returns the same object on
+ * demand (for GET /frame).
  *
- * @param {{ ingest: (doc:object)=>void, onFrame?: (input:string, dataUri:string)=>void }} deps
- *   onFrame — called with the full-frame data: URI each time a fresh JPEG is captured, so the
- *   hub can push the bytes up to Hearth Cloud (→ OSS) where the dashboard and Qwen-VL read them.
+ * @param {{
+ *   source?: string, rtmpUrl?: string, width?: number, quality?: number,
+ *   cadenceMs?: number, onFrame?: (latest: object) => void,
+ * }} opts
  */
-export function createCamera({ ingest, onFrame }) {
-  const id = process.env.HEARTH_CAM_ID || defaultCameraId();
-  const requested = process.env.HEARTH_CAM_SOURCE || 'rtmp';
-  // `auto` resolves to whatever camera is actually plugged into this machine — but that probe is
-  // async now (finding 2), so start with a provisional `rtmp` source and re-resolve in start()
-  // BEFORE the first ffmpeg spawn. No camera → rtmp, i.e. exactly the OBS behaviour, so a hub with
-  // no local camera is unaffected. Non-auto sources are already final (nothing to probe).
-  let source = requested === 'auto' ? 'rtmp' : requested;
-  let sourceResolved = requested !== 'auto';
-  async function resolveSource() {
-    if (sourceResolved) return;
-    const detected = await detectCaptureDevice();
-    if (detected) source = detected;
-    else console.log('[cam] auto: no local camera found — listening for OBS over rtmp instead');
-    sourceResolved = true;
-  }
-  const rtmpUrl = process.env.HEARTH_CAM_RTMP || 'rtmp://0.0.0.0:1935/live';
-  const width = Number(process.env.HEARTH_CAM_WIDTH || 1280);
-  let quality = Number(process.env.HEARTH_CAM_QUALITY || 70);
-  let cadenceMs = Number(process.env.HEARTH_CAM_CADENCE_MS || 5000);
+export function createCapture(opts = {}) {
+  const source = opts.source || 'rtmp';
+  const rtmpUrl = opts.rtmpUrl || process.env.HEARTH_CAM_RTMP || 'rtmp://0.0.0.0:1935/live';
+  const width = Number(opts.width || process.env.HEARTH_CAM_WIDTH || 1280);
+  let quality = Number(opts.quality || process.env.HEARTH_CAM_QUALITY || 70);
+  let cadenceMs = Number(opts.cadenceMs || process.env.HEARTH_CAM_CADENCE_MS || 5000);
+  const onFrame = opts.onFrame;
 
   const framePath = join(mkdtempSync(join(tmpdir(), 'hearth-cam-')), 'latest.jpg');
-  let latest = null; // { buf: Buffer, at: number, w: number, h: number, quality: number, bytes: number }
+  let latest = null; // { buf, at, w, quality, bytes }
   let lastMtime = 0;
   let proc = null;
   let pollTimer = null;
   let stopped = false;
   // The capture switch. Distinct from `stopped` (process shutdown, terminal): powered off is a
   // USER state — ffmpeg is down, nothing is snapped, pushed or billed — and powering back on
-  // resumes capture in place. Driven from the cloud via the same desired-state downlink as any
-  // ESP actuator (the node self-describes `power` below), or LAN-direct via POST /camera.
+  // resumes capture in place. Driven exactly like any ESP actuator: the node describes `power`
+  // and converges it from the desired-state downlink (or a hub watch's POST /actuate).
   let powered = true;
-
-  const describeDoc = () => ({
-    id,
-    type: 'hearth.node.describe',
-    board: 'hub/obs-camera',
-    sensors: [
-      {
-        key: 'cam.frame',
-        kind: 'camera',
-        label: 'Doorway camera',
-        vision: true,
-        describes: 'a live camera frame of the doorway, sampled at a cadence for Qwen-VL to read',
-        config: { cadenceMs, quality, width },
-      },
-    ],
-    // The camera IS commandable hardware: `power` is its capture switch. Describing it as a
-    // normal actuator is what makes stop/start ride the existing rails — the dashboard and the
-    // `actuate` tool write the device shadow, the hub applies it here, no camera-shaped special
-    // case anywhere upstream.
-    actuators: [{ key: 'power', kind: 'switch', label: 'Capture on/off' }],
-  });
 
   // Build ffmpeg args for the chosen source. Output is a single JPEG overwritten
   // every `cadenceMs` (fps=1/sec), scaled to `width`, at the mapped JPEG quality.
@@ -257,7 +206,7 @@ export function createCamera({ ingest, onFrame }) {
   }
 
   // Poll the frame file; when ffmpeg has written a fresh, complete JPEG, capture
-  // it and emit a READING through the hub's normal ingest path.
+  // it and hand it to the node.
   function poll() {
     // Off = silent. ffmpeg is already dead, but a frame it was mid-writing at the kill could
     // still land on disk — without this guard that last frame would push after "off".
@@ -269,15 +218,7 @@ export function createCamera({ ingest, onFrame }) {
         if (isCompleteJpeg(buf)) {
           lastMtime = st.mtimeMs;
           latest = { buf, at: Date.now(), w: width, quality, bytes: buf.length };
-          ingest({
-            id,
-            type: 'hearth.node.reading',
-            readings: { 'cam.frame': `q${quality} ${width}px ${(buf.length / 1024).toFixed(0)}KB @${hhmmss()}` },
-          });
-          // Push the actual pixels up to the cloud (→ OSS) so any dashboard, anywhere, and the
-          // Qwen-VL judge can pull this frame by presigned URL — no reach-in to the LAN. Sampled,
-          // not streamed: one JPEG per snap, overwriting a single latest-frame key.
-          if (onFrame) onFrame(`${id}.cam.frame`, `data:image/jpeg;base64,${buf.toString('base64')}`);
+          if (onFrame) onFrame(latest);
         }
       }
     } catch {
@@ -285,10 +226,10 @@ export function createCamera({ ingest, onFrame }) {
     }
   }
 
-  // (Re)create the frame poll on a period that tracks the snap cadence — fast enough to catch a
-  // sub-second cadence (floored at 250ms), never slower than 1s. It's recreated on every
-  // setCadence() because a timer fixed at start() would, after cadence is lowered, fire slower than
-  // frames are written and skip every other one (finding 7).
+  // (Re)create the frame poll on a period that tracks the snap cadence — fast enough to catch
+  // a sub-second cadence (floored at 250ms), never slower than 1s. Recreated on every
+  // setCadence() because a timer fixed at start() would, after cadence is lowered, fire slower
+  // than frames are written and skip every other one.
   function startPollTimer() {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = setInterval(poll, Math.max(250, Math.min(cadenceMs, 1000)));
@@ -296,55 +237,48 @@ export function createCamera({ ingest, onFrame }) {
   }
 
   return {
-    id,
-    /** Register the camera as a node and start capturing. */
     start() {
-      ingest(describeDoc());
-      // Resolve the capture source (async for `auto` — finding 2), THEN spawn ffmpeg. Describe and
-      // the poll timer start immediately so pairing/heartbeat/LAN serving never wait on the probe.
-      resolveSource().then(spawnFfmpeg);
+      spawnFfmpeg();
       startPollTimer();
-      console.log(`[cam] camera sensor "${id}" online — frame at GET /frame, describes cam.frame [vision]`);
     },
-    /** Latest complete JPEG for GET /frame (or null if none captured yet). */
-    getFrame() {
+    /** Latest complete JPEG (or null if none captured yet). */
+    latest() {
       return latest;
     },
-    /** Current sensor config — for GET /camera so the dashboard can seed its sliders. */
+    /** Current knobs — the node folds these into its DESCRIBE and GET /camera. */
     config() {
-      return { id, source, width, quality, cadenceMs, enabled: powered, hasFrame: !!latest, frameAt: latest?.at ?? null };
+      return { source, width, quality, cadenceMs, powered, hasFrame: !!latest, frameAt: latest?.at ?? null };
     },
     /**
-     * Stop or resume capture (the `power` actuator). Applied from the cloud device shadow on
-     * every sync — no shadow entry means "never commanded", which is ON, so a fresh account's
-     * camera runs without anyone touching a switch. Off kills ffmpeg and silences the poll:
-     * no readings, no frame pushes, no Looks spent. On respawns and capture resumes.
+     * Stop or resume capture (the `power` actuator). Off kills ffmpeg and silences the
+     * poll: no readings, no frame pushes, no Looks spent. On respawns and capture resumes.
      */
     setPower(on) {
       const v = parseEnabled(on); // shared forgiving parse (hub/wire.mjs); undefined/null = on
-      if (v === powered || stopped) return;
+      if (v === powered || stopped) return false;
       powered = v;
       console.log(`[cam] capture ${powered ? 'ON — resuming' : 'OFF — stopping ffmpeg, holding last frame'}`);
       if (powered) spawnFfmpeg();
       else if (proc) proc.kill('SIGKILL'); // exit handler sees !powered and stays down
+      return true;
     },
-    /** Retune the snap cadence live (from the cloud per-sensor cadence downlink). */
+    /** Retune the snap cadence live. Returns true when it actually changed. */
     setCadence(ms) {
-      if (!ms || !Number.isFinite(ms) || ms === cadenceMs) return;
+      if (!ms || !Number.isFinite(ms) || ms === cadenceMs) return false;
       cadenceMs = Math.max(500, Math.round(ms));
-      console.log(`[cam] cadence → ${cadenceMs}ms (re-describing + restarting capture)`);
-      ingest(describeDoc());
-      startPollTimer(); // re-pace the frame poll to the new cadence so we don't skip frames (finding 7)
+      console.log(`[cam] cadence → ${cadenceMs}ms (restarting capture)`);
+      startPollTimer(); // re-pace the frame poll to the new cadence so we don't skip frames
       if (proc) proc.kill('SIGKILL'); // exit handler respawns with the new fps
+      return true;
     },
-    /** Adjust capture quality live (1..100). */
+    /** Adjust capture quality live (1..100). Returns true when it actually changed. */
     setQuality(q) {
       const v = Math.max(1, Math.min(100, Math.round(q)));
-      if (v === quality) return;
+      if (v === quality) return false;
       quality = v;
       console.log(`[cam] quality → ${quality}`);
-      ingest(describeDoc());
       if (proc) proc.kill('SIGKILL');
+      return true;
     },
     stop() {
       stopped = true;
