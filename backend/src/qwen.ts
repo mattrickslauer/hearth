@@ -22,6 +22,7 @@ import {
   type CloudModel,
   type Judgment,
 } from './domain';
+import { predicateInputs } from './predicate-inputs';
 
 const ENDPOINT =
   process.env.QWEN_BASE_URL ?? 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions';
@@ -244,20 +245,9 @@ export async function probeVision(
 
 /** Collect every inputId a compiledSpec references (grounding check). */
 function collectInputs(spec: Record<string, unknown>): string[] {
-  const out: string[] = [];
-  const walk = (n: unknown): void => {
-    if (!n || typeof n !== 'object') return;
-    const o = n as Record<string, unknown>;
-    const left = o.left as { input?: string } | undefined;
-    const inp = o.input as { input?: string } | undefined;
-    if (left?.input) out.push(left.input);
-    if (inp?.input) out.push(inp.input);
-    if (Array.isArray(o.nodes)) o.nodes.forEach(walk);
-    if (o.node) walk(o.node);
-  };
-  if (spec.kind === 'local') walk((spec.local as { expr?: unknown })?.expr);
-  else if (spec.kind === 'cloud') walk((spec.cloud as { gate?: unknown })?.gate);
-  return out;
+  if (spec.kind === 'local') return predicateInputs((spec.local as { expr?: unknown })?.expr);
+  if (spec.kind === 'cloud') return predicateInputs((spec.cloud as { gate?: unknown })?.gate);
+  return [];
 }
 
 export function validateQuestion(raw: Record<string, unknown>): string | null {

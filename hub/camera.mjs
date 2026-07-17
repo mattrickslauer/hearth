@@ -25,10 +25,12 @@
  * Needs ffmpeg on PATH. If it's absent the engine logs and stays down.
  */
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, statSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { parseEnabled } from './wire.mjs';
 
 // quality 1..100 → ffmpeg -q:v 2 (best) .. 31 (worst). Higher quality = more detail = more tokens.
 const qToQv = (q) => Math.max(2, Math.min(31, Math.round(31 - (Math.max(1, Math.min(100, q)) / 100) * 29)));
@@ -45,13 +47,39 @@ const v4l2Name = (dev) => {
   }
 };
 
-// One real frame to null output: the cheapest proof a device is a capture source
-// we have permission to read. timeout guards a device that opens but never delivers.
-const probeInput = (args) =>
-  spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', ...args, '-frames:v', '1', '-f', 'null', '-'], {
-    timeout: 8000,
-    stdio: 'ignore',
-  }).status === 0;
+// Per-device probe timeout. A working capture device hands back a frame in well under a second;
+// this only guards a device that opens but never delivers. Kept modest so `auto` on a box with
+// several dead video nodes still resolves quickly — and, being async, without blocking anyway.
+const DETECT_TIMEOUT_MS = Number(process.env.HEARTH_CAM_DETECT_MS || 4000);
+
+/**
+ * Try to pull ONE frame from an input to a null output — the cheapest proof it's a capture
+ * source we have permission to read. Resolves true on ffmpeg exit 0, false on any error /
+ * non-zero exit / timeout. Async (spawn, not spawnSync) so probing never blocks the event
+ * loop: a node keeps serving /actuate, and an embedding hub keeps pairing, while we probe.
+ */
+function probeInput(args) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const proc = spawn(
+      'ffmpeg',
+      ['-hide_banner', '-loglevel', 'error', ...args, '-frames:v', '1', '-f', 'null', '-'],
+      { stdio: 'ignore' },
+    );
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL'); // opened but never delivered a frame — give up on this input
+      finish(false);
+    }, DETECT_TIMEOUT_MS);
+    proc.on('error', () => finish(false)); // ffmpeg missing / spawn failure
+    proc.on('exit', (code) => finish(code === 0));
+  });
+}
 
 /**
  * Find a camera on this machine and return it as ffmpeg input args (or null).
@@ -62,15 +90,15 @@ const probeInput = (args) =>
  * "Not a video capture device" the moment you open them. The capture node is
  * frequently video1. Numeric order tells you nothing, and guessing wrong looks
  * identical to broken hardware, so the only honest test is to open each one and
- * try to pull a frame.
+ * try to pull a frame — async, one node at a time.
  *
  * macOS (avfoundation): device 0 is the built-in camera on effectively every
  * Mac; probe it the same honest way (it also surfaces the missing-permission
  * case as a clean "no camera" instead of a hung capture).
  */
-export function detectCaptureDevice() {
+export async function detectCaptureDevice() {
   if (process.platform === 'darwin') {
-    if (probeInput(['-f', 'avfoundation', '-framerate', '30', '-i', '0'])) {
+    if (await probeInput(['-f', 'avfoundation', '-framerate', '30', '-i', '0'])) {
       console.log('[cam] auto-detected camera: avfoundation device 0');
       return '-f avfoundation -framerate 30 -i 0';
     }
@@ -86,7 +114,7 @@ export function detectCaptureDevice() {
     return null;
   }
   for (const dev of devs) {
-    if (probeInput(['-f', 'v4l2', '-i', `/dev/${dev}`])) {
+    if (await probeInput(['-f', 'v4l2', '-i', `/dev/${dev}`])) {
       console.log(`[cam] auto-detected camera: /dev/${dev} — ${v4l2Name(dev)}`);
       return `-f v4l2 -i /dev/${dev}`;
     }
@@ -198,11 +226,20 @@ export function createCapture(opts = {}) {
     }
   }
 
+  // (Re)create the frame poll on a period that tracks the snap cadence — fast enough to catch
+  // a sub-second cadence (floored at 250ms), never slower than 1s. Recreated on every
+  // setCadence() because a timer fixed at start() would, after cadence is lowered, fire slower
+  // than frames are written and skip every other one.
+  function startPollTimer() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(poll, Math.max(250, Math.min(cadenceMs, 1000)));
+    if (pollTimer.unref) pollTimer.unref();
+  }
+
   return {
     start() {
       spawnFfmpeg();
-      pollTimer = setInterval(poll, Math.max(250, Math.min(cadenceMs, 1000)));
-      if (pollTimer.unref) pollTimer.unref();
+      startPollTimer();
     },
     /** Latest complete JPEG (or null if none captured yet). */
     latest() {
@@ -217,7 +254,7 @@ export function createCapture(opts = {}) {
      * poll: no readings, no frame pushes, no Looks spent. On respawns and capture resumes.
      */
     setPower(on) {
-      const v = on !== false;
+      const v = parseEnabled(on); // shared forgiving parse (hub/wire.mjs); undefined/null = on
       if (v === powered || stopped) return false;
       powered = v;
       console.log(`[cam] capture ${powered ? 'ON — resuming' : 'OFF — stopping ffmpeg, holding last frame'}`);
@@ -230,6 +267,7 @@ export function createCapture(opts = {}) {
       if (!ms || !Number.isFinite(ms) || ms === cadenceMs) return false;
       cadenceMs = Math.max(500, Math.round(ms));
       console.log(`[cam] cadence → ${cadenceMs}ms (restarting capture)`);
+      startPollTimer(); // re-pace the frame poll to the new cadence so we don't skip frames
       if (proc) proc.kill('SIGKILL'); // exit handler respawns with the new fps
       return true;
     },

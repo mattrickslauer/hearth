@@ -2,7 +2,6 @@ import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -29,20 +28,18 @@ import { SensorSheetBody, SensorTile } from '@/components/dashboard/sensors';
 import { ConfirmPillButton, LiveIndicator, PillButton, SectionLabel, Stat } from '@/components/dashboard/shared';
 import { WatchCard, WatchEditBody, WatchSheetBody } from '@/components/dashboard/watches';
 import { GlowOrb, Wordmark, useResponsive } from '@/components/landing/ui';
-import { NotifyChannelsCard } from '@/components/notify-channels-card';
-import { TuneWatch, type TunePatch } from '@/components/tune-watch';
+import { TuneWatch } from '@/components/tune-watch';
 import { ActionFab } from '@/components/ui/action-fab';
 import { Rail, TabBar, type NavTab } from '@/components/ui/nav';
 import { Sheet } from '@/components/ui/sheet';
 import { Fonts, Layer, Radius, Spacing } from '@/constants/theme';
 import { useAuth } from '@/auth/context';
+import { useHubClaim } from '@/hooks/use-hub-claim';
 import { useTheme } from '@/hooks/use-theme';
+import { useWatchAuthoring } from '@/hooks/use-watch-authoring';
+import { isTabKey, type SheetState, type TabKey } from '@/lib/dashboard-types';
 import {
-  authorWatch,
-  configureWatch,
-  deleteWatch,
   describeHome,
-  linkWatchMemory,
   listCadences,
   listDesired,
   listEvents,
@@ -53,10 +50,8 @@ import {
   removeSensor,
   setCadence,
   setDesired,
-  updateWatch,
   type Cadences,
   type DesiredStates,
-  type ContextSuggestion,
   type HomeCapability,
   type HomeModel,
   type MemoryObject,
@@ -64,8 +59,9 @@ import {
   type RunEvent,
   type Watch,
 } from '@/lib/home';
-import { claimHub, listHubs, unpairHub, type HubView } from '@/lib/hubs';
+import { listHubs, type HubView } from '@/lib/hubs';
 import { useHubLive } from '@/lib/live';
+import { webFullHeight, webNoOutline } from '@/lib/web-style';
 
 // The hub's LAN address (e.g. http://192.168.1.27:8899). When set — and no cloud vision sensor
 // exists — the dashboard falls back to pulling frames straight off the hub (local dev / LAN).
@@ -81,32 +77,6 @@ const SUGGEST_ICON: Record<string, string> = {
   placement: '📐',
   other: '•',
 };
-
-const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
-// Give the scroll frame a bounded height on web so the ScrollView actually scrolls
-// (matches the pattern in demo.tsx). Native gets its height from flex.
-const webFullHeight = Platform.OS === 'web' ? ({ height: '100vh' } as object) : null;
-
-const TAB_KEYS = ['home', 'sensors', 'watches', 'activity', 'billing', 'settings'] as const;
-type TabKey = (typeof TAB_KEYS)[number];
-const isTabKey = (v: unknown): v is TabKey => TAB_KEYS.includes(v as TabKey);
-
-/**
- * Which overlay is on top, if any. One slot rather than a boolean per sheet: only one thing can
- * own the z-axis at a time, and saying so in the type makes the alternative unrepresentable.
- */
-type SheetState =
-  | { kind: 'none' }
-  | { kind: 'describe' }
-  | { kind: 'suggest' }
-  | { kind: 'connectHub' }
-  | { kind: 'hub'; id: string }
-  | { kind: 'sensor'; id: string }
-  | { kind: 'camera'; id: string }
-  | { kind: 'hubCamera' }
-  | { kind: 'watch'; id: string }
-  | { kind: 'editWatch'; id: string }
-  | { kind: 'tune'; id: string };
 
 /**
  * The dashboard is three layers deep, on purpose.
@@ -148,35 +118,13 @@ export default function DashboardScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [wish, setWish] = useState('');
-  const [authoring, setAuthoring] = useState(false);
-  // When Qwen compiles a vision wish it recommends the context that would make it work well
-  // (reference photos of household members, aim, cadence…). We surface that in its own sheet.
-  const [suggestions, setSuggestions] = useState<{ title: string; items: ContextSuggestion[] } | null>(null);
-
-  const [editText, setEditText] = useState('');
-  const [savingEdit, setSavingEdit] = useState(false);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [watchError, setWatchError] = useState<string | null>(null);
-
   // Removing a hub-reported device: the input id in flight, and what to say about it afterwards.
   const [removingSensor, setRemovingSensor] = useState<string | null>(null);
   const [sensorNotice, setSensorNotice] = useState<string | null>(null);
 
-  const [savingTune, setSavingTune] = useState(false);
-  const [tuneError, setTuneError] = useState<string | null>(null);
-  // Authoring can produce two things worth saying, and only one layer to say them on: Qwen's
-  // context suggestions, and the budget of a cloud watch. When both apply we queue the tune
-  // behind the suggestions rather than dropping either.
-  const [pendingTuneId, setPendingTuneId] = useState<string | null>(null);
-
   const [memory, setMemory] = useState<MemoryObject[]>([]);
 
   const [hubs, setHubs] = useState<HubView[] | null>(null);
-  const [claimCode, setClaimCode] = useState('');
-  const [claiming, setClaiming] = useState(false);
-  const [hubError, setHubError] = useState<string | null>(null);
-  const [hubNotice, setHubNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -257,145 +205,48 @@ export default function DashboardScreen() {
   const showHubCam = !visionSensors.length && !!HUB_URL;
   const hubCam = useHubCamera(showHubCam ? HUB_URL : '');
 
-  const submitWish = async () => {
-    if (!wish.trim() || authoring) return;
-    setAuthoring(true);
-    setError(null);
-    try {
-      const { question } = await authorWatch(wish.trim(), token);
-      const next = question.contextSuggestions?.length
-        ? { title: question.title, items: question.contextSuggestions }
-        : null;
-      setSuggestions(next);
-      setWish('');
-      // A local watch is free and has no cloud knobs, so there's nothing to tune.
-      const tuneable = question.compiledSpec?.kind === 'cloud';
-      setTuneError(null);
-      // Suggestions first when there are any — they're about making it work at all. The budget
-      // follows on their heels (see pendingTuneId), while the wish is still in mind.
-      setPendingTuneId(next && tuneable ? question.id : null);
-      if (next) setSheet({ kind: 'suggest' });
-      else if (tuneable) setSheet({ kind: 'tune', id: question.id });
-      else {
-        setSheet({ kind: 'none' });
-        setTab('watches');
-      }
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setAuthoring(false);
-    }
-  };
+  // Watch authoring / edit / tune / memory-binding — state and handlers extracted to a hook. The
+  // watch LIST stays here (many things read it); the hook mutates it through the setters we pass.
+  const {
+    wish,
+    setWish,
+    authoring,
+    submitWish,
+    suggestions,
+    closeSuggest,
+    pendingTuneId,
+    setPendingTuneId,
+    editText,
+    setEditText,
+    savingEdit,
+    saveEdit,
+    deletingId,
+    removeWatch,
+    watchError,
+    setWatchError,
+    savingTune,
+    tuneError,
+    setTuneError,
+    saveTune,
+    toggleWatchMemory,
+  } = useWatchAuthoring({
+    token,
+    reload: load,
+    setSheet,
+    closeSheet,
+    setTab,
+    setWatches,
+    setEvents,
+    setError,
+  });
 
-  // Persist the real program knobs (mode, rate, model). Expected activity isn't sent — it isn't
-  // a property of the program, only of your guess at how busy the scene is.
-  const saveTune = async (id: string, patch: TunePatch) => {
-    if (savingTune) return;
-    setSavingTune(true);
-    setTuneError(null);
-    try {
-      const { question } = await configureWatch(id, patch, token);
-      setWatches((prev) => (prev ? prev.map((w) => (w.id === question.id ? question : w)) : prev));
-      await load();
-      closeSheet();
-    } catch (err) {
-      setTuneError((err as Error).message);
-    } finally {
-      setSavingTune(false);
-    }
-  };
-
-  // Leaving the suggestions hands the layer to the budget, if this watch has one to spend.
-  const closeSuggest = () => {
-    const next = pendingTuneId;
-    setPendingTuneId(null);
-    if (next) setSheet({ kind: 'tune', id: next });
-    else closeSheet();
-  };
-
-  const saveEdit = async (id: string) => {
-    if (!editText.trim() || savingEdit) return;
-    setSavingEdit(true);
-    setWatchError(null);
-    try {
-      const { question } = await updateWatch(id, editText.trim(), token);
-      // Recompiled in place — swap the updated watch into the list without a full reload.
-      setWatches((prev) => (prev ? prev.map((w) => (w.id === question.id ? question : w)) : prev));
-      setSheet({ kind: 'watch', id });
-      listEvents(20, token).then(setEvents).catch(() => {});
-    } catch (err) {
-      setWatchError((err as Error).message);
-    } finally {
-      setSavingEdit(false);
-    }
-  };
-
-  const removeWatch = async (w: Watch) => {
-    if (deletingId) return;
-    setWatchError(null);
-    setDeletingId(w.id);
-    try {
-      await deleteWatch(w.id, token);
-      setWatches((prev) => (prev ? prev.filter((x) => x.id !== w.id) : prev));
-      closeSheet();
-      listEvents(20, token).then(setEvents).catch(() => {});
-    } catch (err) {
-      setWatchError((err as Error).message);
-    } finally {
-      setDeletingId(null);
-    }
-  };
-
-  // Attach or detach one reference-memory object from a watch. Optimistic: flip the link in place,
-  // persist, and roll back to the server's authoritative list if the call fails.
-  const toggleWatchMemory = async (w: Watch, memoryId: string) => {
-    const current = w.memoryIds ?? [];
-    const next = current.includes(memoryId)
-      ? current.filter((id) => id !== memoryId)
-      : [...current, memoryId];
-    setWatchError(null);
-    setWatches((prev) => (prev ? prev.map((x) => (x.id === w.id ? { ...x, memoryIds: next } : x)) : prev));
-    try {
-      const { question } = await linkWatchMemory(w.id, next, token);
-      setWatches((prev) =>
-        prev ? prev.map((x) => (x.id === w.id ? { ...x, memoryIds: question.memoryIds ?? [] } : x)) : prev,
-      );
-    } catch (err) {
-      setWatchError((err as Error).message);
-      setWatches((prev) => (prev ? prev.map((x) => (x.id === w.id ? { ...x, memoryIds: current } : x)) : prev));
-    }
-  };
-
-  const submitClaim = async () => {
-    const code = claimCode.trim();
-    if (!code || claiming) return;
-    setClaiming(true);
-    setHubError(null);
-    setHubNotice(null);
-    try {
-      const hub = await claimHub(code, token);
-      setClaimCode('');
-      setHubNotice(`Connected “${hub.name}”. It’ll come online once it checks in.`);
-      await load();
-    } catch (err) {
-      setHubError((err as Error).message);
-    } finally {
-      setClaiming(false);
-    }
-  };
-
-  const removeHub = async (hub: HubView) => {
-    setHubError(null);
-    setHubNotice(null);
-    try {
-      await unpairHub(hub.id, token);
-      setHubs((prev) => (prev ? prev.filter((h) => h.id !== hub.id) : prev));
-      closeSheet();
-    } catch (err) {
-      setHubError((err as Error).message);
-    }
-  };
+  // Hub claim + unpair — likewise extracted; the hub list stays here.
+  const { claimCode, setClaimCode, claiming, hubError, hubNotice, submitClaim, removeHub } = useHubClaim({
+    token,
+    reload: load,
+    setHubs,
+    closeSheet,
+  });
 
   /**
    * Forget a hub-reported device. Removal is by NODE, so every sensor on it goes at once —
@@ -472,6 +323,30 @@ export default function DashboardScreen() {
     }
   };
 
+  // The phone bar carries the four live destinations; the rail has room for the whole
+  // platform, grouped the way a person thinks: the home first, the account around it.
+  // Memoized so the arrays (and their identities) only change when a badge count does, rather
+  // than being rebuilt on every render. Kept above the early returns to satisfy rules-of-hooks.
+  const sensorCount = sensors.length;
+  const watchCount = watches?.length ?? null;
+  const tabs = useMemo<NavTab[]>(
+    () => [
+      { key: 'home', icon: '🏠', label: 'Home', section: 'Platform' },
+      { key: 'sensors', icon: '📡', label: 'Sensors', badge: sensorCount || null, section: 'Platform' },
+      { key: 'watches', icon: '👁', label: 'Watches', badge: watchCount, section: 'Platform' },
+      { key: 'activity', icon: '📜', label: 'Activity', section: 'Platform' },
+    ],
+    [sensorCount, watchCount],
+  );
+  const railTabs = useMemo<NavTab[]>(
+    () => [
+      ...tabs,
+      { key: 'billing', icon: '💳', label: 'Usage & billing', section: 'Account' },
+      { key: 'settings', icon: '⚙️', label: 'Settings', section: 'Account' },
+    ],
+    [tabs],
+  );
+
   if (status === 'loading') {
     return (
       <View style={[styles.fill, { backgroundColor: theme.background }]}>
@@ -483,20 +358,6 @@ export default function DashboardScreen() {
 
   const devices = home?.nodes.length ?? 0;
   const pad = { paddingHorizontal: gutter };
-
-  // The phone bar carries the four live destinations; the rail has room for the whole
-  // platform, grouped the way a person thinks: the home first, the account around it.
-  const tabs: NavTab[] = [
-    { key: 'home', icon: '🏠', label: 'Home', section: 'Platform' },
-    { key: 'sensors', icon: '📡', label: 'Sensors', badge: sensors.length || null, section: 'Platform' },
-    { key: 'watches', icon: '👁', label: 'Watches', badge: watches?.length ?? null, section: 'Platform' },
-    { key: 'activity', icon: '📜', label: 'Activity', section: 'Platform' },
-  ];
-  const railTabs: NavTab[] = [
-    ...tabs,
-    { key: 'billing', icon: '💳', label: 'Usage & billing', section: 'Account' },
-    { key: 'settings', icon: '⚙️', label: 'Settings', section: 'Account' },
-  ];
 
   const sheetWatch =
     sheet.kind === 'watch' || sheet.kind === 'editWatch'
@@ -595,10 +456,6 @@ export default function DashboardScreen() {
                       </Text>
                     </Pressable>
                   )}
-
-                  {/* Where a fired "notify me" watch actually lands. Per-account, so it sits with
-                      the hubs rather than inside any one of them. */}
-                  <NotifyChannelsCard token={token} />
                 </View>
 
                 {visionSensors.length ? (

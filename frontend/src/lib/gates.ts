@@ -12,6 +12,7 @@
  * overstating a gate's duty would understate a bill.
  */
 
+import { gateInput } from '@/demo/engine/predicate';
 import type { GateCandidate } from '@/demo/engine/recommend';
 import type { PredicateNode } from '@/demo/engine/types';
 import type { HomeCapability, HomeModel } from './home';
@@ -105,21 +106,4 @@ export function dutyForGate(home: HomeModel | null, gate: PredicateNode | undefi
   if (!input) return undefined;
   const cap = home.nodes.flatMap((n) => n.capabilities).find((c) => c.id === input);
   return cap ? classify(cap)?.duty : undefined;
-}
-
-/** First input a predicate references, walking the shapes the engine compiles. */
-function gateInput(node: PredicateNode): string | undefined {
-  const n = node as Record<string, unknown>;
-  const left = n.left as { input?: string } | undefined;
-  if (left?.input) return left.input;
-  const inp = n.input as { input?: string } | undefined;
-  if (inp?.input) return inp.input;
-  if (Array.isArray(n.nodes)) {
-    for (const child of n.nodes as PredicateNode[]) {
-      const found = gateInput(child);
-      if (found) return found;
-    }
-  }
-  if (n.node) return gateInput(n.node as PredicateNode);
-  return undefined;
 }

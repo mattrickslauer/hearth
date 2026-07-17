@@ -68,7 +68,6 @@ export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
 /** Ember gradient stops — the same fire in both schemes. */
 export const EmberGradient = ['#FFB067', '#FF7A45', '#E24E1B'] as const;
-export const EmberGradientSoft = ['#FF9E64', '#E2531D'] as const;
 
 export const Fonts = Platform.select({
   ios: {
@@ -109,7 +108,6 @@ export const Radius = {
   pill: 999,
 } as const;
 
-export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 1120;
 
 /**

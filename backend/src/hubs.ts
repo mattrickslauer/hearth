@@ -26,6 +26,7 @@ import { randomBytes, randomInt } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 import { hmacHex, issueHubToken, verifyHubToken } from './auth';
+import { RateLimiter } from './ratelimit';
 import type { HomeStore } from './store';
 import { HOME_TABLE, ensureHomeTable, tsDeleteRow, tsGetRange, tsGetRow, tsPutRow } from './tablestore';
 
@@ -238,32 +239,6 @@ export function getHubStore(): HubStore {
 }
 
 /* ----------------------------------------------------------------- rate limiting */
-
-class RateLimiter {
-  private hits = new Map<string, number[]>();
-  constructor(private max: number, private windowMs: number) {}
-  allow(key: string): boolean {
-    const now = Date.now();
-    const cutoff = now - this.windowMs;
-    const arr = (this.hits.get(key) ?? []).filter((t) => t > cutoff);
-    // Evict only fully-expired keys — a wholesale clear() could be forced (spoof many
-    // distinct IPs) to reset everyone's enroll/claim limit at once.
-    if (this.hits.size > 50_000) this.sweep(cutoff);
-    if (arr.length >= this.max) {
-      this.hits.set(key, arr);
-      return false;
-    }
-    arr.push(now);
-    this.hits.set(key, arr);
-    return true;
-  }
-
-  private sweep(cutoff: number): void {
-    for (const [k, times] of this.hits) {
-      if (times.length === 0 || times[times.length - 1] <= cutoff) this.hits.delete(k);
-    }
-  }
-}
 
 // Blunt enroll spam per IP, and claim-code guessing per account.
 const enrollLimiter = new RateLimiter(20, 15 * 60_000);

@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { Card } from '@/components/landing/ui';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
@@ -24,8 +24,7 @@ import {
   type DeliveryResult,
   type NotifyConfigView,
 } from '@/lib/notify';
-
-const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
+import { webNoOutline } from '@/lib/web-style';
 
 /** Turn a delivery result set into one honest line: what landed, what didn't, and why. */
 function summarize(channels: DeliveryResult[]): { text: string; ok: boolean } {

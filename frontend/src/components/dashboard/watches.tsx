@@ -1,13 +1,12 @@
-import { Image, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { CostQuote } from '@/components/cost-quote';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { HomeModel, MemoryObject, Watch } from '@/lib/home';
+import { webNoOutline } from '@/lib/web-style';
 
 import { Tag, useHover } from './shared';
-
-const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 
 /**
  * A watch, compressed to the line that matters: what it's called, where it runs, and what it

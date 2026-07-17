@@ -49,10 +49,9 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { cpus, freemem, hostname, loadavg, platform, totalmem } from 'node:os';
 
 import { createCapture, detectCaptureDevice } from './camera.mjs';
+import { parseEnabled } from './wire.mjs';
 
 const hhmmss = () => new Date().toISOString().slice(11, 19);
-// Forgiving on/off parse — mirrors the firmware's /actuate parser: anything off-ish is off, else on.
-const isOff = (v) => v === false || v === 0 || v === '0' || v === 'false' || String(v).includes('off');
 
 /**
  * A stable per-machine id seed. Node ids are the key for readings, cadence downlinks and
@@ -214,38 +213,40 @@ export function startNode(opts = {}) {
   for (const s of sensors) s.ms = s.defaultMs;
 
   // — camera —
-  // Source resolution: `auto` probes for a real camera. Standalone, a machine with no
-  // camera simply doesn't describe one (like a board with no DHT). Embedded, auto falls
-  // back to rtmp so `hearthctl camera on` keeps the OBS behaviour on camera-less hubs.
+  // Source resolution: `auto` probes for a real camera (async — pulling one proof frame per
+  // candidate device never blocks /actuate serving or an embedding hub's pairing loop).
+  // Standalone, a machine with no camera simply doesn't describe one (like a board with no
+  // DHT). Embedded, auto falls back to rtmp so `hearthctl camera on` keeps the OBS behaviour
+  // on camera-less hubs.
   let capture = null;
   const camDefaultMs = Number(process.env.HEARTH_CAM_CADENCE_MS || 5000);
-  if (wanted.includes('camera')) {
+  async function setupCamera() {
+    if (!wanted.includes('camera')) return;
     const requested = process.env.HEARTH_CAM_SOURCE || (embedded ? 'rtmp' : 'auto');
     let source = requested;
     if (requested === 'auto') {
-      source = detectCaptureDevice();
+      source = await detectCaptureDevice();
       if (!source && embedded) {
         log('[cam] auto: no local camera found — listening for OBS over rtmp instead');
         source = 'rtmp';
       }
       if (!source) log('[node] no camera on this machine — not describing one');
     }
-    if (source) {
-      capture = createCapture({
-        source,
-        cadenceMs: camDefaultMs,
-        // Every fresh JPEG becomes a READING immediately — the frame IS the reading,
-        // so its delivery cadence is the capture cadence, exactly like a sensor.
-        onFrame: (f) => {
-          void deliver({
-            id,
-            type: 'hearth.node.reading',
-            readings: { 'cam.frame': `q${f.quality} ${f.w}px ${(f.bytes / 1024).toFixed(0)}KB @${hhmmss()}` },
-            frames: { 'cam.frame': `data:image/jpeg;base64,${f.buf.toString('base64')}` },
-          });
-        },
-      });
-    }
+    if (!source) return;
+    capture = createCapture({
+      source,
+      cadenceMs: camDefaultMs,
+      // Every fresh JPEG becomes a READING immediately — the frame IS the reading,
+      // so its delivery cadence is the capture cadence, exactly like a sensor.
+      onFrame: (f) => {
+        void deliver({
+          id,
+          type: 'hearth.node.reading',
+          readings: { 'cam.frame': `q${f.quality} ${f.w}px ${(f.bytes / 1024).toFixed(0)}KB @${hhmmss()}` },
+          frames: { 'cam.frame': `data:image/jpeg;base64,${f.buf.toString('base64')}` },
+        });
+      },
+    });
   }
 
   const describeDoc = () => {
@@ -330,7 +331,8 @@ export function startNode(opts = {}) {
     }
     if (data && typeof data.desired === 'object' && data.desired !== null) {
       if (capture && 'power' in data.desired) {
-        if (capture.setPower(!isOff(data.desired.power))) log(`[desired] cloud → power ${isOff(data.desired.power) ? 'off' : 'on'}`);
+        const on = parseEnabled(data.desired.power);
+        if (capture.setPower(on)) log(`[desired] cloud → power ${on ? 'on' : 'off'}`);
       }
     }
   }
@@ -363,7 +365,7 @@ export function startNode(opts = {}) {
           cmd = JSON.parse(body || '{}');
         } catch {}
         if (cmd.actuator === 'power' && capture) {
-          const on = !isOff(cmd.value);
+          const on = parseEnabled(cmd.value);
           capture.setPower(on);
           log(`[actuate] power -> ${on ? 'ON' : 'OFF'}`);
           json(200, { ok: true, power: on ? 'on' : 'off' });
@@ -418,7 +420,7 @@ export function startNode(opts = {}) {
           let changed = false;
           if (cfg.quality != null) changed = capture.setQuality(Number(cfg.quality)) || changed;
           if (cfg.cadenceMs != null) changed = capture.setCadence(Number(cfg.cadenceMs)) || changed;
-          if (cfg.enabled != null) capture.setPower(!isOff(cfg.enabled));
+          if (cfg.enabled != null) capture.setPower(parseEnabled(cfg.enabled));
           if (changed) void deliver(describeDoc());
           respond();
         });
@@ -454,10 +456,12 @@ export function startNode(opts = {}) {
 
   (async () => {
     // A darwin battery probe is async — resolve it before the first DESCRIBE so a
-    // battery-less Mac doesn't describe a battery it can't read.
+    // battery-less Mac doesn't describe a battery it can't read. Same for the camera:
+    // its device probe is async, and the first DESCRIBE must reflect what's real.
     for (let i = sensors.length - 1; i >= 0; i--) {
       if (sensors[i].probe && (await sensors[i].probe()) == null) sensors.splice(i, 1);
     }
+    await setupCamera();
     hubUrl = await discoverHub(opts.hubUrl, log);
     await new Promise((resolve) => server.listen(PORT, '0.0.0.0', resolve));
     log(`[node] ${id} → hub ${hubUrl}`);

@@ -17,6 +17,7 @@ import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { mailFrom, smtp } from './mailer';
+import { RateLimiter } from './ratelimit';
 import { ensureTable, getTablestore, tsDeleteRow, tsGetRow, tsPutRow, tsUpdatePut } from './tablestore';
 
 // The SMTP transport moved to ./mailer so notify.ts can send mail without importing auth.
@@ -25,7 +26,11 @@ export { verifyMailer } from './mailer';
 
 const OTP_TTL_MS = 10 * 60_000; // 10 minutes
 const MAX_ATTEMPTS = 5;
-const SESSION_TTL_SEC = 30 * 24 * 60 * 60; // 30 days (JWT exp, in seconds per RFC 7519)
+// 7 days (JWT exp, in seconds per RFC 7519). This is a low-risk cap only: because sessions are
+// stateless JWTs there is no revocation before exp, so a shorter TTL bounds the blast radius of a
+// leaked token. The real fix is a refresh-token + httpOnly-cookie flow (short-lived access token,
+// server-side revocable refresh) — out of scope here; see the session security note below.
+const SESSION_TTL_SEC = 7 * 24 * 60 * 60;
 
 /* ------------------------------------------------------------------ OTP store */
 
@@ -226,6 +231,11 @@ function ensureAuthTables(): Promise<void> {
       ensureTable(ACCOUNT_EMAIL_TABLE, ['email']),
       ensureTable(OTP_TABLE, ['email']),
     ]).then(() => undefined);
+    // If creation rejects, clear the cache so the next call retries rather than
+    // replaying a poisoned rejected promise for the life of the instance.
+    void authTablesReady.catch(() => {
+      authTablesReady = null;
+    });
   }
   return authTablesReady;
 }
@@ -523,39 +533,6 @@ export async function sendOtpEmail(email: string, code: string): Promise<{ deliv
 }
 
 /* --------------------------------------------------------------- rate limiting */
-
-/**
- * In-memory sliding-window limiter. Per-instance (consistent with the memory OTP/
- * account stores) — good enough to blunt email-bombing and slow OTP brute force;
- * swap for a shared store (Tablestore/Redis) alongside those when they're wired.
- */
-class RateLimiter {
-  private hits = new Map<string, number[]>();
-  constructor(private max: number, private windowMs: number) {}
-  allow(key: string): boolean {
-    const now = Date.now();
-    const cutoff = now - this.windowMs;
-    const arr = (this.hits.get(key) ?? []).filter((t) => t > cutoff);
-    // Bound memory by evicting only fully-expired keys — never wipe live counters.
-    // A wholesale clear() could be forced (spoof 50k distinct keys) to reset everyone's
-    // limit at once, briefly nullifying OTP/enroll throttles.
-    if (this.hits.size > 50_000) this.sweep(cutoff);
-    if (arr.length >= this.max) {
-      this.hits.set(key, arr);
-      return false;
-    }
-    arr.push(now);
-    this.hits.set(key, arr);
-    return true;
-  }
-
-  /** Delete only keys whose most recent hit is already outside the window. */
-  private sweep(cutoff: number): void {
-    for (const [k, times] of this.hits) {
-      if (times.length === 0 || times[times.length - 1] <= cutoff) this.hits.delete(k);
-    }
-  }
-}
 
 // A given email may be sent at most 5 codes / 15 min; a given client IP at most 30 / 15 min.
 const emailOtpLimiter = new RateLimiter(5, 15 * 60_000);

@@ -13,6 +13,7 @@
  * are deliberately conservative: overstating a gate's duty would understate a bill.
  */
 
+import { gateInput } from './engine/predicate';
 import type { GateCandidate } from './engine/recommend';
 import type { PredicateNode } from './engine/types';
 import { CAPABILITIES, nodeForCapability } from './home';
@@ -88,21 +89,4 @@ export function dutyForGate(gate: PredicateNode | undefined): number | undefined
   if (!gate) return undefined;
   const input = gateInput(gate);
   return input ? ALL_GATES.find((g) => g.inputId === input)?.duty : undefined;
-}
-
-/** First input a predicate references, walking the same shapes the engine compiles. */
-function gateInput(node: PredicateNode): string | undefined {
-  const n = node as Record<string, unknown>;
-  const left = n.left as { input?: string } | undefined;
-  if (left?.input) return left.input;
-  const inp = n.input as { input?: string } | undefined;
-  if (inp?.input) return inp.input;
-  if (Array.isArray(n.nodes)) {
-    for (const child of n.nodes as PredicateNode[]) {
-      const found = gateInput(child);
-      if (found) return found;
-    }
-  }
-  if (n.node) return gateInput(n.node as PredicateNode);
-  return undefined;
 }

@@ -14,26 +14,15 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { cheapestPlan, estimate, formatUsd, type Quote, type QuoteInput } from '@/demo/engine/pricing';
 import { recommend } from '@/demo/engine/recommend';
-import { dutyForGate as catalogDuty, gatesFor as catalogGates } from '@/demo/gates';
+import { dutyForGate as catalogDuty } from '@/demo/gates';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { dutyForGate, gatesFromHome } from '@/lib/gates';
+import { dutyForGate } from '@/lib/gates';
 import type { HomeModel, Watch } from '@/lib/home';
+import { perDay, resolveGates } from '@/lib/watch-cost';
 
 /** Cadence stops a suggestion may propose, slowest-first. */
 const SLOWER = ['2m', '30s', '10s'];
-
-/**
- * Checks a day, rounded for humans. Deliberately NOT Looks: a Look is a normalized
- * cost unit (a sharper model spends ~4 per check), so showing Looks here would read as
- * "the model quadrupled how often it looks" when it only quadrupled the price.
- */
-function perDay(callsPerMonth: number): string {
-  const d = callsPerMonth / 30;
-  if (d === 0) return '0';
-  if (d < 1) return '<1';
-  return String(Math.round(d));
-}
 
 /**
  * The QuoteInput for a stored watch, or null for an older row with no compiledSpec —
@@ -71,8 +60,7 @@ export function CostQuote({ watch, home }: { watch: Watch; home: HomeModel | nul
   const input = quoteInputFor(watch, home);
   if (!input) return null;
 
-  const homeGates = gatesFromHome(home, watch.boundInputs);
-  const gates = homeGates.length ? homeGates : catalogGates(watch.boundInputs);
+  const gates = resolveGates(watch, home);
   const quote = estimate(input);
   const plan = cheapestPlan(quote);
   const recs = quote.local ? [] : recommend(input, { gates, slower: SLOWER });
