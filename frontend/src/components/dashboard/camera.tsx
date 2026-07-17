@@ -49,11 +49,14 @@ function CameraShell({
 }) {
   const theme = useTheme();
   const { hovered, hoverProps } = useHover();
+  // A plain pressable surface, not a button: the Stop/Start pill and Tune control inside are
+  // real <button>s on web, and HTML forbids a button inside a button (hydration error). The
+  // card stays a whole-surface click target for pointers; keyboard and screen-reader users
+  // get the Tune button instead.
   return (
     <Pressable
       onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={`${title}. Tap to tune.`}
+      focusable={false}
       {...hoverProps}
       style={({ pressed }) => [
         styles.card,
@@ -89,10 +92,16 @@ function CameraShell({
             <Text style={[styles.placeholderText, { color: theme.textMuted }]}>{waiting}</Text>
           </View>
         )}
-        {/* The affordance, on the glass — says "there's more behind this" without a control bar. */}
-        <View style={styles.tune}>
+        {/* The affordance, on the glass — says "there's more behind this" without a control bar.
+            Also the card's real button: the outer Pressable is an unfocusable surface, so this
+            is what keyboard and screen-reader users activate to open the sheet. */}
+        <Pressable
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={`${title}. Tap to tune.`}
+          style={styles.tune}>
           <Text style={styles.tuneText}>⚙ Tune</Text>
-        </View>
+        </Pressable>
         {power ? (
           <Pressable
             onPress={power.toggle}
