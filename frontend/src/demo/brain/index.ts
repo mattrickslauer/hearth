@@ -6,7 +6,7 @@
  */
 
 import { defaultRecord, mockAuthor, mockJudge, type AuthoredQuestion } from './mock';
-import { qwenAuthor, qwenJudge } from './qwen';
+import { qwenAnsweredLive, qwenAuthor, qwenJudge } from './qwen';
 import type { Judgment, Question, Visitor } from '../types';
 
 export interface Brain {
@@ -37,7 +37,12 @@ const useQwen = typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_USE_Q
 export const brain: Brain = useQwen
   ? {
       id: 'qwen',
-      label: 'Qwen Cloud',
+      // Honest pill: reads "Qwen Cloud" only while real calls answer. The moment one falls
+      // back to the mock (the 401 an anonymous visitor gets), the label flips to
+      // "(simulated)" — the UI re-reads this getter whenever new brain output renders.
+      get label() {
+        return qwenAnsweredLive() ? 'Qwen Cloud' : 'Qwen (simulated)';
+      },
       async author(wish) {
         return withId(await qwenAuthor(wish));
       },
