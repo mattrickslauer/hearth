@@ -222,7 +222,9 @@ export function startNode(opts = {}) {
   const camDefaultMs = Number(process.env.HEARTH_CAM_CADENCE_MS || 5000);
   async function setupCamera() {
     if (!wanted.includes('camera')) return;
-    const requested = process.env.HEARTH_CAM_SOURCE || (embedded ? 'rtmp' : 'auto');
+    // `camSource` lets an embedding hub pass the source from a live POST /camera {source}
+    // — the env was read at boot and can't change under a running process.
+    const requested = opts.camSource || process.env.HEARTH_CAM_SOURCE || (embedded ? 'rtmp' : 'auto');
     let source = requested;
     if (requested === 'auto') {
       source = await detectCaptureDevice();

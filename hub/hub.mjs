@@ -190,6 +190,67 @@ function findCameraNode() {
   return hit;
 }
 
+// Frame-push health. The stream IS the retry — a fresh frame replaces a failed one at the
+// next snap, so per-frame retries would only double-send. Healing instead means:
+//   1. notice state TRANSITIONS (ok→failing, failing→ok) without logging twice a second,
+//   2. treat an auth rejection as "re-pair now" instead of failing quietly until the next
+//      heartbeat happens to notice,
+//   3. expose the state (GET /camera, hearthctl status) so "no frames on the dashboard"
+//      is a one-command diagnosis instead of a mystery.
+const pushHealth = { ok: null, failures: 0, lastOkAt: 0, failingSince: 0, lastError: '' };
+function markPush(ok, error) {
+  if (ok) {
+    if (pushHealth.ok === false)
+      console.log(`[cam→cloud] frame pushes recovered after ${pushHealth.failures} failure(s) (down ${Math.round((Date.now() - pushHealth.failingSince) / 1000)}s)`);
+    pushHealth.ok = true;
+    pushHealth.failures = 0;
+    pushHealth.lastOkAt = Date.now();
+    pushHealth.lastError = '';
+    return;
+  }
+  pushHealth.failures += 1;
+  pushHealth.lastError = error;
+  if (pushHealth.ok !== false) {
+    pushHealth.failingSince = Date.now();
+    console.log(`[cam→cloud] frame pushes FAILING (${error}) — will keep trying at the snap cadence`);
+  }
+  pushHealth.ok = false;
+}
+
+// The hub's own embedded camera node. The hub starts the SAME node code a laptop runs
+// (node.mjs), pointed at its own loopback ingest — the camera is a real node on the same
+// rails as any ESP32: it DESCRIBEs over HTTP, rides frames on its readings, and converges
+// power/cadence from the reply downlink. No camera-shaped special case.
+let embeddedCam = null;
+
+// Bring the embedded camera node up. Idempotent — shared by boot (HEARTH_CAM=1) and a live
+// POST /camera {enabled:true}, so attaching a camera never requires a hub restart.
+async function startEmbeddedCam(sourceOverride) {
+  if (embeddedCam) return;
+  const { startNode } = await import('./node.mjs');
+  embeddedCam = startNode({
+    hubUrl: `http://127.0.0.1:${PORT}`,
+    token: INGEST_TOKEN,
+    embedded: true,
+    peripherals: ['camera'],
+    port: Number(process.env.HEARTH_CAM_PORT || 8898),
+    ...(sourceOverride ? { camSource: sourceOverride } : {}),
+  });
+  console.log(`[hub] camera enabled — embedded node "${embeddedCam.id}", frames at GET http://<hub>:${PORT}/frame`);
+}
+
+// Tear the embedded camera node down. Idempotent. Kills the capture process immediately (the
+// webcam LED goes dark now, not at the next restart) and drops the node from the registry, so
+// the next cloud sync stops listing it instead of leaving a ghost sensor.
+function stopEmbeddedCam() {
+  if (!embeddedCam) return;
+  embeddedCam.stop();
+  nodes.delete(embeddedCam.id);
+  embeddedCam = null;
+  scheduleSync();
+  console.log('[hub] camera disabled — capture stopped, node dropped from the registry');
+}
+
 // The watch runtime: evaluates compiled watches against live node readings and fires
 // (actuate a node + push a phone notification) on a rising edge. It shares the `nodes`
 // registry so it can resolve a node's address to send actuator commands back to it.
@@ -377,9 +438,21 @@ async function pushFrameToCloud(input, dataUri) {
   if (!hubToken) return;
   try {
     const { ok, status, data } = await api('/hub/frame', { input, image: dataUri }, hubToken);
-    if (!ok) console.log(`[cam→cloud] frame push rejected ${status}: ${data.error || 'unknown'}`);
+    if (ok) return markPush(true);
+    markPush(false, `rejected ${status}: ${data.error || 'unknown'}`);
+    // Auth rejection = this hub is no longer paired. Hand the dead token to the heartbeat
+    // loop NOW — it re-enrolls and surfaces a fresh claim code — rather than dripping a
+    // rejected push per snap until the next beat notices.
+    if (status === 401 || status === 403) {
+      console.log('[cam→cloud] hub token rejected — clearing it so the pairing loop re-pairs');
+      hubToken = null;
+      accountId = null;
+      delete state.hubToken;
+      delete state.accountId;
+      saveState(state);
+    }
   } catch (e) {
-    console.log(`[cam→cloud] frame push failed: ${e.message}`);
+    markPush(false, e.message);
   }
 }
 
@@ -644,7 +717,46 @@ const server = http.createServer(async (req, res) => {
   // live. The camera is a NODE now, so this proxies to whichever registered node describes
   // a vision sensor — the dashboard keeps one stable URL (the hub) while the camera lives
   // wherever the hardware is: the hub's own embedded camera node, a laptop, an ESP32-CAM.
+  //
+  // Two distinct verbs share this route, deliberately:
+  //   {enabled} — attach/detach the hub's OWN embedded camera node (hearthctl camera on|off).
+  //               Detached = gone from the registry, as if unplugged. No hub restart needed.
+  //   {power}   — pause/resume capture while staying registered: the LAN-direct twin of the
+  //               `power` actuator the cloud downlink drives. (The node's own /camera route
+  //               spells this knob `enabled` — the hub translates, and the node applies the
+  //               same forgiving parse the boards use: 0/'0'/false/'off' all mean off.)
   if (req.url === '/camera') {
+    if (req.method !== 'GET' && req.method !== 'POST') {
+      res.writeHead(405, { 'content-type': 'application/json', ...corsHeaders() });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
+      return;
+    }
+    // Read the body once — the stream can't be consumed twice.
+    const body = req.method === 'POST' ? (await readJson(req)) || {} : {};
+    // `push` is the cloud-side health of the frame stream — so "no frames on the dashboard"
+    // is answerable from the hub itself (hearthctl status prints this object).
+    const push = hubToken
+      ? { ok: pushHealth.ok, failures: pushHealth.failures, lastOkAt: pushHealth.lastOkAt || null, error: pushHealth.lastError || null }
+      : { ok: null, note: 'not paired — frames stay LAN-only until the hub is claimed' };
+    if (body.enabled === false) {
+      stopEmbeddedCam();
+      res.writeHead(200, { 'content-type': 'application/json', ...corsHeaders() });
+      res.end(JSON.stringify({ ok: true, enabled: false }));
+      return;
+    }
+    if (body.enabled === true) {
+      await startEmbeddedCam(typeof body.source === 'string' && body.source ? body.source : undefined);
+      // The embedded node registers itself via loopback DESCRIBE, and `auto` may spend a
+      // while probing devices first — wait for the proxy target to land (hearthctl allows
+      // 45s), then report attaching rather than 404 (hearthctl treats non-2xx as "restart
+      // the whole hub", which is exactly what this endpoint exists to avoid).
+      for (let i = 0; i < 120 && !findCameraNode(); i++) await new Promise((r) => setTimeout(r, 250));
+      if (!findCameraNode()) {
+        res.writeHead(200, { 'content-type': 'application/json', ...corsHeaders() });
+        res.end(JSON.stringify({ ok: true, enabled: true, note: 'attaching — camera node not registered yet', push }));
+        return;
+      }
+    }
     const camNode = findCameraNode();
     const addr = camNode?.describe?.ip || camNode?.addr;
     if (!camNode || !addr) {
@@ -652,24 +764,24 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: 'camera disabled' }));
       return;
     }
-    if (req.method !== 'GET' && req.method !== 'POST') {
-      res.writeHead(405, { 'content-type': 'application/json', ...corsHeaders() });
-      res.end(JSON.stringify({ error: 'method not allowed' }));
-      return;
-    }
     // The node's control server is where its `power` actuator listens (ESP convention:
     // actuators carry port+path in the DESCRIBE).
     const port = (camNode.describe?.actuators || []).find((a) => a.key === 'power')?.port || 8080;
     try {
-      const body = req.method === 'POST' ? JSON.stringify((await readJson(req)) || {}) : undefined;
+      // Forward only the node-level knobs; {power} rides as the node's `enabled`.
+      const fwd = {};
+      if (body.quality != null) fwd.quality = body.quality;
+      if (body.cadenceMs != null) fwd.cadenceMs = body.cadenceMs;
+      if (body.power != null) fwd.enabled = body.power;
+      const hasBody = req.method === 'POST' && Object.keys(fwd).length > 0;
       const r = await fetch(`http://${addr}:${port}/camera`, {
-        method: req.method,
-        ...(body ? { headers: { 'content-type': 'application/json' }, body } : {}),
+        method: hasBody ? 'POST' : 'GET',
+        ...(hasBody ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(fwd) } : {}),
         signal: AbortSignal.timeout(5000),
       });
-      const data = await r.text();
+      const data = await r.json().catch(() => ({}));
       res.writeHead(r.status, { 'content-type': 'application/json', ...corsHeaders() });
-      res.end(data);
+      res.end(JSON.stringify({ ...data, push }));
     } catch (e) {
       res.writeHead(502, { 'content-type': 'application/json', ...corsHeaders() });
       res.end(JSON.stringify({ error: `camera node unreachable: ${e.message}` }));
@@ -745,18 +857,8 @@ async function main() {
   // laptop runs (node.mjs), pointed at its own loopback ingest. The camera is a real node
   // on the same rails as any ESP32: it DESCRIBEs over HTTP, rides frames on its readings,
   // and converges power/cadence from the reply downlink. No camera-shaped special case.
-  let embeddedCam = null;
-  if (process.env.HEARTH_CAM === '1') {
-    const { startNode } = await import('./node.mjs');
-    embeddedCam = startNode({
-      hubUrl: `http://127.0.0.1:${PORT}`,
-      token: INGEST_TOKEN,
-      embedded: true,
-      peripherals: ['camera'],
-      port: Number(process.env.HEARTH_CAM_PORT || 8898),
-    });
-    console.log(`[hub] camera enabled — embedded node "${embeddedCam.id}", frames at GET http://<hub>:${PORT}/frame`);
-  }
+  // Can also be attached/detached live via POST /camera {enabled} — no restart needed.
+  if (process.env.HEARTH_CAM === '1') await startEmbeddedCam();
 
   if (hubToken) console.log(`  Already paired (hub ${state.hubId}, account ${accountId}). Heartbeating + syncing.\n`);
 

@@ -10,6 +10,10 @@
  *   1. Frames are sampled at intervals, never streamed. Each fresh JPEG is
  *      handed to `onFrame`; the node turns it into a tiny READING plus the
  *      frame bytes for the hub. So sync stays cheap and no video leaves.
+ *      For a real camera DEVICE this goes further: the device is opened only
+ *      for the ~1s of each snap (open → grab → close), so the webcam LED is off
+ *      between snaps, other apps can use the camera, and no long-lived process
+ *      exists to wedge it. Only a pushed stream (rtmp) holds ffmpeg open.
  *   2. Two knobs, like any sensor: cadence (how often it snaps) and quality
  *      (resolution + JPEG quality — the token/detail tradeoff). Both retune
  *      live via the same per-sensor downlink the ESP nodes use.
@@ -37,6 +41,22 @@ const qToQv = (q) => Math.max(2, Math.min(31, Math.round(31 - (Math.max(1, Math.
 
 // A whole JPEG ends with the EOI marker FF D9 — used to skip a frame ffmpeg is mid-write on.
 const isCompleteJpeg = (buf) => buf.length > 3 && buf[buf.length - 2] === 0xff && buf[buf.length - 1] === 0xd9;
+
+// Every live capture process, so one exit hook can reap them all. The graceful path
+// (stop()/setPower(off)) kills ffmpeg explicitly; this hook covers the process dying any
+// other way Node still gets to run code for (uncaught exception, process.exit) — an
+// orphaned ffmpeg keeps the webcam open, and its LED on, until someone notices.
+// (SIGKILL skips this too; `hearthctl` sweeps leftovers on stop/start for that case.)
+const liveProcs = new Set();
+process.on('exit', () => {
+  for (const p of liveProcs) {
+    try {
+      p.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+});
 
 /** Human-readable name of a v4l2 node, e.g. "Integrated Camera". Best-effort. */
 const v4l2Name = (dev) => {
@@ -114,6 +134,17 @@ export async function detectCaptureDevice() {
     return null;
   }
   for (const dev of devs) {
+    // Only consider nodes backed by physical hardware. A virtual device (v4l2loopback —
+    // e.g. "OBS Virtual Camera") has no /sys device link, and can hand the probe a STALE
+    // frame its long-gone producer left behind — which auto would then ship to the cloud
+    // as live footage, forever. Someone who really wants a loopback can still pin it
+    // explicitly: `hearthctl camera on -f v4l2 -i /dev/videoN`.
+    try {
+      statSync(`/sys/class/video4linux/${dev}/device`);
+    } catch {
+      console.log(`[cam] auto: skipping /dev/${dev} (${v4l2Name(dev)}) — virtual device, not a physical camera`);
+      continue;
+    }
     if (await probeInput(['-f', 'v4l2', '-i', `/dev/${dev}`])) {
       console.log(`[cam] auto-detected camera: /dev/${dev} — ${v4l2Name(dev)}`);
       return `-f v4l2 -i /dev/${dev}`;
@@ -153,6 +184,26 @@ export function createCapture(opts = {}) {
   // and converges it from the desired-state downlink (or a hub watch's POST /actuate).
   let powered = true;
 
+  // A real camera DEVICE is captured snap-by-snap; only a pushed stream (rtmp) or the
+  // synthetic test source keeps a long-lived ffmpeg. Holding a v4l2/avfoundation device
+  // open 24/7 to sample one frame every few seconds is how a camera gets wedged: the LED
+  // never goes off, nothing else on the machine can use it, and powering down mid-stream
+  // can hang the camera's own firmware so hard it drops off the USB bus until a COLD
+  // power-off (a warm reboot never cuts USB power, so the wedge survives it). Open →
+  // grab → close bounds the exposure to ~a second per snap and leaves the device free
+  // between snaps.
+  const isDevice = source !== 'rtmp' && source !== 'test' && /(^|\s)-f\s+(v4l2|avfoundation)(\s|$)/.test(source);
+  let snapTimer = null;
+  let snapInFlight = false;
+  let snapFailures = 0;
+  let snapProc = null; // the in-flight snap, so stop()/setPower(off) can kill it immediately
+  // A device open ~1s per snap means sub-2s cadences would just hold it open anyway —
+  // floor the snap interval so "device free between snaps" stays true even if the cloud
+  // downlink asks for the 500ms minimum a streaming source can honour.
+  const SNAP_MIN_MS = 2000;
+  // A single wedged snap must never turn back into a device lock.
+  const SNAP_KILL_MS = 15000;
+
   // Build ffmpeg args for the chosen source. Output is a single JPEG overwritten
   // every `cadenceMs` (fps=1/sec), scaled to `width`, at the mapped JPEG quality.
   function ffmpegArgs() {
@@ -176,6 +227,72 @@ export function createCapture(opts = {}) {
     ];
   }
 
+  // One snap: a short-lived ffmpeg that opens the device, grabs a handful of frames
+  // (the first ones are dark — auto-exposure needs a beat to converge; -update keeps
+  // only the last), and exits. The poll loop picks the JPEG up exactly as it does for
+  // the streaming sources, so downstream nothing changes.
+  function snapOnce() {
+    if (stopped || !powered || snapInFlight) return; // never overlap device opens; off = silent
+    snapInFlight = true;
+    const args = [
+      '-loglevel', 'error',
+      ...source.split(/\s+/),
+      '-frames:v', '10',
+      '-vf', `scale=${width}:-2`,
+      '-q:v', String(qToQv(quality)),
+      '-f', 'image2',
+      '-update', '1',
+      '-y', framePath,
+    ];
+    const p = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    snapProc = p;
+    liveProcs.add(p);
+    let err = '';
+    p.stderr.on('data', (d) => {
+      err += String(d);
+    });
+    const killer = setTimeout(() => p.kill('SIGKILL'), SNAP_KILL_MS);
+    p.on('error', (e) => {
+      clearTimeout(killer);
+      liveProcs.delete(p);
+      if (snapProc === p) snapProc = null;
+      snapInFlight = false;
+      if (e.code === 'ENOENT') {
+        console.log('[cam] ffmpeg not found on PATH — camera disabled.');
+        stopped = true;
+        if (snapTimer) clearInterval(snapTimer);
+        return;
+      }
+      console.log(`[cam] snap error: ${e.message}`);
+    });
+    p.on('exit', (code) => {
+      clearTimeout(killer);
+      liveProcs.delete(p);
+      if (snapProc === p) snapProc = null;
+      snapInFlight = false;
+      if (code === 0) {
+        if (snapFailures) console.log('[cam] capture recovered');
+        snapFailures = 0;
+        return;
+      }
+      // Camera unplugged / wedged / busy. Keep trying at the cadence — a replugged
+      // device comes back with no restart — but don't log every tick forever.
+      snapFailures++;
+      if (snapFailures === 1 || snapFailures % 60 === 0)
+        console.log(`[cam] snap failed (${code})${err ? ` — ${err.trim().split('\n')[0]}` : ''} · device gone or busy? retrying every ${Math.max(cadenceMs, SNAP_MIN_MS)}ms (failure #${snapFailures})`);
+    });
+  }
+
+  function startSnapping() {
+    if (stopped || !powered) return;
+    if (snapTimer) clearInterval(snapTimer);
+    const every = Math.max(cadenceMs, SNAP_MIN_MS);
+    console.log(`[cam] snap mode: ${source} · every ${every}ms · q${quality} · ${width}px (device held only during each snap)`);
+    snapTimer = setInterval(snapOnce, every);
+    if (snapTimer.unref) snapTimer.unref();
+    snapOnce();
+  }
+
   function spawnFfmpeg() {
     // `proc` guard: setPower(on) and a pending exit-respawn timer can both try to start
     // capture — whoever runs second must find it already running, not fork a second ffmpeg.
@@ -183,11 +300,13 @@ export function createCapture(opts = {}) {
     const args = ffmpegArgs();
     console.log(`[cam] ffmpeg ${source === 'rtmp' ? `listening for OBS at ${rtmpUrl}` : `source=${source}`} · every ${cadenceMs}ms · q${quality} · ${width}px`);
     proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    proc.stderr.on('data', (d) => {
+    const p = proc; // pin this spawn for its handlers — `proc` moves on at respawn
+    liveProcs.add(p);
+    p.stderr.on('data', (d) => {
       const line = String(d).trim();
       if (line) console.log(`[cam] ffmpeg: ${line.split('\n')[0]}`);
     });
-    proc.on('error', (e) => {
+    p.on('error', (e) => {
       if (e.code === 'ENOENT') {
         console.log('[cam] ffmpeg not found on PATH — camera disabled.');
         stopped = true;
@@ -195,8 +314,9 @@ export function createCapture(opts = {}) {
       }
       console.log(`[cam] ffmpeg error: ${e.message}`);
     });
-    proc.on('exit', (code) => {
-      proc = null;
+    p.on('exit', (code) => {
+      liveProcs.delete(p);
+      if (proc === p) proc = null;
       // Powered off: this exit is the kill we asked for — stay down until setPower(true).
       if (stopped || !powered) return;
       // rtmp: OBS disconnected (or never connected yet). test/device: source ended. Respawn.
@@ -238,7 +358,8 @@ export function createCapture(opts = {}) {
 
   return {
     start() {
-      spawnFfmpeg();
+      if (isDevice) startSnapping();
+      else spawnFfmpeg();
       startPollTimer();
     },
     /** Latest complete JPEG (or null if none captured yet). */
@@ -257,8 +378,17 @@ export function createCapture(opts = {}) {
       const v = parseEnabled(on); // shared forgiving parse (hub/wire.mjs); undefined/null = on
       if (v === powered || stopped) return false;
       powered = v;
-      console.log(`[cam] capture ${powered ? 'ON — resuming' : 'OFF — stopping ffmpeg, holding last frame'}`);
-      if (powered) spawnFfmpeg();
+      console.log(`[cam] capture ${powered ? 'ON — resuming' : 'OFF — stopping capture, holding last frame'}`);
+      if (isDevice) {
+        // Snap mode: off = stop the interval and abort any in-flight snap (LED dies now);
+        // on = re-arm. No persistent process exists either way.
+        if (powered) startSnapping();
+        else {
+          if (snapTimer) clearInterval(snapTimer);
+          snapTimer = null;
+          if (snapProc) snapProc.kill('SIGKILL');
+        }
+      } else if (powered) spawnFfmpeg();
       else if (proc) proc.kill('SIGKILL'); // exit handler sees !powered and stays down
       return true;
     },
@@ -266,9 +396,10 @@ export function createCapture(opts = {}) {
     setCadence(ms) {
       if (!ms || !Number.isFinite(ms) || ms === cadenceMs) return false;
       cadenceMs = Math.max(500, Math.round(ms));
-      console.log(`[cam] cadence → ${cadenceMs}ms (restarting capture)`);
+      console.log(`[cam] cadence → ${cadenceMs}ms${isDevice ? ' (re-arming snap interval)' : ' (restarting capture)'}`);
       startPollTimer(); // re-pace the frame poll to the new cadence so we don't skip frames
-      if (proc) proc.kill('SIGKILL'); // exit handler respawns with the new fps
+      if (isDevice) startSnapping(); // re-arm the interval; no long-lived proc to bounce
+      else if (proc) proc.kill('SIGKILL'); // exit handler respawns with the new fps
       return true;
     },
     /** Adjust capture quality live (1..100). Returns true when it actually changed. */
@@ -277,13 +408,17 @@ export function createCapture(opts = {}) {
       if (v === quality) return false;
       quality = v;
       console.log(`[cam] quality → ${quality}`);
-      if (proc) proc.kill('SIGKILL');
+      // Snap mode picks the new quality up on the next snap; a streaming ffmpeg has it
+      // baked into its args and must be bounced.
+      if (!isDevice && proc) proc.kill('SIGKILL');
       return true;
     },
     stop() {
       stopped = true;
       if (pollTimer) clearInterval(pollTimer);
+      if (snapTimer) clearInterval(snapTimer);
       if (proc) proc.kill('SIGKILL');
+      if (snapProc) snapProc.kill('SIGKILL'); // LED off now, not when the snap finishes
     },
   };
 }

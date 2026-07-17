@@ -62,6 +62,9 @@ start() {
   command -v node >/dev/null 2>&1 || { echo "node not found — install Node 18+ first." >&2; exit 1; }
   [ -f "$HUB" ] || { echo "hub not installed at $HUB — run the installer first." >&2; exit 1; }
   if is_running; then echo "$(ok '●') hub already running (pid $(cat "$PIDFILE"))."; exit 0; fi
+  # A leftover capture process from a crashed hub still holds the camera device (or the
+  # rtmp port) — the fresh hub's camera would fail to open it. Clear the deck first.
+  sweep_orphans
   load_config
   rm -f "$CLAIM"
   # Detach fully so it survives this shell / SSH session closing.
@@ -83,13 +86,25 @@ start() {
   echo "$(ok '●') hub started (pid $pid). Logs: $LOG"
 }
 
+# Kill any capture process the hub left behind. A hub that died without SIGTERM (kill -9,
+# crash, OOM) can't clean up its ffmpeg child — which keeps the webcam open, and its LED on,
+# indefinitely. Matched on the hub's unique frame path (…/hearth-cam-XXXX/latest.jpg), so
+# this can never touch an ffmpeg that isn't ours.
+sweep_orphans() {
+  pkill -9 -f 'ffmpeg .*hearth-cam-.*latest\.jpg' 2>/dev/null || true
+}
+
 stop() {
-  if ! is_running; then echo "hub not running."; rm -f "$PIDFILE"; return 0; fi
+  if ! is_running; then echo "hub not running."; rm -f "$PIDFILE"; sweep_orphans; return 0; fi
   local pid; pid="$(cat "$PIDFILE")"
   kill "$pid" 2>/dev/null || true
-  for _ in 1 2 3 4 5; do is_running || break; sleep 0.3; done
+  # Give the graceful path (which kills the camera itself) up to ~3s before escalating —
+  # the hub's own shutdown fallback takes up to 1.5s, and SIGKILLing it mid-shutdown is
+  # exactly how camera processes got orphaned.
+  for _ in $(seq 1 10); do is_running || break; sleep 0.3; done
   is_running && kill -9 "$pid" 2>/dev/null || true
   rm -f "$PIDFILE"
+  sweep_orphans
   echo "hub stopped."
 }
 
@@ -141,14 +156,33 @@ camera() {
       set_config HEARTH_CAM 1
       set_config HEARTH_CAM_SOURCE "$src"
       echo "$(ok '●') camera on $(dim "(source: $src)")"
-      if is_running; then stop; start; else echo "  $(dim 'start the hub to bring it up:') hearthctl start"; fi
+      if is_running; then
+        # Attach live — the hub stays up, its nodes stay registered. Restart only if the
+        # running hub predates the toggle endpoint.
+        # Detach first so `camera on <new source>` actually switches — attach on a hub
+        # that already has a camera is a no-op. Off is idempotent; on a camera-less hub
+        # this is just a fast 200.
+        curl -fsS --max-time 5 -X POST -H 'content-type: application/json' \
+          -d '{"enabled":false}' "http://localhost:$PORT/camera" >/dev/null 2>&1 || true
+        # Generous timeout: `auto` probes each /dev/video* for a real frame before answering.
+        curl -fsS --max-time 45 -X POST -H 'content-type: application/json' \
+          -d "$(printf '{"enabled":true,"source":"%s"}' "$src")" \
+          "http://localhost:$PORT/camera" >/dev/null 2>&1 || { stop; start; }
+      else
+        echo "  $(dim 'start the hub to bring it up:') hearthctl start"
+      fi
       echo "  $(dim 'It appears in the dashboard as a Camera sensor once the hub syncs.')"
       ;;
     off)
       set_config HEARTH_CAM ''
       set_config HEARTH_CAM_SOURCE ''
+      if is_running; then
+        # Detach live — capture stops (webcam LED off) without bouncing the hub.
+        curl -fsS --max-time 5 -X POST -H 'content-type: application/json' \
+          -d '{"enabled":false}' "http://localhost:$PORT/camera" >/dev/null 2>&1 || { stop; start; }
+      fi
+      sweep_orphans
       echo "camera off."
-      if is_running; then stop; start; fi
       ;;
     status)
       local cfg; cfg="$(curl -fsS --max-time 2 "http://localhost:$PORT/camera" 2>/dev/null || echo)"

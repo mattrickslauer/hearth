@@ -39,11 +39,21 @@ The hub finds the camera, and it shows up in the dashboard under **Camera** — 
 like any other, with the same two knobs (cadence, quality) and frames Qwen-VL can read. It stays
 on across restarts. `hearthctl camera off` detaches it.
 
+Both toggle the *running* hub in place — no restart, nodes stay registered — and `off` stops the
+capture process immediately (webcam LED goes dark now, not at the next restart). The installer
+offers to attach a detected camera on fresh installs; a re-install keeps whatever you had.
+
 Under the hood the camera **is a node** (`node.mjs`): the hub starts it pointed at its own
 loopback ingest, it `DESCRIBE`s a `cam.frame` vision sensor plus a `power` switch actuator over
 HTTP, rides each sampled JPEG on its `READING` documents, and converges cadence/power from the
 same reply downlink an ESP32 uses. There is no camera-shaped special case in the hub — the same
 rails carry a camera on the hub, on a laptop across the room, or (someday) an ESP32-CAM.
+
+A real camera device is never held open: each snap opens it, grabs a frame, and closes it
+(~1s), so between snaps the LED is off, other apps can use the camera, and nothing long-lived
+exists to wedge it. (A camera held streaming through a shutdown can hang its own firmware and
+vanish from the USB bus — a warm reboot won't recover it, only a full power-off will, because
+reboots never cut USB power.) Only a pushed stream (`rtmp`) keeps ffmpeg running.
 
 Needs `ffmpeg` on PATH (`dnf install ffmpeg` / `apt install ffmpeg`).
 

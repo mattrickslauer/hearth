@@ -197,9 +197,15 @@ export function CloudCameraCard({
     ? 'Camera is stopped — no frames are being taken (and nothing is being spent). Press Start to resume.'
     : snap?.provisioned === false
       ? 'Cloud image store (OSS) isn’t configured on the backend yet.'
-      : snap?.capturedAt && stale
-        ? `No data — the last frame arrived ${ago(snap.capturedAt)} and nothing has replaced it. Check the hub's camera is running.`
-        : 'Waiting for a frame — the hub pushes one every few seconds once its camera is running.';
+      : snap?.ossUrl && snap?.capturedAt == null
+        ? // A frame IS stored but the backend didn’t say when it was captured — that response
+          // shape predates the staleness gating this app ships with. Silent version skew
+          // (frontend auto-deploys on merge, backend deploys by hand) blanked this card for a
+          // day, twice; name the failure so the fix is obvious instead of archaeological.
+          'A frame is stored, but the cloud backend is running an older build than this app (no capture time on frames). Redeploy the backend.'
+        : snap?.capturedAt && stale
+          ? `No data — the last frame arrived ${ago(snap.capturedAt)} and nothing has replaced it. Check the hub's camera is running.`
+          : 'Waiting for a frame — the hub pushes one every few seconds once its camera is running.';
 
   return (
     <CameraShell
