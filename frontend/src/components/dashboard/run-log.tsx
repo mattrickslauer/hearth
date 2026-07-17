@@ -13,22 +13,24 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { searchRuns, type RunEvent, type RunQuery, type RunSearch } from '@/lib/home';
+import { webNoOutline } from '@/lib/web-style';
 
 import { ActivityList, fmtRunUsd } from './activity';
-
-const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 
 /** Time windows worth having one tap away. */
 const WINDOWS = [
   { key: '24h', label: 'Today', ms: 86_400_000 },
   { key: '7d', label: '7 days', ms: 7 * 86_400_000 },
   { key: '30d', label: '30 days', ms: 30 * 86_400_000 },
-  { key: '365d', label: 'All', ms: 365 * 86_400_000 },
+  // "All" means all: a window so wide (a century) it reaches back past any run, so older runs are
+  // never silently dropped from the list or the totals. `sinceMs` is `now - window` server-side,
+  // and reaching before the epoch just means "from the beginning".
+  { key: 'all', label: 'All', ms: 100 * 365 * 86_400_000 },
 ] as const;
 
 /** Kind filters, grouped the way a person thinks about them rather than by row kind. */

@@ -238,8 +238,6 @@ export const configureWatch = (
 /** Attach reference-memory objects to a watch (replaces its links; [] clears them). */
 export const linkWatchMemory = (id: string, memoryIds: string[], token?: string | null) =>
   call<{ questionId: string; question: Watch }>('set_question_memory', { id, memoryIds }, token);
-export const suggestRuns = (token?: string | null) =>
-  call<{ suggestions: string[]; brain: string }>('suggest_runs', {}, token);
 
 /**
  * Forget a hub-reported device and all its sensors. Takes any input id on the node — the

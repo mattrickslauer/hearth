@@ -43,6 +43,12 @@ Both toggle the *running* hub in place — no restart, nodes stay registered —
 capture process immediately (webcam LED goes dark now, not at the next restart). The installer
 offers to attach a detected camera on fresh installs; a re-install keeps whatever you had.
 
+Under the hood the camera **is a node** (`node.mjs`): the hub starts it pointed at its own
+loopback ingest, it `DESCRIBE`s a `cam.frame` vision sensor plus a `power` switch actuator over
+HTTP, rides each sampled JPEG on its `READING` documents, and converges cadence/power from the
+same reply downlink an ESP32 uses. There is no camera-shaped special case in the hub — the same
+rails carry a camera on the hub, on a laptop across the room, or (someday) an ESP32-CAM.
+
 A real camera device is never held open: each snap opens it, grabs a frame, and closes it
 (~1s), so between snaps the LED is off, other apps can use the camera, and nothing long-lived
 exists to wedge it. (A camera held streaming through a shutdown can hang its own firmware and
@@ -64,6 +70,24 @@ To pin a specific source instead of probing, pass raw ffmpeg input args:
 ~/.hearth/hearthctl camera on rtmp                     # OBS pushes to rtmp://<hub>:1935/live
 ~/.hearth/hearthctl camera on test                     # synthetic source, verifies the pipeline
 ```
+
+### A laptop is a node too
+
+Any machine with Node 18+ can join the mesh as a **simple node** instead of (or as well as)
+being the hub — exactly like an ESP32, exposing whatever peripherals it actually has:
+
+```bash
+node hub/node.mjs                        # discover the hub over mDNS, describe everything found
+HUB_ENDPOINT=http://pi:8899 node node.mjs   # or point it at the hub explicitly
+NODE_PERIPHERALS=battery,load node node.mjs # opt out of the camera
+```
+
+It probes at startup and self-describes only what's real: the built-in **camera**
+(v4l2 / avfoundation, `cam.frame` + a `power` actuator), **battery** (`sys.battery` %),
+**CPU load** (`sys.load`), and **memory** (`sys.mem` %). It streams readings on per-sensor
+cadences, retunes from the dashboard via the same reply downlink the boards use, and serves
+`POST /actuate` so hub watches can fire on it instantly. Same protocol, same registry, same
+dashboard tiles — the hub can't tell it from a board.
 
 ### One process, both faces
 
@@ -137,6 +161,7 @@ Try the whole loop with no hardware:
 
 ```bash
 node hub/tools/selftest.mjs                       # asserts fire-once + actuate ON (exits non-zero on failure)
+node hub/tools/camera-selftest.mjs                # camera node end-to-end on ffmpeg's synthetic source
 node hub/hub.mjs & node hub/tools/fake-node.mjs   # a software node that heats up until a watch fires
 ```
 
@@ -205,7 +230,8 @@ Camera (prefer `hearthctl camera on`, which writes these for you):
 - `HEARTH_CAM=1` — attach the camera sensor
 - `HEARTH_CAM_SOURCE` — `auto` (probe for the real capture device), `rtmp` (default — OBS pushes
   to `rtmp://<hub>:1935/live`), `test` (synthetic), or raw ffmpeg input args (`-f v4l2 -i /dev/video1`)
-- `HEARTH_CAM_ID` — node id it self-describes as (default `hub-cam`)
+- `HEARTH_CAM_ID` — node id the embedded camera node self-describes as (default `cam-<machine hash>`)
+- `HEARTH_CAM_PORT` — the embedded camera node's own server (default `8898`; the hub proxies `/camera` to it)
 - `HEARTH_CAM_CADENCE_MS` — how often it snaps (default `5000`; the dashboard/cloud can retune it live)
 - `HEARTH_CAM_QUALITY` — JPEG quality 1..100 (default `70`) — the detail/token tradeoff
 - `HEARTH_CAM_WIDTH` — frame width (default `1280`)

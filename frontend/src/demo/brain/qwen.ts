@@ -15,6 +15,13 @@ import type { Judgment, Question, Visitor } from '../types';
 import { loadToken } from '@/auth/storage';
 import { backendBase } from '@/auth/client';
 
+// The console pill must never claim "Qwen Cloud" for output the mock actually produced
+// (an anonymous visitor's call 401s and falls back). Track which engine answered last so
+// the label can tell the truth — and recover to "Qwen Cloud" once real calls succeed
+// (e.g. after signing in).
+let lastEngine: 'qwen' | 'mock' | null = null;
+export const qwenAnsweredLive = () => lastEngine !== 'mock';
+
 async function callRoute<T>(body: unknown): Promise<T> {
   // The backend requires a session before it will spend the real key; anonymous callers get
   // a 401, which the callers below turn into the deterministic mock.
@@ -35,8 +42,10 @@ export async function qwenAuthor(wish: string): Promise<AuthoredQuestion> {
   try {
     const data = await callRoute<{ question: AuthoredQuestion }>({ task: 'author', wish });
     if (!data?.question?.compiledSpec) throw new Error('malformed question');
+    lastEngine = 'qwen';
     return { ...data.question, text: wish };
   } catch {
+    lastEngine = 'mock';
     return mockAuthor(wish);
   }
 }
@@ -61,8 +70,10 @@ export async function qwenJudge(input: {
         : null,
     });
     if (!data?.judgment) throw new Error('malformed judgment');
+    lastEngine = 'qwen';
     return data.judgment;
   } catch {
+    lastEngine = 'mock';
     return mockJudge({ dep: input.dep, visitor: input.visitor, scene: input.scene });
   }
 }

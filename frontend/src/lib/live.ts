@@ -99,6 +99,10 @@ export function useHubLive(
 
       if (!t || !t.enabled) {
         setStatus('unconfigured'); // realtime not provisioned — dashboard uses load + refresh
+        // Self-heal if realtime gets provisioned later: the effect only re-runs on token
+        // change, so without this a session that started unconfigured would never reconnect.
+        // A slow re-check (once a minute) is enough — this is the fallback path, not the hot one.
+        scheduleRetry(60000);
         return;
       }
       if (!t.hubId || !t.wsUrl || !t.ticket) {

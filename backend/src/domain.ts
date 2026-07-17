@@ -7,8 +7,6 @@
  * These modules are React-Native-free; they import cleanly under Node.
  */
 
-const D = '../../frontend/src/demo';
-
 export * from '../../frontend/src/demo/engine/types';
 export { parseDuration, formatDuration } from '../../frontend/src/demo/engine/duration';
 export { evaluate } from '../../frontend/src/demo/engine/predicate';
@@ -69,6 +67,3 @@ export type {
   WorldState,
   SensorValue,
 } from '../../frontend/src/demo/types';
-
-// re-export a marker so tooling doesn't tree-shake the path constant away in docs
-export const DOMAIN_ROOT = D;
