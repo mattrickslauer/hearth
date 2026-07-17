@@ -35,7 +35,7 @@
     "@types/nodemailer": "^6.4.16"
   },
   "dependencies": {
-    "nodemailer": "^6.9.15"
+    "nodemailer": "^6.10.1"
   },
   "optionalDependencies": {
     "tablestore": "^5.2.0",

@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { decodeFrames } from '../hub/ws-frame.mjs';
+import { decodeFrames } from './ws-frame.mjs';
 
 const PORT = 8791;
 const SECRET = 'test-session-secret-1234567890';

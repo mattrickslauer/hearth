@@ -140,3 +140,26 @@ export function evaluate(node: PredicateNode, ctx: EvalCtx): { value: boolean; t
   }
   return { value: nodeTrueAt(node, ctx.now, ctx) };
 }
+
+/**
+ * First input a predicate references, walking the shapes the engine compiles.
+ *
+ * Shared by both gate resolvers — `lib/gates.ts` (over the real, hub-reported home) and
+ * `demo/gates.ts` (over the static catalog). The real-vs-catalog split stays at the call sites;
+ * only this tree traversal is deduped here so there's one walker, not two identical copies.
+ */
+export function gateInput(node: PredicateNode): string | undefined {
+  const n = node as unknown as Record<string, unknown>;
+  const left = n.left as { input?: string } | undefined;
+  if (left?.input) return left.input;
+  const inp = n.input as { input?: string } | undefined;
+  if (inp?.input) return inp.input;
+  if (Array.isArray(n.nodes)) {
+    for (const child of n.nodes as PredicateNode[]) {
+      const found = gateInput(child);
+      if (found) return found;
+    }
+  }
+  if (n.node) return gateInput(n.node as PredicateNode);
+  return undefined;
+}

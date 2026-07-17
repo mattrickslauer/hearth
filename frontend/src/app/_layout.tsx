@@ -22,7 +22,9 @@ function navTheme(scheme: 'light' | 'dark') {
 }
 
 export default function RootLayout() {
-  const scheme = useColorScheme() === 'light' ? 'light' : 'dark';
+  // One shared default with use-theme: anything that isn't an explicit 'dark' is 'light', so the
+  // nav chrome here and the content (via useTheme) agree on the first paint.
+  const scheme = useColorScheme() === 'dark' ? 'dark' : 'light';
 
   return (
     <AuthProvider>

@@ -58,7 +58,7 @@ let handle: Promise<Handle> | null = null;
 /** Lazily import the SDK and build a singleton client. */
 export function getTablestore(): Promise<Handle> {
   if (!handle) {
-    handle = (async () => {
+    const built = (async () => {
       let mod: any; // eslint-disable-line @typescript-eslint/no-explicit-any
       try {
         mod = await import('tablestore');
@@ -78,6 +78,12 @@ export function getTablestore(): Promise<Handle> {
       });
       return { TableStore, client };
     })();
+    handle = built;
+    // A rejected import/config must not be cached forever: clear the singleton on failure so the
+    // next call retries (e.g. after the SDK is installed or env is fixed) instead of re-throwing.
+    void built.catch(() => {
+      if (handle === built) handle = null;
+    });
   }
   return handle;
 }
@@ -208,15 +214,19 @@ export async function tsGetRange(
   return out;
 }
 
-/** Create a table if it doesn't already exist (idempotent). Reserved-CU=0, single version. */
-export async function ensureTable(tableName: string, pkNames: string[]): Promise<void> {
+/**
+ * Create a table if it doesn't already exist (idempotent). Reserved-CU=0, single version.
+ * `timeToLive` defaults to -1 (never expires); pass a positive seconds value for tables whose
+ * rows should self-expire server-side (e.g. store.ts's readings=24h, runs=365d) — no sweeper.
+ */
+export async function ensureTable(tableName: string, pkNames: string[], timeToLive = -1): Promise<void> {
   const { TableStore, client } = await getTablestore();
   await new Promise<void>((resolve, reject) => {
     client.createTable(
       {
         tableMeta: { tableName, primaryKey: pkNames.map((name) => ({ name, type: 'STRING' })) },
         reservedThroughput: { capacityUnit: { read: 0, write: 0 } },
-        tableOptions: { timeToLive: -1, maxVersions: 1 },
+        tableOptions: { timeToLive, maxVersions: 1 },
       },
       (err: unknown) => {
         const msg = (err as { message?: string })?.message || String(err ?? '');
@@ -230,7 +240,13 @@ export async function ensureTable(tableName: string, pkNames: string[]): Promise
 /** Ensure the shared home table exists. Cheap + idempotent; call before first use. */
 let homeTableReady: Promise<void> | null = null;
 export function ensureHomeTable(): Promise<void> {
-  if (!homeTableReady) homeTableReady = ensureTable(HOME_TABLE, ['account', 'sk']);
+  if (!homeTableReady) {
+    homeTableReady = ensureTable(HOME_TABLE, ['account', 'sk']);
+    // Clear the cache on failure so a transient create error retries instead of caching a reject.
+    void homeTableReady.catch(() => {
+      homeTableReady = null;
+    });
+  }
   return homeTableReady;
 }
 

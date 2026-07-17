@@ -62,6 +62,17 @@ const truthy = (v: unknown): boolean => {
   return false;
 };
 
+/** The input a cloud watch's frames come from: its `.frame` binding, else its first, else the demo camera. */
+const frameInputOf = (boundInputs: string[] = []): string =>
+  boundInputs.find((b) => b.endsWith('.frame')) ?? boundInputs[0] ?? 'camera.frame';
+
+/**
+ * The default capture policy for a cloud watch that has none — one definition of the frame-input
+ * pick + cadence floor, shared by author/update (fill a missing record) and configure (fall back).
+ */
+const defaultCloudRecord = (q: Question): RecordPolicy =>
+  defaultRecord(frameInputOf(q.boundInputs), (q.compiledSpec.kind === 'cloud' ? q.compiledSpec.cloud.maxCadence : undefined) ?? '10s');
+
 export const TOOLS: Tool[] = [
   {
     name: 'describe_home',
@@ -270,10 +281,7 @@ export const TOOLS: Tool[] = [
     handler: async (a, { store }) => {
       const { question, engine, usage } = await qwenAuthor(str(a.wish));
       const q: Question = { ...question, id: nextQid() };
-      if (q.compiledSpec.kind === 'cloud' && !q.record) {
-        const inputId = q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0] ?? 'camera.frame';
-        q.record = defaultRecord(inputId, q.compiledSpec.cloud.maxCadence ?? '10s');
-      }
+      if (q.compiledSpec.kind === 'cloud' && !q.record) q.record = defaultCloudRecord(q);
       await store.putQuestion(q);
       await store.appendEvent({
         id: `ev-${q.id}`,
@@ -307,10 +315,7 @@ export const TOOLS: Tool[] = [
       // reference-memory links the homeowner attached (those are their choice, not the brain's).
       const { question, engine, usage } = await qwenAuthor(str(a.wish));
       const q: Question = { ...question, id, memoryIds: existing.memoryIds };
-      if (q.compiledSpec.kind === 'cloud' && !q.record) {
-        const inputId = q.boundInputs.find((b) => b.endsWith('.frame')) ?? q.boundInputs[0] ?? 'camera.frame';
-        q.record = defaultRecord(inputId, q.compiledSpec.cloud.maxCadence ?? '10s');
-      }
+      if (q.compiledSpec.kind === 'cloud' && !q.record) q.record = defaultCloudRecord(q);
       await store.putQuestion(q);
       await store.appendEvent({
         id: `ev-edit-${id}-${Date.now().toString(36)}`,
@@ -377,12 +382,13 @@ export const TOOLS: Tool[] = [
         throw new Error(`question ${id} is a local watch — it has no cloud budget knobs`);
       }
 
-      const rec =
-        existing.record ??
-        defaultRecord(
-          existing.boundInputs.find((b) => b.endsWith('.frame')) ?? existing.boundInputs[0] ?? 'camera.frame',
-          existing.compiledSpec.cloud.maxCadence ?? '10s',
-        );
+      const rec = existing.record ?? defaultCloudRecord(existing);
+      // Validate mode against the allowed set, the same way `every` is validated below — an
+      // out-of-enum value would otherwise be stored verbatim as a dead sampling setting.
+      const MODES: RecordPolicy['mode'][] = ['on_event', 'interval'];
+      if (a.mode !== undefined && !MODES.includes(str(a.mode) as RecordPolicy['mode'])) {
+        throw new Error(`invalid mode: ${str(a.mode)} (expected on_event|interval)`);
+      }
       const mode = a.mode === undefined ? rec.mode : (str(a.mode) as typeof rec.mode);
       const every = a.every === undefined ? rec.every : str(a.every);
       // Never accept a rate the compiled spec's own budget guard forbids.
@@ -571,9 +577,7 @@ export const TOOLS: Tool[] = [
 
       // Resolve the input to a REAL actuator on a paired hub's node before committing a
       // desired state — "<nodeId>.<key>" must match an actuator a node self-described.
-      const owns = (await store.listHubDevices()).some((s) =>
-        s.nodes.some((n) => (n.actuators ?? []).some((ac) => `${n.id}.${ac.key}` === input)),
-      );
+      const owns = await store.ownsActuator(input);
 
       await store.appendEvent({
         id: `ev-act-${Date.now().toString(36)}`,

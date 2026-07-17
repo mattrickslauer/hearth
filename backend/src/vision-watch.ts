@@ -28,7 +28,8 @@
 import { ReadingStore, evaluate, parseDuration, type PredicateNode, type Question } from './domain';
 import { deliverNotification } from './notify';
 import { framesFor, resolveImage } from './oss';
-import { judge, type CallUsage } from './qwen';
+import { predicateInputs } from './predicate-inputs';
+import { judge } from './qwen';
 import type { HomeStore, RunEventRow, WatchRunState } from './store';
 import type { AccountId } from './auth';
 
@@ -67,27 +68,10 @@ export interface VisionOutcome {
   notified?: boolean;
 }
 
-/** Every inputId a predicate node touches, so we hydrate only the series the gate reads. */
-function gateInputs(node: PredicateNode): string[] {
-  const out: string[] = [];
-  const walk = (n: PredicateNode): void => {
-    if (!n || typeof n !== 'object') return;
-    const o = n as unknown as Record<string, unknown>;
-    const left = o.left as { input?: string } | undefined;
-    const inp = o.input as { input?: string } | undefined;
-    if (left?.input) out.push(left.input);
-    if (inp?.input) out.push(inp.input);
-    if (Array.isArray(o.nodes)) (o.nodes as PredicateNode[]).forEach(walk);
-    if (o.node) walk(o.node as PredicateNode);
-  };
-  walk(node);
-  return [...new Set(out)];
-}
-
 /** Build the evaluator's ReadingStore from the persisted time series for just those inputs. */
 async function hydrateGate(store: HomeStore, node: PredicateNode, now: number): Promise<ReadingStore> {
   const rs = new ReadingStore();
-  for (const input of gateInputs(node)) {
+  for (const input of new Set(predicateInputs(node))) {
     const rows = await store.history(input, now - GATE_LOOKBACK_MS, now);
     for (const r of rows) rs.append(r.input, r.value, r.ts);
   }
@@ -171,6 +155,10 @@ export async function judgeFrame(store: HomeStore, accountId: AccountId, input: 
 
   const outcomes: VisionOutcome[] = [];
 
+  // Reference photos are account-wide, so read them once rather than per candidate watch; each
+  // watch narrows this single list to its own linked memoryIds below.
+  const household = await store.listHousehold();
+
   for (const q of candidates) {
     const spec = q.compiledSpec;
     if (spec.kind !== 'cloud') continue;
@@ -223,8 +211,7 @@ export async function judgeFrame(store: HomeStore, accountId: AccountId, input: 
 
     // 4) Reference photos. Linked memory objects narrow "who to look for" to just those;
     //    no links means all of memory — the documented Question.memoryIds behaviour, now
-    //    actually read instead of merely stored.
-    const household = await store.listHousehold();
+    //    actually read instead of merely stored. `household` is fetched once above the loop.
     const linked = q.memoryIds?.length ? household.filter((m) => q.memoryIds!.includes(m.id)) : household;
     const references: { label: string; image: string }[] = [];
     for (const m of linked) {
@@ -235,23 +222,18 @@ export async function judgeFrame(store: HomeStore, accountId: AccountId, input: 
       }
     }
 
-    // 5) Look.
-    let judgment, engine: 'qwen' | 'mock', usage: CallUsage | undefined;
-    try {
-      ({ judgment, engine, usage } = await judge({
-        title: q.title,
-        trigger: q.trigger,
-        questions: [check.question],
-        scene: '(live camera frame attached)',
-        visitor: null,
-        images: [frameUrl],
-        references,
-      }));
-    } catch (e) {
-      console.warn(`[vision] judge threw for ${q.id}:`, (e as Error).message);
-      await skip('no-frame');
-      continue;
-    }
+    // 5) Look. judge() catches its own errors internally and falls back to the mock verdict —
+    //    it never throws — so there is no try/catch here: a model failure surfaces as a mock
+    //    engine, not as a mislabelled 'no-frame' skip.
+    const { judgment, engine, usage } = await judge({
+      title: q.title,
+      trigger: q.trigger,
+      questions: [check.question],
+      scene: '(live camera frame attached)',
+      visitor: null,
+      images: [frameUrl],
+      references,
+    });
 
     const answer = judgment.fired;
     const wasAnswer = state.lastAnswer;

@@ -20,6 +20,13 @@
 #define HEARTH_FW_VERSION "0.0.0"
 #endif
 
+// Back-compat fallback: older config.h files predate the actuator auth token.
+// Empty = actuator stays open (legacy behavior); set ACTUATOR_TOKEN in config.h
+// to require callers (the hub) to present it via the X-Hearth-Token header.
+#ifndef ACTUATOR_TOKEN
+#define ACTUATOR_TOKEN ""
+#endif
+
 #if DHT_PIN >= 0
 DHT dht(DHT_PIN, DHT_TYPE);
 #endif
@@ -48,6 +55,8 @@ static const uint32_t SAMPLE_MAX_MS = 60000;  // ceiling — matches the backend
 static String   gHubUrl;                 // resolved hub ingest URL (mDNS, or fallback)
 static bool     gMdnsUp     = false;
 static uint32_t gLastDiscover = 0;
+static uint32_t gOfflineSince = 0;    // millis() when the link first dropped (0 = online / never seen down)
+static const uint32_t WIFI_RECONNECT_MS = 10000;  // re-kick Wi-Fi after this long continuously offline
 
 #if ACTUATOR_PIN >= 0
 static WebServer gCmdServer(ACTUATOR_PORT); // listens for POST /actuate from the hub
@@ -64,11 +73,24 @@ static void setActuator(bool on) {
   Serial.printf("[actuate] %s -> %s\n", ACTUATOR_KEY, on ? "ON" : "OFF");
 }
 
+// Shared-secret gate for the actuator endpoints. When ACTUATOR_TOKEN is set, the caller (the
+// hub) must present it in the X-Hearth-Token header. Empty token = open mode (back-compat), so
+// a freshly flashed board still works with no secret configured. NOTE: the hub must be
+// configured to send this same header/value for actuation to succeed once a token is set.
+static bool actuatorAuthed() {
+  if (strlen(ACTUATOR_TOKEN) == 0) return true;                 // open mode
+  return gCmdServer.header("X-Hearth-Token") == ACTUATOR_TOKEN; // constant-string compare
+}
+
 // POST /actuate  { "actuator":"led", "value":"on"|"off"|true|false }
 // A watch firing on the hub calls this. Body parsing is deliberately forgiving. Honors the
 // same safety-veto latch as the cloud desired path: an "off" re-arms; an "on" while vetoed is
 // ignored, so the veto holds no matter which side issued the command.
 static void handleActuate() {
+  if (!actuatorAuthed()) {
+    gCmdServer.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+    return;
+  }
   String body = gCmdServer.arg("plain");
   bool off = body.indexOf("\"off\"") >= 0 || body.indexOf("false") >= 0 ||
              body.indexOf(":0") >= 0 || body.indexOf("\"0\"") >= 0;
@@ -80,8 +102,15 @@ static void handleActuate() {
 
 static void startCmdServer() {
   if (gCmdServerUp) return;
+  // WebServer only retains headers we explicitly ask it to keep — needed for the auth check.
+  static const char* kHeaders[] = { "X-Hearth-Token" };
+  gCmdServer.collectHeaders(kHeaders, 1);
   gCmdServer.on("/actuate", HTTP_POST, handleActuate);
   gCmdServer.on("/", HTTP_GET, []() {
+    if (!actuatorAuthed()) {                          // don't disclose id/state unauthenticated
+      gCmdServer.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+      return;
+    }
     gCmdServer.send(200, "application/json",
                     String("{\"id\":\"") + gNodeId + "\",\"" + ACTUATOR_KEY + "\":" + (gActuatorOn ? "true" : "false") + "}");
   });
@@ -152,13 +181,30 @@ static String describeJson() {
 
 static bool postJson(const String& body);   // fwd decl — sampleDue posts; postJson is below
 
+#if DHT_PIN >= 0
+// Coalesce the DHT to at most ONE physical read per tick: temp and humidity, when both are due
+// in the same tick, reuse a single read instead of triggering two ~250ms reads. `tick` is the
+// loop's millis() snapshot, so both sensors in one sampleDue() share the same cached values.
+static uint32_t gDhtTick = 0;      // millis() of the last coalesced read
+static bool     gDhtHave = false;  // whether the cache below has ever been filled
+static float    gDhtTemp = NAN;
+static float    gDhtHum  = NAN;
+static void dhtReadForTick(uint32_t tick) {
+  if (gDhtHave && gDhtTick == tick) return;   // already read this tick
+  gDhtTemp = dht.readTemperature();
+  gDhtHum  = dht.readHumidity();
+  gDhtTick = tick;
+  gDhtHave = true;
+}
+#endif
+
 // One sensor's current value as a JSON scalar. Absent/failed sensors report null rather
 // than being dropped — a missing value is itself information the hub can reason about.
-static String sensorValue(int i) {
+static String sensorValue(int i, uint32_t now) {
   if (i == S_BOARD_TEMP) return String(chipTempC(), 1);
 #if DHT_PIN >= 0
-  if (i == S_DHT_TEMP) { float t = dht.readTemperature(); return isnan(t) ? String("null") : String(t, 1); }
-  if (i == S_DHT_HUM)  { float h = dht.readHumidity();    return isnan(h) ? String("null") : String(h, 1); }
+  if (i == S_DHT_TEMP) { dhtReadForTick(now); return isnan(gDhtTemp) ? String("null") : String(gDhtTemp, 1); }
+  if (i == S_DHT_HUM)  { dhtReadForTick(now); return isnan(gDhtHum)  ? String("null") : String(gDhtHum, 1); }
 #endif
 #if DIST_TRIG_PIN >= 0
   if (i == S_DIST) { float d = distanceCm(); return isnan(d) ? String("null") : String(d, 1); }
@@ -179,7 +225,7 @@ static void sampleDue() {
     if (!sEnabled[i] || now - sLast[i] < sInterval[i]) continue;
     sLast[i] = now;
     if (any) body += ",";
-    body += "\""; body += SENSOR_KEYS[i]; body += "\":"; body += sensorValue(i);
+    body += "\""; body += SENSOR_KEYS[i]; body += "\":"; body += sensorValue(i, now);
     any = true;
   }
   if (!any) return;
@@ -201,6 +247,8 @@ static void connectWifi() {
   }
   Serial.printf("[wifi] connecting to \"%s\"", WIFI_SSID);
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);        // don't wear flash rewriting creds we already hold in config.h
+  WiFi.setAutoReconnect(true);   // let the stack transparently re-associate on a transient drop
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
@@ -277,11 +325,20 @@ static void applyDesired(const String& body) {
 static bool postJson(const String& body) {
   if (WiFi.status() != WL_CONNECTED || gHubUrl.length() == 0) return false;
   HTTPClient http;
-  http.setConnectTimeout(4000);
-  http.setTimeout(4000);
+  // Keep these short: a synchronous POST blocks the loop, and during a hub outage the first few
+  // readings each eat this timeout before gFailStreak drops gHubUrl. A long timeout here starves
+  // gCmdServer.handleClient(), delaying a hub-issued actuator command (incl. a safety "off").
+  http.setConnectTimeout(1500);
+  http.setTimeout(1500);
   http.begin(gHubUrl);
   http.addHeader("Content-Type", "application/json");
+#if ACTUATOR_PIN >= 0
+  if (gCmdServerUp) gCmdServer.handleClient();   // don't let a pending actuator command wait on the POST
+#endif
   int code = http.POST(body);
+#if ACTUATOR_PIN >= 0
+  if (gCmdServerUp) gCmdServer.handleClient();   // service again the moment the POST returns
+#endif
   Serial.printf("[post] %s -> %d\n", gHubUrl.c_str(), code);
   bool ok = code >= 200 && code < 400;
   if (ok) {
@@ -377,6 +434,29 @@ void loop() {
 #endif
 
   const bool online = WiFi.status() == WL_CONNECTED;
+
+  if (online) {
+    gOfflineSince = 0;
+    // Ensure mDNS is (re)started whenever we're online but not yet up — e.g. we booted with
+    // Wi-Fi down (so setup() never started it), or a reconnect tore the old responder down.
+    // Self-guards via `if (gMdnsUp) return;`. Without this, queryHub() below returns "" forever.
+    if (!gMdnsUp) mdnsBegin();
+  } else {
+    // Link dropped after boot. setAutoReconnect handles most blips; this is the backstop that
+    // re-initiates a connect if we stay down. Rollover-safe timer, re-armed on each retry.
+    if (gOfflineSince == 0) {
+      gOfflineSince = millis();
+    } else if (millis() - gOfflineSince >= WIFI_RECONNECT_MS) {
+      gOfflineSince = millis();   // re-arm: keep retrying every WIFI_RECONNECT_MS while down
+      Serial.println("[wifi] link down — reconnecting");
+      connectWifi();
+      // A reconnect is a fresh session: tear down mDNS and forget the hub so the online path
+      // above re-browses (fix composes with #1) and we re-announce to the (re)discovered hub.
+      if (gMdnsUp) { MDNS.end(); gMdnsUp = false; }
+      gHubUrl = "";
+      gAnnounced = false;
+    }
+  }
 
   // (Re)discover the hub whenever we don't have one — on boot, or after we lost contact
   // (postJson clears gHubUrl after repeated failures). The node keeps browsing forever.

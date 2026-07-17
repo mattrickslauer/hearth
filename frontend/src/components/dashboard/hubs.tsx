@@ -1,12 +1,11 @@
-import { Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import type { HubView } from '@/lib/hubs';
+import { webNoOutline } from '@/lib/web-style';
 
 import { ago, useHover } from './shared';
-
-const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 
 /**
  * Format a claim code as the user types (or pastes): strip anything that isn't alphanumeric —

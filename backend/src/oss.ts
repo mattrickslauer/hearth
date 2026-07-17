@@ -34,7 +34,7 @@ let clientPromise: Promise<OSSClient> | null = null;
 async function client(): Promise<OSSClient> {
   if (!ossProvisioned()) throw new Error('OSS not provisioned (OSS_BUCKET + ALI keys required)');
   if (!clientPromise) {
-    clientPromise = import('ali-oss').then((m) => {
+    const built = import('ali-oss').then((m) => {
       const OSS = ((m as { default?: unknown }).default ?? m) as new (o: object) => OSSClient;
       return new OSS({
         region: process.env.OSS_REGION || 'oss-ap-southeast-1',
@@ -43,6 +43,12 @@ async function client(): Promise<OSSClient> {
         bucket: process.env.OSS_BUCKET,
         secure: true,
       });
+    });
+    clientPromise = built;
+    // A rejected dynamic import (SDK missing) must not be cached forever: clear it on failure so
+    // the next call retries instead of replaying the same rejected promise.
+    void built.catch(() => {
+      if (clientPromise === built) clientPromise = null;
     });
   }
   return clientPromise;

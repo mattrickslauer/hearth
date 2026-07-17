@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, {
   Easing,
   FadeInDown,
@@ -13,11 +13,9 @@ import { FlameMark } from '@/components/landing/flame-mark';
 import type { Simulation } from '@/demo/use-simulation';
 import { Fonts, Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { webNoOutline } from '@/lib/web-style';
 
 import { DeploymentCard } from './deployment-card';
-
-// Kill the default focus ring on web without fighting StyleSheet's RN types.
-const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : null;
 
 const EXAMPLES = [
   "Warn me if the garage is open after dark and it's cold — turn on the heater.",

@@ -27,11 +27,13 @@
  * Needs ffmpeg on PATH. If it's absent the hub logs and runs on without a camera.
  */
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+import { parseEnabled } from './wire.mjs';
 
 const iso = () => new Date().toISOString();
 const hhmmss = () => new Date().toISOString().slice(11, 19);
@@ -72,6 +74,40 @@ const v4l2Name = (dev) => {
   }
 };
 
+// Per-device probe timeout. A working capture node hands back a frame in well under a second; this
+// only guards a device that opens but never delivers. Kept modest (was 8s) so `auto` on a box with
+// several dead video nodes still resolves quickly — and, being async now, without blocking anyway.
+const DETECT_TIMEOUT_MS = Number(process.env.HEARTH_CAM_DETECT_MS || 4000);
+
+/**
+ * Try to pull ONE frame from a v4l2 node to a null output — the cheapest proof it's a capture
+ * device we have permission to read. Resolves true on ffmpeg exit 0, false on any error/non-zero
+ * exit/timeout. Async (spawn, not spawnSync) so probing never blocks the event loop: pairing,
+ * heartbeat and LAN serving proceed while we probe.
+ */
+function probeDevice(dev) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const proc = spawn(
+      'ffmpeg',
+      ['-hide_banner', '-loglevel', 'error', '-f', 'v4l2', '-i', `/dev/${dev}`, '-frames:v', '1', '-f', 'null', '-'],
+      { stdio: 'ignore' },
+    );
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL'); // opened but never delivered a frame — give up on this node
+      finish(false);
+    }, DETECT_TIMEOUT_MS);
+    proc.on('error', () => finish(false)); // ffmpeg missing / spawn failure
+    proc.on('exit', (code) => finish(code === 0));
+  });
+}
+
 /**
  * Find a v4l2 device that can actually hand us a frame, and return it as ffmpeg
  * input args (or null if there's nothing usable).
@@ -82,11 +118,11 @@ const v4l2Name = (dev) => {
  * capture device" the moment you open them. The capture node is frequently
  * video1. Numeric order tells you nothing, and guessing wrong looks identical
  * to broken hardware, so the only honest test is to open each one and try to
- * pull a frame.
+ * pull a frame — which we now do async, one node at a time (finding 2).
  *
- * Linux-only (v4l2). Anywhere else we return null and the caller falls back to rtmp.
+ * Linux-only (v4l2). Anywhere else we resolve null and the caller falls back to rtmp.
  */
-function detectCaptureDevice() {
+async function detectCaptureDevice() {
   if (process.platform !== 'linux') return null;
   let devs;
   try {
@@ -97,14 +133,7 @@ function detectCaptureDevice() {
     return null;
   }
   for (const dev of devs) {
-    // One real frame to null output: the cheapest proof the node is a capture device
-    // we have permission to read. timeout guards a device that opens but never delivers.
-    const r = spawnSync(
-      'ffmpeg',
-      ['-hide_banner', '-loglevel', 'error', '-f', 'v4l2', '-i', `/dev/${dev}`, '-frames:v', '1', '-f', 'null', '-'],
-      { timeout: 8000, stdio: 'ignore' },
-    );
-    if (r.status === 0) {
+    if (await probeDevice(dev)) {
       console.log(`[cam] auto-detected camera: /dev/${dev} — ${v4l2Name(dev)}`);
       return `-f v4l2 -i /dev/${dev}`;
     }
@@ -124,13 +153,19 @@ function detectCaptureDevice() {
 export function createCamera({ ingest, onFrame }) {
   const id = process.env.HEARTH_CAM_ID || defaultCameraId();
   const requested = process.env.HEARTH_CAM_SOURCE || 'rtmp';
-  // `auto` resolves once, at startup, to whatever camera is actually plugged into this
-  // machine. No camera → rtmp, i.e. exactly the OBS behaviour, so a hub with no local
-  // camera is unaffected.
-  const source =
-    requested === 'auto'
-      ? (detectCaptureDevice() ?? (console.log('[cam] auto: no local camera found — listening for OBS over rtmp instead'), 'rtmp'))
-      : requested;
+  // `auto` resolves to whatever camera is actually plugged into this machine — but that probe is
+  // async now (finding 2), so start with a provisional `rtmp` source and re-resolve in start()
+  // BEFORE the first ffmpeg spawn. No camera → rtmp, i.e. exactly the OBS behaviour, so a hub with
+  // no local camera is unaffected. Non-auto sources are already final (nothing to probe).
+  let source = requested === 'auto' ? 'rtmp' : requested;
+  let sourceResolved = requested !== 'auto';
+  async function resolveSource() {
+    if (sourceResolved) return;
+    const detected = await detectCaptureDevice();
+    if (detected) source = detected;
+    else console.log('[cam] auto: no local camera found — listening for OBS over rtmp instead');
+    sourceResolved = true;
+  }
   const rtmpUrl = process.env.HEARTH_CAM_RTMP || 'rtmp://0.0.0.0:1935/live';
   const width = Number(process.env.HEARTH_CAM_WIDTH || 1280);
   let quality = Number(process.env.HEARTH_CAM_QUALITY || 70);
@@ -250,14 +285,25 @@ export function createCamera({ ingest, onFrame }) {
     }
   }
 
+  // (Re)create the frame poll on a period that tracks the snap cadence — fast enough to catch a
+  // sub-second cadence (floored at 250ms), never slower than 1s. It's recreated on every
+  // setCadence() because a timer fixed at start() would, after cadence is lowered, fire slower than
+  // frames are written and skip every other one (finding 7).
+  function startPollTimer() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(poll, Math.max(250, Math.min(cadenceMs, 1000)));
+    if (pollTimer.unref) pollTimer.unref();
+  }
+
   return {
     id,
     /** Register the camera as a node and start capturing. */
     start() {
       ingest(describeDoc());
-      spawnFfmpeg();
-      pollTimer = setInterval(poll, Math.max(250, Math.min(cadenceMs, 1000)));
-      if (pollTimer.unref) pollTimer.unref();
+      // Resolve the capture source (async for `auto` — finding 2), THEN spawn ffmpeg. Describe and
+      // the poll timer start immediately so pairing/heartbeat/LAN serving never wait on the probe.
+      resolveSource().then(spawnFfmpeg);
+      startPollTimer();
       console.log(`[cam] camera sensor "${id}" online — frame at GET /frame, describes cam.frame [vision]`);
     },
     /** Latest complete JPEG for GET /frame (or null if none captured yet). */
@@ -275,7 +321,7 @@ export function createCamera({ ingest, onFrame }) {
      * no readings, no frame pushes, no Looks spent. On respawns and capture resumes.
      */
     setPower(on) {
-      const v = on !== false; // undefined/null = uncommanded = on
+      const v = parseEnabled(on); // shared forgiving parse (hub/wire.mjs); undefined/null = on
       if (v === powered || stopped) return;
       powered = v;
       console.log(`[cam] capture ${powered ? 'ON — resuming' : 'OFF — stopping ffmpeg, holding last frame'}`);
@@ -288,6 +334,7 @@ export function createCamera({ ingest, onFrame }) {
       cadenceMs = Math.max(500, Math.round(ms));
       console.log(`[cam] cadence → ${cadenceMs}ms (re-describing + restarting capture)`);
       ingest(describeDoc());
+      startPollTimer(); // re-pace the frame poll to the new cadence so we don't skip frames (finding 7)
       if (proc) proc.kill('SIGKILL'); // exit handler respawns with the new fps
     },
     /** Adjust capture quality live (1..100). */
