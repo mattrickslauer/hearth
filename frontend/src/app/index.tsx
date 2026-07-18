@@ -506,6 +506,7 @@ export default function HomeScreen() {
             </View>
             <View style={styles.footLinks}>
               <FooterLink label="Live demo" href="/demo" />
+              <FooterLink label="Docs" href="/docs" />
               <FooterLink label="Build a node" href="/build-a-node" />
               <FooterLink label="GitHub" onPress={() => Linking.openURL(REPO_URL)} />
             </View>

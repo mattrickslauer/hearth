@@ -36,6 +36,7 @@ export default function RootLayout() {
             contentStyle: { backgroundColor: Colors[scheme].background },
           }}>
           <Stack.Screen name="index" />
+          <Stack.Screen name="docs" />
           <Stack.Screen name="build-a-node" />
           <Stack.Screen name="demo" />
           <Stack.Screen name="dashboard" />
